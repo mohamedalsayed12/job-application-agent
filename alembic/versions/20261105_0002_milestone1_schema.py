@@ -1,0 +1,429 @@
+"""milestone 1 schema"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+revision: str = '0002_milestone1_schema'
+down_revision: Union[str, None] = '0001_initial_base'
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.execute("CREATE EXTENSION IF NOT EXISTS citext")
+    op.create_table('ai_extraction',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('input_hash', sa.Text(), nullable=False),
+    sa.Column('model', sa.Text(), nullable=False),
+    sa.Column('prompt_version', sa.Text(), nullable=False),
+    sa.Column('output', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('grounded_count', sa.Integer(), nullable=False),
+    sa.Column('ungrounded_count', sa.Integer(), nullable=False),
+    sa.Column('cost_amount', sa.Numeric(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_ai_extraction')),
+    sa.UniqueConstraint('input_hash', 'prompt_version', name='uq_ai_extraction_input_hash_prompt_version')
+    )
+    op.create_table('applicant',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('email', postgresql.CITEXT(), nullable=False),
+    sa.Column('display_name', sa.Text(), nullable=True),
+    sa.Column('is_active', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_applicant')),
+    sa.UniqueConstraint('email', name=op.f('uq_applicant_email'))
+    )
+    op.create_table('budget_policy',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('provider', sa.Text(), nullable=False),
+    sa.Column('period', sa.Text(), nullable=False),
+    sa.Column('money_cap', sa.Numeric(), nullable=True),
+    sa.Column('request_cap', sa.Integer(), nullable=True),
+    sa.Column('currency', sa.Text(), nullable=False),
+    sa.Column('effective_from', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('effective_to', sa.DateTime(timezone=True), nullable=True),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_budget_policy')),
+    sa.UniqueConstraint('provider', 'period', 'effective_from', name='uq_budget_policy_provider_period_effective_from')
+    )
+    op.create_table('employer',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('name', sa.Text(), nullable=False),
+    sa.Column('cleaned_name', sa.Text(), nullable=False),
+    sa.Column('official_domain', sa.Text(), nullable=False),
+    sa.Column('sector', sa.Text(), server_default=sa.text("'tech'"), nullable=False),
+    sa.Column('careers_system', sa.Text(), nullable=False),
+    sa.Column('revisit_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_employer')),
+    sa.UniqueConstraint('official_domain', name=op.f('uq_employer_official_domain'))
+    )
+    op.create_index('ix_employer_cleaned_name', 'employer', ['cleaned_name'], unique=False)
+    op.create_table('search_template',
+    sa.Column('id', sa.Text(), nullable=False),
+    sa.Column('search_type', sa.Text(), nullable=False),
+    sa.Column('provider', sa.Text(), nullable=False),
+    sa.Column('pattern', sa.Text(), nullable=False),
+    sa.Column('status', sa.Text(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("status IN ('unproven', 'active', 'retired')", name=op.f('ck_search_template_status')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_search_template'))
+    )
+    op.create_table('spend_ledger',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('provider', sa.Text(), nullable=False),
+    sa.Column('kind', sa.Text(), nullable=False),
+    sa.Column('related_run_id', sa.Uuid(), nullable=True),
+    sa.Column('related_item_id', sa.Uuid(), nullable=True),
+    sa.Column('estimated_cost', sa.Numeric(), nullable=False),
+    sa.Column('actual_cost', sa.Numeric(), nullable=True),
+    sa.Column('units', sa.Numeric(), nullable=False),
+    sa.Column('unit_label', sa.Text(), nullable=False),
+    sa.Column('occurred_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint("kind IN ('search', 'ai_extraction', 'ai_summary')", name=op.f('ck_spend_ledger_kind')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_spend_ledger'))
+    )
+    op.create_index('ix_spend_ledger_provider_occurred_at', 'spend_ledger', ['provider', 'occurred_at'], unique=False)
+    op.create_table('applicant_preference',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('applicant_id', sa.Uuid(), nullable=False),
+    sa.Column('target_roles', postgresql.ARRAY(sa.Text()), nullable=False),
+    sa.Column('locations', postgresql.ARRAY(sa.Text()), nullable=False),
+    sa.Column('sector', sa.Text(), server_default=sa.text("'tech'"), nullable=False),
+    sa.Column('salary_amount', sa.Numeric(), nullable=True),
+    sa.Column('salary_currency', sa.Text(), nullable=True),
+    sa.Column('salary_period', sa.Text(), nullable=True),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint('cardinality(locations) >= 1', name=op.f('ck_applicant_preference_locations_nonempty')),
+    sa.CheckConstraint('cardinality(target_roles) >= 1', name=op.f('ck_applicant_preference_target_roles_nonempty')),
+    sa.ForeignKeyConstraint(['applicant_id'], ['applicant.id'], name=op.f('fk_applicant_preference_applicant_id_applicant')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_applicant_preference')),
+    sa.UniqueConstraint('applicant_id', name=op.f('uq_applicant_preference_applicant_id'))
+    )
+    op.create_table('candidate',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('company_name', sa.Text(), nullable=False),
+    sa.Column('cleaned_name', sa.Text(), nullable=False),
+    sa.Column('domain_candidates', postgresql.ARRAY(sa.Text()), server_default=sa.text("'{}'::text[]"), nullable=False),
+    sa.Column('primary_domain', sa.Text(), nullable=True),
+    sa.Column('board_system', sa.Text(), nullable=True),
+    sa.Column('board_instance', sa.Text(), nullable=True),
+    sa.Column('board_id', sa.Text(), nullable=True),
+    sa.Column('state', sa.Text(), nullable=False),
+    sa.Column('attempt_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
+    sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('claimed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('last_error', sa.Text(), nullable=True),
+    sa.Column('extracted_by', sa.Text(), nullable=False),
+    sa.Column('ai_extraction_id', sa.Uuid(), nullable=True),
+    sa.Column('merged_into_candidate_id', sa.Uuid(), nullable=True),
+    sa.Column('employer_id', sa.Uuid(), nullable=True),
+    sa.Column('revisit_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("extracted_by IN ('code', 'ai')", name=op.f('ck_candidate_extracted_by')),
+    sa.CheckConstraint("state IN ('new', 'duplicate', 'queued', 'verifying', 'retry_wait', 'needs_review', 'verified', 'registered', 'unsupported', 'rejected')", name=op.f('ck_candidate_state')),
+    sa.ForeignKeyConstraint(['ai_extraction_id'], ['ai_extraction.id'], name=op.f('fk_candidate_ai_extraction_id_ai_extraction')),
+    sa.ForeignKeyConstraint(['employer_id'], ['employer.id'], name=op.f('fk_candidate_employer_id_employer')),
+    sa.ForeignKeyConstraint(['merged_into_candidate_id'], ['candidate.id'], name=op.f('fk_candidate_merged_into_candidate_id_candidate')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_candidate'))
+    )
+    op.create_index('ix_candidate_claim', 'candidate', ['state', 'next_attempt_at'], unique=False, postgresql_where=sa.text("state IN ('queued', 'retry_wait')"))
+    op.create_index('ix_candidate_cleaned_name', 'candidate', ['cleaned_name'], unique=False)
+    op.create_index('uq_candidate_live_board', 'candidate', ['board_system', 'board_instance', 'board_id'], unique=True, postgresql_where=sa.text("board_system IS NOT NULL AND board_instance IS NOT NULL AND board_id IS NOT NULL AND state NOT IN ('duplicate', 'rejected')"))
+    op.create_index('uq_candidate_live_primary_domain', 'candidate', ['primary_domain'], unique=True, postgresql_where=sa.text("primary_domain IS NOT NULL AND state NOT IN ('duplicate', 'rejected')"))
+    op.create_table('employer_board',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('employer_id', sa.Uuid(), nullable=False),
+    sa.Column('system', sa.Text(), nullable=False),
+    sa.Column('instance', sa.Text(), nullable=False),
+    sa.Column('board_id', sa.Text(), nullable=False),
+    sa.Column('evidence_level', sa.Text(), nullable=False),
+    sa.Column('status', sa.Text(), nullable=False),
+    sa.Column('verified_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('last_checked_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('next_reverify_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('consecutive_failures', sa.Integer(), server_default=sa.text('0'), nullable=False),
+    sa.Column('last_job_count', sa.Integer(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("evidence_level IN ('strong', 'medium', 'weak')", name=op.f('ck_employer_board_evidence_level')),
+    sa.CheckConstraint("status IN ('verified', 'needs_reverify', 'retired')", name=op.f('ck_employer_board_status')),
+    sa.ForeignKeyConstraint(['employer_id'], ['employer.id'], name=op.f('fk_employer_board_employer_id_employer')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_employer_board')),
+    sa.UniqueConstraint('system', 'instance', 'board_id', name='uq_employer_board_system_instance_board_id')
+    )
+    op.create_index('ix_employer_board_reverify', 'employer_board', ['status', 'next_reverify_at'], unique=False)
+    op.create_table('job',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('employer_id', sa.Uuid(), nullable=True),
+    sa.Column('title', sa.Text(), nullable=False),
+    sa.Column('company_name', sa.Text(), nullable=False),
+    sa.Column('location_city', sa.Text(), nullable=True),
+    sa.Column('location_country', sa.Text(), nullable=True),
+    sa.Column('remote_type', sa.Text(), nullable=True),
+    sa.Column('salary_min', sa.Numeric(), nullable=True),
+    sa.Column('salary_max', sa.Numeric(), nullable=True),
+    sa.Column('salary_currency', sa.Text(), nullable=True),
+    sa.Column('salary_period', sa.Text(), nullable=True),
+    sa.Column('salary_known', sa.Boolean(), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('apply_url', sa.Text(), nullable=False),
+    sa.Column('sector', sa.Text(), nullable=False),
+    sa.Column('freshness', sa.Text(), nullable=False),
+    sa.Column('field_provenance', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('closure_evidence', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column('quality_results', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column('first_seen_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('last_seen_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("freshness IN ('open', 'closed', 'unknown')", name=op.f('ck_job_freshness')),
+    sa.ForeignKeyConstraint(['employer_id'], ['employer.id'], name=op.f('fk_job_employer_id_employer')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_job'))
+    )
+    op.create_index('ix_job_freshness', 'job', ['freshness'], unique=False)
+    op.create_table('search_run',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('template_id', sa.Text(), nullable=False),
+    sa.Column('applicant_id', sa.Uuid(), nullable=False),
+    sa.Column('query', sa.Text(), nullable=False),
+    sa.Column('provider', sa.Text(), nullable=False),
+    sa.Column('status', sa.Text(), nullable=False),
+    sa.Column('attempt_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
+    sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('claimed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('result_count', sa.Integer(), nullable=True),
+    sa.Column('cost_amount', sa.Numeric(), nullable=True),
+    sa.Column('last_error', sa.Text(), nullable=True),
+    sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("status IN ('planned', 'running', 'succeeded', 'failed', 'inconclusive')", name=op.f('ck_search_run_status')),
+    sa.ForeignKeyConstraint(['applicant_id'], ['applicant.id'], name=op.f('fk_search_run_applicant_id_applicant')),
+    sa.ForeignKeyConstraint(['template_id'], ['search_template.id'], name=op.f('fk_search_run_template_id_search_template')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_search_run'))
+    )
+    op.create_index('ix_search_run_claim', 'search_run', ['status', 'next_attempt_at'], unique=False, postgresql_where=sa.text("status IN ('planned', 'failed')"))
+    op.create_table('template_stats',
+    sa.Column('template_id', sa.Text(), nullable=False),
+    sa.Column('run_count', sa.Integer(), nullable=False),
+    sa.Column('total_cost', sa.Numeric(), nullable=False),
+    sa.Column('new_candidates', sa.Integer(), nullable=False),
+    sa.Column('new_verified_boards', sa.Integer(), nullable=False),
+    sa.Column('relevant_jobs', sa.Integer(), nullable=False),
+    sa.Column('freshness_share', sa.Numeric(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint('freshness_share >= 0 AND freshness_share <= 1', name=op.f('ck_template_stats_freshness_share_range')),
+    sa.ForeignKeyConstraint(['template_id'], ['search_template.id'], name=op.f('fk_template_stats_template_id_search_template')),
+    sa.PrimaryKeyConstraint('template_id', name=op.f('pk_template_stats'))
+    )
+    op.create_table('applicant_job_match',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('applicant_id', sa.Uuid(), nullable=False),
+    sa.Column('job_id', sa.Uuid(), nullable=False),
+    sa.Column('score', sa.Numeric(), nullable=False),
+    sa.Column('reasons', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('role_match', sa.Boolean(), nullable=False),
+    sa.Column('location_fit', sa.Boolean(), nullable=False),
+    sa.Column('salary_status', sa.Text(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("salary_status IN ('meets', 'below', 'unknown')", name=op.f('ck_applicant_job_match_salary_status')),
+    sa.ForeignKeyConstraint(['applicant_id'], ['applicant.id'], name=op.f('fk_applicant_job_match_applicant_id_applicant')),
+    sa.ForeignKeyConstraint(['job_id'], ['job.id'], name=op.f('fk_applicant_job_match_job_id_job')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_applicant_job_match')),
+    sa.UniqueConstraint('applicant_id', 'job_id', name='uq_applicant_job_match_applicant_id_job_id')
+    )
+    op.create_table('audit_sample',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('candidate_id', sa.Uuid(), nullable=True),
+    sa.Column('employer_id', sa.Uuid(), nullable=True),
+    sa.Column('system_result', sa.Text(), nullable=False),
+    sa.Column('auditor_result', sa.Text(), nullable=True),
+    sa.Column('is_correct', sa.Boolean(), nullable=True),
+    sa.Column('is_useful', sa.Boolean(), nullable=True),
+    sa.Column('notes', sa.Text(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['candidate_id'], ['candidate.id'], name=op.f('fk_audit_sample_candidate_id_candidate')),
+    sa.ForeignKeyConstraint(['employer_id'], ['employer.id'], name=op.f('fk_audit_sample_employer_id_employer')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_audit_sample'))
+    )
+    op.create_table('fetch_run',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('source', sa.Text(), nullable=False),
+    sa.Column('employer_board_id', sa.Uuid(), nullable=True),
+    sa.Column('search_run_id', sa.Uuid(), nullable=True),
+    sa.Column('outcome', sa.Text(), nullable=False),
+    sa.Column('http_status', sa.Integer(), nullable=True),
+    sa.Column('jobs_returned', sa.Integer(), nullable=False),
+    sa.Column('request_count', sa.Integer(), nullable=False),
+    sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('finished_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint("outcome IN ('complete', 'partial', 'failed', 'not_found', 'empty')", name=op.f('ck_fetch_run_outcome')),
+    sa.ForeignKeyConstraint(['employer_board_id'], ['employer_board.id'], name=op.f('fk_fetch_run_employer_board_id_employer_board')),
+    sa.ForeignKeyConstraint(['search_run_id'], ['search_run.id'], name=op.f('fk_fetch_run_search_run_id_search_run')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_fetch_run'))
+    )
+    op.create_table('review_item',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('candidate_id', sa.Uuid(), nullable=False),
+    sa.Column('reason', sa.Text(), nullable=False),
+    sa.Column('priority', sa.Integer(), nullable=False),
+    sa.Column('decision', sa.Text(), nullable=True),
+    sa.Column('reviewer', sa.Text(), nullable=True),
+    sa.Column('decided_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('notes', sa.Text(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("decision IS NULL OR decision IN ('verified', 'rejected', 'unsupported')", name=op.f('ck_review_item_decision')),
+    sa.ForeignKeyConstraint(['candidate_id'], ['candidate.id'], name=op.f('fk_review_item_candidate_id_candidate')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_review_item'))
+    )
+    op.create_index('uq_review_item_one_open', 'review_item', ['candidate_id'], unique=True, postgresql_where=sa.text('decided_at IS NULL'))
+    op.create_table('search_result',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('search_run_id', sa.Uuid(), nullable=False),
+    sa.Column('rank', sa.Integer(), nullable=False),
+    sa.Column('url', sa.Text(), nullable=False),
+    sa.Column('title', sa.Text(), nullable=False),
+    sa.Column('snippet', sa.Text(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['search_run_id'], ['search_run.id'], name=op.f('fk_search_result_search_run_id_search_run'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_search_result')),
+    sa.UniqueConstraint('search_run_id', 'rank', name='uq_search_result_search_run_id_rank')
+    )
+    op.create_index('ix_search_result_url', 'search_result', ['url'], unique=False)
+    op.create_table('verification_check',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('candidate_id', sa.Uuid(), nullable=True),
+    sa.Column('employer_board_id', sa.Uuid(), nullable=True),
+    sa.Column('check_type', sa.Text(), nullable=False),
+    sa.Column('outcome', sa.Text(), nullable=False),
+    sa.Column('evidence_url', sa.Text(), nullable=True),
+    sa.Column('evidence_snippet', sa.Text(), nullable=True),
+    sa.Column('http_status', sa.Integer(), nullable=True),
+    sa.Column('checked_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint("outcome IN ('pass', 'fail', 'inconclusive', 'error')", name=op.f('ck_verification_check_outcome')),
+    sa.CheckConstraint('candidate_id IS NOT NULL OR employer_board_id IS NOT NULL', name=op.f('ck_verification_check_has_subject')),
+    sa.ForeignKeyConstraint(['candidate_id'], ['candidate.id'], name=op.f('fk_verification_check_candidate_id_candidate')),
+    sa.ForeignKeyConstraint(['employer_board_id'], ['employer_board.id'], name=op.f('fk_verification_check_employer_board_id_employer_board')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_verification_check'))
+    )
+    op.create_table('candidate_evidence',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('candidate_id', sa.Uuid(), nullable=False),
+    sa.Column('search_result_id', sa.Uuid(), nullable=True),
+    sa.Column('quoted_text', sa.Text(), nullable=False),
+    sa.Column('source_url', sa.Text(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint('char_length(quoted_text) <= 200', name=op.f('ck_candidate_evidence_quoted_text_len')),
+    sa.ForeignKeyConstraint(['candidate_id'], ['candidate.id'], name=op.f('fk_candidate_evidence_candidate_id_candidate')),
+    sa.ForeignKeyConstraint(['search_result_id'], ['search_result.id'], name=op.f('fk_candidate_evidence_search_result_id_search_result')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_candidate_evidence'))
+    )
+    op.create_index('ix_candidate_evidence_candidate_id', 'candidate_evidence', ['candidate_id'], unique=False)
+    op.create_table('raw_payload',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('fetch_run_id', sa.Uuid(), nullable=False),
+    sa.Column('source', sa.Text(), nullable=False),
+    sa.Column('source_job_id', sa.Text(), nullable=True),
+    sa.Column('payload', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('payload_hash', sa.Text(), nullable=False),
+    sa.Column('fetched_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['fetch_run_id'], ['fetch_run.id'], name=op.f('fk_raw_payload_fetch_run_id_fetch_run')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_raw_payload'))
+    )
+    op.create_index('ix_raw_payload_source_job_fetched', 'raw_payload', ['source', 'source_job_id', sa.literal_column('fetched_at DESC')], unique=False)
+    op.create_table('job_posting',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('source', sa.Text(), nullable=False),
+    sa.Column('source_job_id', sa.Text(), nullable=False),
+    sa.Column('employer_id', sa.Uuid(), nullable=True),
+    sa.Column('employer_board_id', sa.Uuid(), nullable=True),
+    sa.Column('raw_payload_id', sa.Uuid(), nullable=False),
+    sa.Column('title', sa.Text(), nullable=False),
+    sa.Column('company_name', sa.Text(), nullable=False),
+    sa.Column('employer_type', sa.Text(), nullable=False),
+    sa.Column('location_city', sa.Text(), nullable=True),
+    sa.Column('location_country', sa.Text(), nullable=True),
+    sa.Column('remote_type', sa.Text(), nullable=True),
+    sa.Column('salary_min', sa.Numeric(), nullable=True),
+    sa.Column('salary_max', sa.Numeric(), nullable=True),
+    sa.Column('salary_currency', sa.Text(), nullable=True),
+    sa.Column('salary_period', sa.Text(), nullable=True),
+    sa.Column('salary_known', sa.Boolean(), nullable=False),
+    sa.Column('hours', sa.Text(), nullable=True),
+    sa.Column('contract_type', sa.Text(), nullable=True),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('apply_url', sa.Text(), nullable=False),
+    sa.Column('posted_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('closes_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('first_seen_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('last_seen_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('last_seen_complete_fetch_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("employer_type IN ('direct', 'agency')", name=op.f('ck_job_posting_employer_type')),
+    sa.ForeignKeyConstraint(['employer_board_id'], ['employer_board.id'], name=op.f('fk_job_posting_employer_board_id_employer_board')),
+    sa.ForeignKeyConstraint(['employer_id'], ['employer.id'], name=op.f('fk_job_posting_employer_id_employer')),
+    sa.ForeignKeyConstraint(['raw_payload_id'], ['raw_payload.id'], name=op.f('fk_job_posting_raw_payload_id_raw_payload')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_job_posting')),
+    sa.UniqueConstraint('source', 'source_job_id', name='uq_job_posting_source_source_job_id')
+    )
+    op.create_index('ix_job_posting_employer_board_id', 'job_posting', ['employer_board_id'], unique=False)
+    op.create_table('job_link',
+    sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
+    sa.Column('job_posting_id', sa.Uuid(), nullable=False),
+    sa.Column('job_id', sa.Uuid(), nullable=False),
+    sa.Column('method', sa.Text(), nullable=False),
+    sa.Column('confidence', sa.Numeric(), nullable=False),
+    sa.Column('reason', sa.Text(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("method IN ('exact_job_id', 'strong_match', 'reviewer')", name=op.f('ck_job_link_method')),
+    sa.ForeignKeyConstraint(['job_id'], ['job.id'], name=op.f('fk_job_link_job_id_job')),
+    sa.ForeignKeyConstraint(['job_posting_id'], ['job_posting.id'], name=op.f('fk_job_link_job_posting_id_job_posting')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_job_link')),
+    sa.UniqueConstraint('job_posting_id', name=op.f('uq_job_link_job_posting_id'))
+    )
+
+
+def downgrade() -> None:
+    op.drop_table('job_link')
+    op.drop_index('ix_job_posting_employer_board_id', table_name='job_posting')
+    op.drop_table('job_posting')
+    op.drop_index('ix_raw_payload_source_job_fetched', table_name='raw_payload')
+    op.drop_table('raw_payload')
+    op.drop_index('ix_candidate_evidence_candidate_id', table_name='candidate_evidence')
+    op.drop_table('candidate_evidence')
+    op.drop_table('verification_check')
+    op.drop_index('ix_search_result_url', table_name='search_result')
+    op.drop_table('search_result')
+    op.drop_index('uq_review_item_one_open', table_name='review_item', postgresql_where=sa.text('decided_at IS NULL'))
+    op.drop_table('review_item')
+    op.drop_table('fetch_run')
+    op.drop_table('audit_sample')
+    op.drop_table('applicant_job_match')
+    op.drop_table('template_stats')
+    op.drop_index('ix_search_run_claim', table_name='search_run', postgresql_where=sa.text("status IN ('planned', 'failed')"))
+    op.drop_table('search_run')
+    op.drop_index('ix_job_freshness', table_name='job')
+    op.drop_table('job')
+    op.drop_index('ix_employer_board_reverify', table_name='employer_board')
+    op.drop_table('employer_board')
+    op.drop_index('uq_candidate_live_primary_domain', table_name='candidate', postgresql_where=sa.text("primary_domain IS NOT NULL AND state NOT IN ('duplicate', 'rejected')"))
+    op.drop_index('uq_candidate_live_board', table_name='candidate', postgresql_where=sa.text("board_system IS NOT NULL AND board_instance IS NOT NULL AND board_id IS NOT NULL AND state NOT IN ('duplicate', 'rejected')"))
+    op.drop_index('ix_candidate_cleaned_name', table_name='candidate')
+    op.drop_index('ix_candidate_claim', table_name='candidate', postgresql_where=sa.text("state IN ('queued', 'retry_wait')"))
+    op.drop_table('candidate')
+    op.drop_table('applicant_preference')
+    op.drop_index('ix_spend_ledger_provider_occurred_at', table_name='spend_ledger')
+    op.drop_table('spend_ledger')
+    op.drop_table('search_template')
+    op.drop_index('ix_employer_cleaned_name', table_name='employer')
+    op.drop_table('employer')
+    op.drop_table('budget_policy')
+    op.drop_table('applicant')
+    op.drop_table('ai_extraction')
+    op.execute("DROP EXTENSION IF EXISTS citext")

@@ -77,4 +77,4 @@ uv run pytest
 ## Notes
 
 - Monthly budget is unset until B1; paid calls stay blocked (stubs in `.env.example`).
-- Domain entities (section 15) start in Step 1 — this revision only establishes the migration chain.
+- Milestone 1 tables land in revision `0002_milestone1_schema` (`app/models.py`). Unique-key proofs are in `tests/test_unique_keys.py`.
