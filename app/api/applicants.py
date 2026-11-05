@@ -7,6 +7,7 @@ import secrets
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Callable
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -113,7 +114,7 @@ def _form(
   </label>
   <p style="margin-top:1rem"><button type="submit">{html.escape(submit_label)}</button></p>
 </form>
-<p><a href="/admin/applicants?admin_key={html.escape(admin_key)}">Back to list</a></p>
+<p><a href="/admin/applicants?admin_key={quote(admin_key, safe='')}">Back to list</a></p>
 """
 
 
@@ -197,7 +198,7 @@ def _save_form(
         return _page(title, _form(**form_kwargs, error=str(exc)))
 
     return RedirectResponse(
-        url=f"/admin/applicants?admin_key={admin_key}",
+        url=f"/admin/applicants?admin_key={quote(admin_key, safe='')}",
         status_code=303,
     )
 
@@ -217,19 +218,21 @@ def applicants_index(
             if pref.salary_amount is not None
             else "(none)"
         )
-        edit = f"/admin/applicants/{applicant.id}/edit?admin_key={html.escape(admin_key)}"
+        key_q = quote(admin_key, safe="")
+        edit = f"/admin/applicants/{applicant.id}/edit?admin_key={key_q}"
         items.append(
             "<tr>"
             f"<td>{html.escape(applicant.email)}</td>"
             f"<td>{html.escape(roles)}</td>"
             f"<td>{html.escape(locs)}</td>"
             f"<td>{html.escape(salary)}</td>"
-            f'<td><a href="{edit}">Edit</a></td>'
+            f'<td><a href="{html.escape(edit)}">Edit</a></td>'
             "</tr>"
         )
+    key_q = quote(admin_key, safe="")
     body = f"""
 <h1>Applicants</h1>
-<p><a href="/admin/applicants/new?admin_key={html.escape(admin_key)}">Create applicant</a></p>
+<p><a href="/admin/applicants/new?admin_key={key_q}">Create applicant</a></p>
 <table>
   <thead><tr><th>Email</th><th>Roles</th><th>Locations</th><th>Salary</th><th></th></tr></thead>
   <tbody>
