@@ -6,7 +6,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from urllib.parse import urlparse
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
@@ -21,13 +23,24 @@ from app.models import (
     TemplateStats,
 )
 from app.search.mojeek import search_mojeek
-from app.search.queries import GREENHOUSE_SITE, LEVER_SITES
 from app.search.reed import search_reed
-from app.search.types import ProviderFailure, ProviderSuccess, RunTerminal
+from app.search.templates import get_template_spec
+from app.search.types import (
+    ProviderFailure,
+    ProviderInconclusive,
+    ProviderSuccess,
+    RunTerminal,
+    SearchHit,
+)
 
-# D12: search API retries after 1, 5, 30 minutes (attempts 1..3).
+# D12: retries after 1, 5, 30 minutes → up to 4 attempts (initial + 3 retries).
 _RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30))
-_MAX_ATTEMPTS = 3
+_BUDGET_BACKOFF = {
+    "monthly": timedelta(hours=1),
+    "daily": timedelta(hours=1),
+    "per_run": timedelta(minutes=15),
+    "per_applicant": timedelta(hours=1),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +58,18 @@ class SearchBudgetWait:
     cap: str
 
 
+def _is_due(run: SearchRun, *, now: datetime) -> bool:
+    if run.status == SearchRunStatus.planned:
+        return run.next_attempt_at is None or run.next_attempt_at <= now
+    if run.status == SearchRunStatus.failed:
+        if run.next_attempt_at is None:
+            return False
+        if int(run.attempt_count or 0) > len(_RETRY_DELAYS):
+            return False
+        return run.next_attempt_at <= now
+    return False
+
+
 async def run_search(
     session: Session,
     gateway: FetchGateway,
@@ -52,26 +77,33 @@ async def run_search(
     *,
     settings: Settings | None = None,
     clock: Callable[[], datetime] | None = None,
+    location: str | None = None,
     site: str | None = None,
+    persist: Callable[[], None] | None = None,
 ) -> RunOutcome | SearchBudgetWait:
-    """Claim ``planned``/retryable ``failed`` → ``running``, call provider, settle terminal state.
+    """Run a due ``planned``/retryable ``failed`` search through budget + fetch.
 
-    Cost is written on the run and into ``template_stats`` as soon as the call settles (T9).
-    Verification / job outcomes land in later stages when known.
+    Production workers should pass ``persist=session.commit`` so the spend hold
+    survives a crash across the outside call (budget gate contract). Tests leave
+    the default ``flush`` so the outer pytest transaction can roll back.
     """
     cfg = settings or get_settings()
     now_fn = clock or (lambda: datetime.now(UTC))
     now = now_fn()
+    persist_fn = persist or session.flush
 
-    if run.status not in {SearchRunStatus.planned, SearchRunStatus.failed}:
-        raise ValueError(f"search_run {run.id} not claimable (status={run.status})")
+    locked = session.scalars(
+        select(SearchRun).where(SearchRun.id == run.id).with_for_update(skip_locked=True)
+    ).first()
+    if locked is None:
+        raise ValueError(f"search_run {run.id} could not be locked")
+    run = locked
 
-    run.status = SearchRunStatus.running
-    run.claimed_at = now
-    run.started_at = now
-    run.attempt_count = int(run.attempt_count or 0) + 1
-    run.last_error = None
-    session.flush()
+    if not _is_due(run, now=now):
+        raise ValueError(
+            f"search_run {run.id} not due (status={run.status}, "
+            f"attempt_count={run.attempt_count}, next_attempt_at={run.next_attempt_at})"
+        )
 
     provider = run.provider.lower()
     units = Decimal("1")
@@ -94,18 +126,31 @@ async def run_search(
             )
         )
     except BudgetWait as exc:
-        _revert_to_planned(run, now=now)
+        run.status = SearchRunStatus.planned
+        run.claimed_at = None
+        run.started_at = None
+        run.last_error = f"budget_wait:{exc.cap}"
+        run.next_attempt_at = now + _BUDGET_BACKOFF.get(exc.cap, timedelta(hours=1))
         session.flush()
         return SearchBudgetWait(cap=exc.cap)
 
-    session.flush()
-    resolved_site = site if site is not None else _site_for_template(run.template_id)
+    run.status = SearchRunStatus.running
+    run.claimed_at = now
+    run.started_at = now
+    run.attempt_count = int(run.attempt_count or 0) + 1
+    run.last_error = None
+    persist_fn()
 
+    spec = get_template_spec(run.template_id)
+    resolved_site = site if site is not None else spec.site
+
+    keywords, reed_location = _split_reed_query(run.query, provider=provider)
     try:
         outcome = await _call_provider(
             gateway,
             provider=provider,
-            query=run.query,
+            query=keywords if provider == "reed" else run.query,
+            location=location if location is not None else reed_location,
             site=resolved_site,
             settings=cfg,
         )
@@ -120,19 +165,6 @@ async def run_search(
         )
 
     if isinstance(outcome, ProviderFailure):
-        if outcome.reason == "no_usable_urls":
-            # Provider answered, but nothing extractable — bill the request (T9).
-            gate.settle(reservation, actual_cost=cost, units=units, consumed=True)
-            return _finish_terminal(
-                session,
-                run,
-                status=SearchRunStatus.inconclusive,
-                now=now_fn(),
-                result_count=0,
-                cost_amount=cost,
-                error=outcome.reason,
-                schedule_retry=False,
-            )
         gate.settle(reservation, actual_cost=Decimal("0"), consumed=False)
         return _finish_failed(
             session,
@@ -143,9 +175,34 @@ async def run_search(
             schedule_retry=outcome.retryable,
         )
 
+    if isinstance(outcome, ProviderInconclusive):
+        gate.settle(reservation, actual_cost=cost, units=units, consumed=True)
+        return _finish_terminal(
+            session,
+            run,
+            status=SearchRunStatus.inconclusive,
+            now=now_fn(),
+            result_count=0,
+            cost_amount=cost,
+            error=outcome.reason,
+            schedule_retry=False,
+        )
+
     assert isinstance(outcome, ProviderSuccess)
     gate.settle(reservation, actual_cost=cost, units=units, consumed=True)
-    for rank, hit in enumerate(outcome.hits, start=1):
+    hits = _filter_hits(outcome.hits, site=resolved_site)
+    if outcome.hits and not hits:
+        return _finish_terminal(
+            session,
+            run,
+            status=SearchRunStatus.inconclusive,
+            now=now_fn(),
+            result_count=0,
+            cost_amount=cost,
+            error="no_usable_urls",
+            schedule_retry=False,
+        )
+    for rank, hit in enumerate(hits, start=1):
         session.add(
             SearchResult(
                 search_run_id=run.id,
@@ -160,19 +217,31 @@ async def run_search(
         run,
         status=SearchRunStatus.succeeded,
         now=now_fn(),
-        result_count=len(outcome.hits),
+        result_count=len(hits),
         cost_amount=cost,
         error=None,
         schedule_retry=False,
     )
 
 
-def _site_for_template(template_id: str) -> str | None:
-    if template_id == "BD1":
-        return GREENHOUSE_SITE
-    if template_id == "BD2":
-        return LEVER_SITES[0]
-    return None
+def _split_reed_query(query: str, *, provider: str) -> tuple[str, str | None]:
+    """CF1 schedule stores ``role\\tlocation`` so locationName survives without a schema column."""
+    if provider != "reed" or "\t" not in query:
+        return query, None
+    role, loc = query.split("\t", 1)
+    return role.strip(), loc.strip() or None
+
+
+def _filter_hits(hits: tuple[SearchHit, ...], *, site: str | None) -> list[SearchHit]:
+    if not site:
+        return list(hits)
+    needle = site.lower().rstrip(".")
+    kept: list[SearchHit] = []
+    for hit in hits:
+        host = (urlparse(hit.url).hostname or "").lower().rstrip(".")
+        if host == needle or host.endswith("." + needle):
+            kept.append(hit)
+    return kept
 
 
 async def _call_provider(
@@ -180,14 +249,18 @@ async def _call_provider(
     *,
     provider: str,
     query: str,
+    location: str | None,
     site: str | None,
     settings: Settings,
 ):
     if provider == "reed":
-        return await search_reed(gateway, keywords=query, settings=settings)
-    if provider == "adzuna":
-        return ProviderFailure(reason="adzuna_disabled", retryable=False)
-    if provider == "mojeek" or provider == settings.web_search_provider:
+        return await search_reed(
+            gateway,
+            keywords=query,
+            location_name=location,
+            settings=settings,
+        )
+    if provider == "mojeek":
         return await search_mojeek(
             gateway,
             query=query,
@@ -195,14 +268,6 @@ async def _call_provider(
             settings=settings,
         )
     return ProviderFailure(reason=f"unknown_provider:{provider}", retryable=False)
-
-
-def _revert_to_planned(run: SearchRun, *, now: datetime) -> None:
-    run.status = SearchRunStatus.planned
-    run.claimed_at = None
-    run.started_at = None
-    run.attempt_count = max(0, int(run.attempt_count or 0) - 1)
-    run.next_attempt_at = now
 
 
 def _finish_failed(
@@ -215,8 +280,8 @@ def _finish_failed(
     schedule_retry: bool = True,
 ) -> RunOutcome:
     attempts = int(run.attempt_count or 0)
-    if schedule_retry and attempts < _MAX_ATTEMPTS:
-        delay = _RETRY_DELAYS[min(attempts, len(_RETRY_DELAYS)) - 1]
+    if schedule_retry and attempts <= len(_RETRY_DELAYS):
+        delay = _RETRY_DELAYS[attempts - 1]
         return _finish_terminal(
             session,
             run,
@@ -259,7 +324,17 @@ def _finish_terminal(
     run.cost_amount = cost_amount
     run.last_error = error
     run.next_attempt_at = retry_at if schedule_retry else None
-    _bump_template_stats(session, run, cost_amount=cost_amount, now=now)
+    count_toward_unproven = status in {
+        SearchRunStatus.succeeded,
+        SearchRunStatus.inconclusive,
+    } or not schedule_retry
+    _bump_template_stats(
+        session,
+        run,
+        cost_amount=cost_amount,
+        now=now,
+        count_run=count_toward_unproven,
+    )
     session.flush()
     terminal: RunTerminal
     if status == SearchRunStatus.succeeded:
@@ -282,8 +357,9 @@ def _bump_template_stats(
     *,
     cost_amount: Decimal,
     now: datetime,
+    count_run: bool,
 ) -> None:
-    """Record run_count and cost from the first run (T9). Yields fill in later stages."""
+    """Record cost always (T9); bump run_count only on settled outcomes (not mid-retry)."""
     stats = session.get(TemplateStats, run.template_id)
     if stats is None:
         stats = TemplateStats(
@@ -297,6 +373,7 @@ def _bump_template_stats(
             updated_at=now,
         )
         session.add(stats)
-    stats.run_count = int(stats.run_count or 0) + 1
+    if count_run:
+        stats.run_count = int(stats.run_count or 0) + 1
     stats.total_cost = Decimal(stats.total_cost or 0) + cost_amount
     stats.updated_at = now

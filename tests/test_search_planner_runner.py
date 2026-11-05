@@ -7,6 +7,7 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from math import ceil
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -26,12 +27,10 @@ from app.models import (
     SpendLedger,
     TemplateStats,
 )
-from app.search.planner import plan_cold_start
+from app.search.planner import EXPLORATION_SHARE, PlannedSearch, SearchPlan, plan_cold_start
 from app.search.runner import SearchBudgetWait, run_search
 from app.search.schedule import create_runs_from_plan
 from app.search.templates import (
-    DISABLED_UNTIL_V9,
-    ENABLED_TEMPLATE_IDS,
     TEMPLATE_SPECS,
     UNPROVEN_RUN_THRESHOLD,
     ensure_search_templates,
@@ -40,7 +39,7 @@ from app.search.templates import (
 
 
 def _settings(**overrides: object) -> Settings:
-    base = dict(
+    base: dict[str, object] = dict(
         web_search_provider="mojeek",
         mojeek_api_key="test-mojeek-key",
         reed_api_key="test-reed-key",
@@ -85,12 +84,8 @@ def _applicant(session: Session) -> Applicant:
     return row
 
 
-def _gateway(handler: httpx.MockTransport | object) -> FetchGateway:
-    transport = (
-        handler
-        if isinstance(handler, httpx.MockTransport)
-        else httpx.MockTransport(handler)  # type: ignore[arg-type]
-    )
+def _gateway(handler: object) -> FetchGateway:
+    transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
     return FetchGateway(
         user_agent="JobApplicationAgent-Test/0.1",
         allowlist=frozenset({"api.mojeek.com", "www.reed.co.uk", "api.reed.co.uk"}),
@@ -103,13 +98,12 @@ def test_templates_seeded_cf1b_disabled(session: Session) -> None:
     cfg = _settings()
     rows = ensure_search_templates(session, cfg)
     assert {r.id for r in rows} == {s.id for s in TEMPLATE_SPECS}
-    assert "CF1b" in DISABLED_UNTIL_V9
     assert not is_template_enabled("CF1b", cfg)
-    assert ENABLED_TEMPLATE_IDS == frozenset({"CF1", "CF2", "CF3", "BD1", "BD2"})
     by_id = {r.id: r for r in rows}
     assert by_id["CF1"].provider == "reed"
     assert by_id["CF2"].provider == "mojeek"
     assert by_id["BD1"].provider == "mojeek"
+    assert by_id["BD1"].pattern.startswith("Greenhouse")
 
 
 def test_t5_empty_stats_equal_share_broad_queries(session: Session) -> None:
@@ -129,13 +123,12 @@ def test_t5_empty_stats_equal_share_broad_queries(session: Session) -> None:
     assert sum(item.request_slots for item in plan.items) == 5
     assert all(item.request_slots == 1 for item in plan.items)
     by_id = {item.template_id: item for item in plan.items}
-    assert "Software Engineer" in by_id["CF1"].query
-    assert "London" in by_id["CF1"].query
+    assert by_id["CF1"].query == "Software Engineer"
+    assert by_id["CF1"].location == "London"
     assert "hiring" in by_id["CF2"].query.lower() or "careers" in by_id["CF2"].query.lower()
     assert "Acme Ltd" in by_id["CF3"].query
     assert by_id["BD1"].site == "boards.greenhouse.io"
     assert by_id["BD2"].site == "jobs.lever.co"
-    # Broad: role + city present; salary never appears.
     blob = " ".join(item.query for item in plan.items)
     assert "salary" not in blob.lower()
     assert "70000" not in blob
@@ -144,7 +137,6 @@ def test_t5_empty_stats_equal_share_broad_queries(session: Session) -> None:
 def test_t6_unproven_below_five_runs_not_zero(session: Session) -> None:
     cfg = _settings()
     ensure_search_templates(session, cfg)
-    # CF2 has 3 runs (unproven); CF1 has 10 (proven). Unproven must still get slots.
     session.add(
         TemplateStats(
             template_id="CF1",
@@ -179,7 +171,7 @@ def test_t6_unproven_below_five_runs_not_zero(session: Session) -> None:
     )
     by_id = {item.template_id: item.request_slots for item in plan.items}
     assert by_id.get("CF2", 0) >= 1
-    assert plan.exploration_slots >= 1
+    assert plan.exploration_slots == max(1, ceil(10 * EXPLORATION_SHARE))
     assert sum(by_id.values()) == 10
 
 
@@ -256,12 +248,14 @@ async def test_search_run_planned_to_running_to_succeeded_reed(session: Session)
     cfg = _settings()
     now = datetime(2026, 11, 5, 13, 0, tzinfo=UTC)
     ensure_search_templates(session, cfg)
-    _policy(session, Decimal("0"), now)  # Reed is free of money caps
+    _policy(session, Decimal("0"), now)
     applicant = _applicant(session)
+    seen_qs: list[dict[str, list[str]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "www.reed.co.uk"
         assert request.headers.get("authorization", "").startswith("Basic ")
+        seen_qs.append(parse_qs(urlparse(str(request.url)).query))
         return httpx.Response(
             200,
             json={
@@ -277,14 +271,13 @@ async def test_search_run_planned_to_running_to_succeeded_reed(session: Session)
         )
 
     gateway = _gateway(handler)
-    from app.search.planner import PlannedSearch, SearchPlan
-
     plan = SearchPlan(
         items=(
             PlannedSearch(
                 template_id="CF1",
                 provider="reed",
-                query="Software Engineer London",
+                query="Software Engineer",
+                location="London",
                 site=None,
                 request_slots=1,
             ),
@@ -294,6 +287,7 @@ async def test_search_run_planned_to_running_to_succeeded_reed(session: Session)
     )
     runs = create_runs_from_plan(session, plan, applicant_id=applicant.id, now=now)
     assert runs[0].status == SearchRunStatus.planned
+    assert "\t" in runs[0].query
 
     outcome = await run_search(session, gateway, runs[0], settings=cfg, clock=lambda: now)
     await gateway.aclose()
@@ -302,6 +296,8 @@ async def test_search_run_planned_to_running_to_succeeded_reed(session: Session)
     assert runs[0].status == SearchRunStatus.succeeded
     assert runs[0].cost_amount == Decimal("0")
     assert runs[0].attempt_count == 1
+    assert seen_qs[0]["keywords"] == ["Software Engineer"]
+    assert seen_qs[0]["locationName"] == ["London"]
 
 
 @pytest.mark.asyncio
@@ -335,6 +331,38 @@ async def test_search_run_failed_schedules_retry(session: Session) -> None:
     assert run.next_attempt_at == now + timedelta(minutes=1)
     assert run.attempt_count == 1
     assert run.cost_amount == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_search_run_third_retry_uses_thirty_minutes(session: Session) -> None:
+    cfg = _settings()
+    now = datetime(2026, 11, 5, 14, 30, tzinfo=UTC)
+    ensure_search_templates(session, cfg)
+    _policy(session, Decimal("50"), now)
+    applicant = _applicant(session)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "busy"})
+
+    gateway = _gateway(handler)
+    run = SearchRun(
+        template_id="CF2",
+        applicant_id=applicant.id,
+        query="role city",
+        provider="mojeek",
+        status=SearchRunStatus.failed,
+        attempt_count=2,
+        next_attempt_at=now,
+    )
+    session.add(run)
+    session.flush()
+
+    outcome = await run_search(session, gateway, run, settings=cfg, clock=lambda: now)
+    await gateway.aclose()
+    assert outcome.status == "failed"
+    session.refresh(run)
+    assert run.attempt_count == 3
+    assert run.next_attempt_at == now + timedelta(minutes=30)
 
 
 @pytest.mark.asyncio
@@ -381,7 +409,7 @@ async def test_search_run_inconclusive_no_usable_urls(session: Session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_budget_wait_leaves_run_planned(session: Session) -> None:
+async def test_budget_wait_leaves_run_planned_with_backoff(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 16, 0, tzinfo=UTC)
     ensure_search_templates(session, cfg)
@@ -412,4 +440,35 @@ async def test_budget_wait_leaves_run_planned(session: Session) -> None:
     session.refresh(run)
     assert run.status == SearchRunStatus.planned
     assert run.attempt_count == 0
+    assert run.next_attempt_at == now + timedelta(hours=1)
+    assert run.last_error == "budget_wait:monthly"
     assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_web_provider_fails_closed(session: Session) -> None:
+    cfg = _settings(web_search_provider="brave")
+    now = datetime(2026, 11, 5, 17, 0, tzinfo=UTC)
+    ensure_search_templates(session, cfg)
+    _policy(session, Decimal("50"), now)
+    applicant = _applicant(session)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not call provider")
+
+    gateway = _gateway(handler)
+    run = SearchRun(
+        template_id="CF2",
+        applicant_id=applicant.id,
+        query="x",
+        provider="brave",
+        status=SearchRunStatus.planned,
+        next_attempt_at=now,
+    )
+    session.add(run)
+    session.flush()
+
+    outcome = await run_search(session, gateway, run, settings=cfg, clock=lambda: now)
+    await gateway.aclose()
+    assert outcome.status == "failed"
+    assert outcome.error == "unknown_provider:brave"

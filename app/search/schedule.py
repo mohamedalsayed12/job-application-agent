@@ -18,21 +18,30 @@ def create_runs_from_plan(
     applicant_id: uuid.UUID,
     now: datetime | None = None,
 ) -> list[SearchRun]:
-    """One ``planned`` search_run per request slot in the plan."""
+    """One ``planned`` search_run per plan item with slots > 0.
+
+    ``request_slots`` is planner weight for budget share; duplicate identical
+    queries are not fired (page offsets land in a later step).
+    """
     stamp = now or datetime.now(UTC)
     runs: list[SearchRun] = []
     for item in plan.items:
-        for _ in range(item.request_slots):
-            run = SearchRun(
-                template_id=item.template_id,
-                applicant_id=applicant_id,
-                query=item.query,
-                provider=item.provider,
-                status=SearchRunStatus.planned,
-                attempt_count=0,
-                next_attempt_at=stamp,
-            )
-            session.add(run)
-            runs.append(run)
+        if item.request_slots <= 0:
+            continue
+        # Encode Reed location in query when present so the runner can split it.
+        query = item.query
+        if item.location and item.provider == "reed":
+            query = f"{item.query}\t{item.location}"
+        run = SearchRun(
+            template_id=item.template_id,
+            applicant_id=applicant_id,
+            query=query,
+            provider=item.provider,
+            status=SearchRunStatus.planned,
+            attempt_count=0,
+            next_attempt_at=stamp,
+        )
+        session.add(run)
+        runs.append(run)
     session.flush()
     return runs

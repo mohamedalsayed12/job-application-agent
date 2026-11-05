@@ -8,7 +8,13 @@ from urllib.parse import urlencode
 
 from app.core.config import Settings, get_settings
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
-from app.search.types import ProviderFailure, ProviderOutcome, ProviderSuccess, SearchHit
+from app.search.types import (
+    ProviderFailure,
+    ProviderInconclusive,
+    ProviderOutcome,
+    ProviderSuccess,
+    SearchHit,
+)
 
 REED_SEARCH_URL = "https://www.reed.co.uk/api/1.0/search"
 
@@ -40,11 +46,13 @@ def _parse_hits(payload: object) -> ProviderOutcome:
         description = item.get("jobDescription")
         title_text = title.strip() if isinstance(title, str) else ""
         if isinstance(employer, str) and employer.strip():
-            title_text = f"{title_text} — {employer.strip()}" if title_text else employer.strip()
+            title_text = (
+                f"{title_text} — {employer.strip()}" if title_text else employer.strip()
+            )
         snippet = description.strip() if isinstance(description, str) else ""
         hits.append(SearchHit(url=job_url.strip(), title=title_text, snippet=snippet))
     if saw_row and not hits:
-        return ProviderFailure(reason="no_usable_urls", retryable=False)
+        return ProviderInconclusive()
     return ProviderSuccess(hits=tuple(hits))
 
 

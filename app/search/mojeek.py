@@ -7,12 +7,18 @@ from urllib.parse import urlencode
 
 from app.core.config import Settings, get_settings
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
-from app.search.types import ProviderFailure, ProviderOutcome, ProviderSuccess, SearchHit
+from app.search.types import (
+    ProviderFailure,
+    ProviderInconclusive,
+    ProviderOutcome,
+    ProviderSuccess,
+    SearchHit,
+)
 
 MOJEEK_SEARCH_URL = "https://api.mojeek.com/search"
 
 
-def _parse_hits(payload: object) -> tuple[SearchHit, ...] | ProviderFailure:
+def _parse_hits(payload: object) -> ProviderOutcome:
     if not isinstance(payload, dict):
         return ProviderFailure(reason="mojeek_invalid_json", retryable=False)
     response = payload.get("response")
@@ -45,7 +51,7 @@ def _parse_hits(payload: object) -> tuple[SearchHit, ...] | ProviderFailure:
             )
         )
     if saw_row and not hits:
-        return ProviderFailure(reason="no_usable_urls", retryable=False)
+        return ProviderInconclusive()
     return ProviderSuccess(hits=tuple(hits))
 
 
@@ -88,7 +94,7 @@ def _from_http(response: FetchResponse) -> ProviderOutcome:
     if response.status_code != 200:
         return ProviderFailure(
             reason=f"mojeek_http_{response.status_code}",
-            retryable=response.status_code >= 500,
+            retryable=False,
         )
     try:
         payload = json.loads(response.body.decode("utf-8"))

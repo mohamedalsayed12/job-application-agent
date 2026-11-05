@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from math import ceil
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,6 +28,7 @@ class PlannedSearch:
     template_id: str
     provider: str
     query: str
+    location: str | None
     site: str | None
     request_slots: int
 
@@ -59,9 +61,7 @@ def _distribute_equal(template_ids: Sequence[str], total_slots: int) -> dict[str
         return {tid: 0 for tid in template_ids}
     n = len(template_ids)
     base, rem = divmod(total_slots, n)
-    return {
-        tid: base + (1 if i < rem else 0) for i, tid in enumerate(template_ids)
-    }
+    return {tid: base + (1 if i < rem else 0) for i, tid in enumerate(template_ids)}
 
 
 def plan_cold_start(
@@ -88,7 +88,7 @@ def plan_cold_start(
     for spec in TEMPLATE_SPECS:
         if not is_template_enabled(spec.id, cfg):
             continue
-        if spec.id == "CF3" and not employer_names:
+        if spec.needs_employer and not employer_names:
             continue
         runnable.append(spec.id)
 
@@ -96,7 +96,6 @@ def plan_cold_start(
     for tid in runnable:
         counts.setdefault(tid, 0)
 
-    # Cold start / all unproven: equal share (T5). Mixed: exploitation vs exploration (D11).
     proven = [tid for tid in runnable if not _is_unproven(counts[tid])]
     unproven = [tid for tid in runnable if _is_unproven(counts[tid])]
 
@@ -104,11 +103,13 @@ def plan_cold_start(
         slots_by_id = _distribute_equal(runnable, total_slots)
         exploration_slots = total_slots
     else:
-        exploration_slots = max(1, round(total_slots * EXPLORATION_SHARE)) if unproven else 0
+        exploration_slots = (
+            min(total_slots, max(1, ceil(total_slots * EXPLORATION_SHARE)))
+            if unproven
+            else 0
+        )
         exploitation_slots = total_slots - exploration_slots
-        # Unproven never get zero from "no score" — they take the exploration share (T6).
         explore_alloc = _distribute_equal(unproven, exploration_slots) if unproven else {}
-        # Proven share equally until Step 11 adds value-per-£ ranking (T7).
         exploit_alloc = _distribute_equal(proven, exploitation_slots) if proven else {}
         slots_by_id = {tid: 0 for tid in runnable}
         for tid, n in explore_alloc.items():
@@ -121,13 +122,14 @@ def plan_cold_start(
         slots = slots_by_id.get(spec.id, 0)
         if slots <= 0:
             continue
-        employer = employer_names[0] if spec.id == "CF3" and employer_names else None
+        employer = employer_names[0] if spec.needs_employer and employer_names else None
         built: BuiltQuery = build_query(spec.id, pref, employer_name=employer)
         items.append(
             PlannedSearch(
                 template_id=spec.id,
                 provider=resolve_provider(spec, cfg),
                 query=built.text,
+                location=built.location,
                 site=built.site,
                 request_slots=slots,
             )

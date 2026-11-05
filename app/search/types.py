@@ -24,6 +24,13 @@ class ProviderFailure:
     retryable: bool = True
 
 
-ProviderOutcome = ProviderSuccess | ProviderFailure
+@dataclass(frozen=True, slots=True)
+class ProviderInconclusive:
+    """HTTP OK and parseable, but no usable URL/title evidence."""
+
+    reason: str = "no_usable_urls"
+
+
+ProviderOutcome = ProviderSuccess | ProviderFailure | ProviderInconclusive
 
 RunTerminal = Literal["succeeded", "failed", "inconclusive"]
