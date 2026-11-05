@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from app.boards.result import BoardFetchResult, BoardInstance, BoardSystem
 from app.fetch.gateway import FetchRefusal, FetchResponse
 from app.models import FetchOutcome
+
+JobsParser = Callable[[Any], tuple[tuple[dict[str, Any], ...], str | None]]
 
 
 def label_gateway_outcome(
@@ -15,9 +18,8 @@ def label_gateway_outcome(
     *,
     system: BoardSystem,
     instance: BoardInstance,
-    parse_jobs,
+    parse_jobs: JobsParser,
 ) -> BoardFetchResult:
-    """Map one gateway result to a labeled board fetch. `parse_jobs` is provider-specific."""
     if isinstance(outcome, FetchRefusal):
         return BoardFetchResult(
             label=FetchOutcome.failed,
@@ -40,18 +42,6 @@ def label_gateway_outcome(
             url=url,
             raw_body=body,
             detail=_error_detail(body),
-            attempts=(instance,),
-        )
-
-    if status == 429 or status >= 500:
-        return BoardFetchResult(
-            label=FetchOutcome.failed,
-            system=system,
-            instance=instance,
-            status_code=status,
-            url=url,
-            raw_body=body,
-            detail=f"http_{status}",
             attempts=(instance,),
         )
 

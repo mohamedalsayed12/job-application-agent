@@ -1,7 +1,8 @@
-"""Lever Postings API client (global, then EU on not_found — T18)."""
+"""Lever Postings API client (global, then EU on not_found; T18)."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from urllib.parse import quote
 
 from app.boards.ids import normalize_board_id
@@ -42,29 +43,7 @@ async def fetch_lever_board(
         instance="lever_eu",
         url_template=LEVER_EU_URL,
     )
-    attempts: tuple[BoardInstance, ...] = ("lever_global", "lever_eu")
-    if eu_result.label == FetchOutcome.not_found:
-        return BoardFetchResult(
-            label=FetchOutcome.not_found,
-            system="lever",
-            instance="lever_eu",
-            status_code=eu_result.status_code,
-            url=eu_result.url,
-            raw_body=eu_result.raw_body,
-            detail=eu_result.detail,
-            attempts=attempts,
-        )
-    return BoardFetchResult(
-        label=eu_result.label,
-        system="lever",
-        instance=eu_result.instance,
-        jobs=eu_result.jobs,
-        status_code=eu_result.status_code,
-        url=eu_result.url,
-        raw_body=eu_result.raw_body,
-        detail=eu_result.detail,
-        attempts=attempts,
-    )
+    return replace(eu_result, attempts=("lever_global", "lever_eu"))
 
 
 async def _fetch_instance(
