@@ -1,4 +1,8 @@
-"""Budget gate: reserve before a paid call, settle after; BudgetWait never fails work."""
+"""Budget gate: reserve before a paid call, settle after; BudgetWait never fails work.
+
+Contract: commit the session that called ``reserve`` before the paid outside call
+so the ledger hold survives a crash. ``settle`` may run in a later transaction.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +11,10 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.models import BudgetPolicy, SearchRun, SpendKind, SpendLedger
@@ -21,6 +25,8 @@ CapName = Literal["monthly", "daily", "per_run", "per_applicant"]
 PER_RUN_SEARCH_CAP = 10
 PER_APPLICANT_DAY_SEARCH_CAP = 20
 WARN_RATIO = Decimal("0.8")
+# Fixed advisory key for all budget reserves (one worker / one gate).
+_BUDGET_ADVISORY_LOCK_KEY = 0x4A414142  # "JAAB"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +55,17 @@ class BudgetWait(Exception):
         super().__init__(f"budget wait: {cap}")
 
 
+def _require_non_negative_cost(value: Decimal, *, label: str) -> Decimal:
+    if not isinstance(value, Decimal):
+        raise ValueError(f"{label} must be a Decimal")
+    try:
+        if value.is_nan() or value.is_infinite() or value < 0:
+            raise ValueError(f"{label} must be a finite Decimal >= 0")
+    except InvalidOperation as exc:
+        raise ValueError(f"{label} must be a finite Decimal >= 0") from exc
+    return value
+
+
 def _month_start(now: datetime) -> datetime:
     return datetime(now.year, now.month, 1, tzinfo=UTC)
 
@@ -68,15 +85,17 @@ def _load_monthly_money_cap(session: Session, provider: str, now: datetime) -> D
     ).all()
     if not policies:
         return None
-    policies = sorted(
-        policies,
-        key=lambda row: (row.provider == provider, row.effective_from),
-        reverse=True,
-    )
-    money_cap = policies[0].money_cap
-    if money_cap is None:
+    specific = [
+        row
+        for row in policies
+        if row.provider == provider and row.money_cap is not None
+    ]
+    wildcard = [row for row in policies if row.provider == "*" and row.money_cap is not None]
+    chosen = specific or wildcard
+    if not chosen:
         return None
-    return Decimal(money_cap)
+    chosen.sort(key=lambda row: row.effective_from, reverse=True)
+    return Decimal(chosen[0].money_cap)
 
 
 def _sum_spend(session: Session, *, since: datetime) -> Decimal:
@@ -91,40 +110,34 @@ def _sum_spend(session: Session, *, since: datetime) -> Decimal:
     return Decimal(total or 0)
 
 
-def _count_search_for_run(session: Session, run_id: uuid.UUID) -> int:
-    return int(
-        session.scalar(
-            select(func.count())
-            .select_from(SpendLedger)
-            .where(
-                SpendLedger.related_run_id == run_id,
-                SpendLedger.kind == SpendKind.search,
-            )
+def _sum_search_units_for_run(session: Session, run_id: uuid.UUID) -> Decimal:
+    total = session.scalar(
+        select(func.coalesce(func.sum(SpendLedger.units), 0)).where(
+            SpendLedger.related_run_id == run_id,
+            SpendLedger.kind == SpendKind.search,
         )
-        or 0
     )
+    return Decimal(total or 0)
 
 
-def _count_search_for_applicant_day(
+def _sum_search_units_for_applicant_day(
     session: Session,
     applicant_id: uuid.UUID,
     day_start: datetime,
-) -> int:
+) -> Decimal:
     day_end = day_start + timedelta(days=1)
-    return int(
-        session.scalar(
-            select(func.count())
-            .select_from(SpendLedger)
-            .join(SearchRun, SearchRun.id == SpendLedger.related_run_id)
-            .where(
-                SearchRun.applicant_id == applicant_id,
-                SpendLedger.kind == SpendKind.search,
-                SpendLedger.occurred_at >= day_start,
-                SpendLedger.occurred_at < day_end,
-            )
+    total = session.scalar(
+        select(func.coalesce(func.sum(SpendLedger.units), 0))
+        .select_from(SpendLedger)
+        .join(SearchRun, SearchRun.id == SpendLedger.related_run_id)
+        .where(
+            SearchRun.applicant_id == applicant_id,
+            SpendLedger.kind == SpendKind.search,
+            SpendLedger.occurred_at >= day_start,
+            SpendLedger.occurred_at < day_end,
         )
-        or 0
     )
+    return Decimal(total or 0)
 
 
 def _warn_if_needed(spent: Decimal, cap: Decimal, label: CapName) -> None:
@@ -145,9 +158,19 @@ class BudgetGate:
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def reserve(self, estimate: SpendEstimate) -> SpendReservation:
+        # Serialize cap checks until this transaction commits.
+        self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": _BUDGET_ADVISORY_LOCK_KEY},
+        )
+        cost = _require_non_negative_cost(estimate.estimated_cost, label="estimated_cost")
+        units = _require_non_negative_cost(estimate.units, label="units")
+        if estimate.kind == SpendKind.search and units < 1:
+            raise ValueError("search units must be >= 1")
+
         now = self._clock()
         money_cap = _load_monthly_money_cap(self._session, estimate.provider, now)
-        requires_money = estimate.estimated_cost > 0
+        requires_money = cost > 0
 
         if requires_money and (money_cap is None or money_cap <= 0):
             raise BudgetWait("monthly")
@@ -158,42 +181,47 @@ class BudgetGate:
             monthly_spent = _sum_spend(self._session, since=month_start)
             daily_spent = _sum_spend(self._session, since=day_start)
             daily_cap = (money_cap / Decimal(30)).quantize(Decimal("0.0001"))
-            if monthly_spent + estimate.estimated_cost > money_cap:
+            if monthly_spent + cost > money_cap:
                 raise BudgetWait("monthly")
-            if daily_spent + estimate.estimated_cost > daily_cap:
+            if daily_spent + cost > daily_cap:
                 raise BudgetWait("daily")
-            _warn_if_needed(monthly_spent + estimate.estimated_cost, money_cap, "monthly")
-            _warn_if_needed(daily_spent + estimate.estimated_cost, daily_cap, "daily")
+            _warn_if_needed(monthly_spent + cost, money_cap, "monthly")
+            _warn_if_needed(daily_spent + cost, daily_cap, "daily")
 
+        related_run_id = estimate.related_run_id
         if estimate.kind == SpendKind.search:
+            if related_run_id is None:
+                raise ValueError("search spend requires related_run_id")
+            run = self._session.get(SearchRun, related_run_id)
+            if run is None:
+                raise BudgetWait("per_run")
+            applicant_id = run.applicant_id
             day_start = _day_start(now)
-            if estimate.related_run_id is not None:
-                run_count = _count_search_for_run(self._session, estimate.related_run_id)
-                if run_count + 1 > PER_RUN_SEARCH_CAP:
-                    raise BudgetWait("per_run")
-            if estimate.applicant_id is not None:
-                applicant_count = _count_search_for_applicant_day(
-                    self._session,
-                    estimate.applicant_id,
-                    day_start,
-                )
-                if applicant_count + 1 > PER_APPLICANT_DAY_SEARCH_CAP:
-                    raise BudgetWait("per_applicant")
+            run_units = _sum_search_units_for_run(self._session, related_run_id)
+            if run_units + units > PER_RUN_SEARCH_CAP:
+                raise BudgetWait("per_run")
+            applicant_units = _sum_search_units_for_applicant_day(
+                self._session,
+                applicant_id,
+                day_start,
+            )
+            if applicant_units + units > PER_APPLICANT_DAY_SEARCH_CAP:
+                raise BudgetWait("per_applicant")
 
         row = SpendLedger(
             provider=estimate.provider,
             kind=estimate.kind,
-            related_run_id=estimate.related_run_id,
+            related_run_id=related_run_id,
             related_item_id=estimate.related_item_id,
-            estimated_cost=estimate.estimated_cost,
+            estimated_cost=cost,
             actual_cost=None,
-            units=estimate.units,
+            units=units,
             unit_label=estimate.unit_label,
             occurred_at=now,
         )
         self._session.add(row)
         self._session.flush()
-        return SpendReservation(ledger_id=row.id, estimated_cost=estimate.estimated_cost)
+        return SpendReservation(ledger_id=row.id, estimated_cost=cost)
 
     def settle(
         self,
@@ -209,9 +237,9 @@ class BudgetGate:
         if not consumed:
             row.actual_cost = Decimal("0")
         elif actual_cost is not None:
-            row.actual_cost = actual_cost
+            row.actual_cost = _require_non_negative_cost(actual_cost, label="actual_cost")
         else:
             row.actual_cost = reservation.estimated_cost
         if units is not None:
-            row.units = units
+            row.units = _require_non_negative_cost(units, label="units")
         self._session.flush()

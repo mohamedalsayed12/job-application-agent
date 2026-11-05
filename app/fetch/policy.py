@@ -18,6 +18,22 @@ PolicyReason = Literal[
 ]
 
 BLOCKED_SUFFIXES = ("linkedin.com", "indeed.com", "glassdoor.com")
+# Reject bare public suffixes until a real PSL check exists (P2 / thermos).
+_PUBLIC_SUFFIX_BLOCKLIST = frozenset(
+    {
+        "com",
+        "org",
+        "net",
+        "io",
+        "co",
+        "uk",
+        "co.uk",
+        "org.uk",
+        "ac.uk",
+        "gov.uk",
+    }
+)
+_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 
 
 def default_resolve(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -45,13 +61,31 @@ def is_allowlisted_host(host: str, allowlist: frozenset[str]) -> bool:
 
 
 def is_official_domain_host(host: str, official_domain: str) -> bool:
-    return host_matches_suffix(host, official_domain)
+    domain = official_domain.lower().rstrip(".")
+    if "." not in domain or domain in _PUBLIC_SUFFIX_BLOCKLIST:
+        return False
+    return host_matches_suffix(host, domain)
+
+
+def _embedded_ipv4(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | None:
+    if isinstance(address, ipaddress.IPv4Address):
+        return address
+    if address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    if address in _NAT64_PREFIX:
+        return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return None
 
 
 def is_disallowed_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    # is_global is False for private, loopback, link-local, CGNAT, ULA, unspecified.
-    # Multicast reports is_global on some builds, so keep it explicit.
-    return address.is_multicast or not address.is_global
+    if address.is_multicast:
+        return True
+    embedded = _embedded_ipv4(address)
+    if embedded is not None:
+        return not embedded.is_global
+    return not address.is_global
 
 
 def check_ssrf(url: str, *, resolve: Resolver = default_resolve) -> PolicyReason | None:
@@ -95,7 +129,7 @@ def check_url(
     if refusal is not None:
         return refusal
     host = urlparse(url).hostname
-    assert host is not None  # check_ssrf already rejected missing hosts
+    assert host is not None
     if kind == "api":
         if not is_allowlisted_host(host, allowlist):
             return "allowlist"

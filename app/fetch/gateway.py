@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Literal
 from urllib.parse import urljoin, urlparse
 
@@ -87,6 +88,7 @@ class FetchGateway:
         self._client = httpx.AsyncClient(
             transport=transport,
             follow_redirects=False,
+            trust_env=False,
             headers={"User-Agent": self._user_agent},
         )
         self._robots = robots or RobotsCache(
@@ -143,14 +145,15 @@ class FetchGateway:
         *,
         host: str,
     ) -> FetchResponse | FetchRefusal | _Redirect:
-        headers = {"User-Agent": self._user_agent, **dict(request.headers)}
+        headers = {**dict(request.headers), "User-Agent": self._user_agent}
+        timeout_s = min(request.timeout_s or DEFAULT_TIMEOUT_S, DEFAULT_TIMEOUT_S)
         try:
             async with self._client.stream(
                 request.method,
                 request.url,
                 headers=headers,
                 content=request.body,
-                timeout=request.timeout_s,
+                timeout=timeout_s,
             ) as response:
                 if response.status_code in {429, 503}:
                     retry_after = _parse_retry_after(response.headers.get("retry-after"))
@@ -162,14 +165,25 @@ class FetchGateway:
                     if not location:
                         return FetchRefusal(reason="redirect_limit")
                     next_url = urljoin(request.url, location)
+                    next_host = urlparse(next_url).hostname
+                    cross_host = (
+                        next_host is not None
+                        and next_host.lower().rstrip(".") != host.lower().rstrip(".")
+                    )
+                    next_headers: Mapping[str, str] = {} if cross_host else request.headers
                     if response.status_code in {307, 308}:
-                        next_request = replace(request, url=next_url)
+                        next_request = replace(
+                            request,
+                            url=next_url,
+                            headers=next_headers,
+                        )
                     else:
                         next_request = replace(
                             request,
                             url=next_url,
                             method="GET",
                             body=None,
+                            headers=next_headers,
                         )
                     return _Redirect(next_request=next_request)
 
@@ -181,14 +195,6 @@ class FetchGateway:
                 )
                 if content_type not in ALLOWED_CONTENT_TYPES:
                     return FetchRefusal(reason="content_type")
-
-                content_length = response.headers.get("content-length")
-                if content_length is not None:
-                    try:
-                        if int(content_length) > MAX_BODY_BYTES:
-                            return FetchRefusal(reason="size")
-                    except ValueError:
-                        pass
 
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -209,27 +215,39 @@ class FetchGateway:
             return FetchRefusal(reason="http_error")
 
     async def _fetch_robots_body(self, robots_url: str) -> str | None:
-        """Fetch robots.txt with SSRF + rate limits, skipping robots recursion."""
-        if check_ssrf(robots_url, resolve=self._resolve) is not None:
-            return None
-        host = urlparse(robots_url).hostname
-        if host is None:
-            return None
-        async with self._rate_limiter.hold(host):
-            try:
-                response = await self._client.get(
-                    robots_url,
-                    headers={"User-Agent": self._user_agent},
-                    timeout=DEFAULT_TIMEOUT_S,
-                )
-            except httpx.HTTPError:
+        """Fetch robots.txt with SSRF + rate limits; only a final 200 body is returned."""
+        url = robots_url
+        for _ in range(MAX_REDIRECTS + 1):
+            if check_ssrf(url, resolve=self._resolve) is not None:
                 return None
-            if response.status_code >= 400:
+            host = urlparse(url).hostname
+            if host is None:
                 return None
-            text = response.text
-            if len(text.encode("utf-8", errors="ignore")) > MAX_BODY_BYTES:
-                return None
-            return text
+            async with self._rate_limiter.hold(host):
+                try:
+                    async with self._client.stream(
+                        "GET",
+                        url,
+                        headers={"User-Agent": self._user_agent},
+                        timeout=DEFAULT_TIMEOUT_S,
+                    ) as response:
+                        if response.status_code in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("location")
+                            if not location:
+                                return None
+                            url = urljoin(url, location)
+                            continue
+                        if response.status_code != 200:
+                            return None
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(body) + len(chunk) > MAX_BODY_BYTES:
+                                return None
+                            body.extend(chunk)
+                        return bytes(body).decode("utf-8", errors="replace")
+                except httpx.HTTPError:
+                    return None
+        return None
 
 
 def _parse_retry_after(value: str | None) -> float | None:
@@ -241,4 +259,12 @@ def _parse_retry_after(value: str | None) -> float | None:
     try:
         return float(value)
     except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
         return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    delta = (when - datetime.now(UTC)).total_seconds()
+    return delta if delta > 0 else None

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservation
@@ -82,34 +83,43 @@ def _policy(session: Session, money_cap: Decimal | None, now: datetime) -> None:
     session.flush()
 
 
-def _estimate(
+def _paid(
     *,
     cost: Decimal,
-    run_id: uuid.UUID | None = None,
-    applicant_id: uuid.UUID | None = None,
     provider: str = "serper",
-    kind: SpendKind = SpendKind.search,
+) -> SpendEstimate:
+    return SpendEstimate(
+        provider=provider,
+        kind=SpendKind.ai_extraction,
+        units=Decimal("1"),
+        unit_label="token",
+        estimated_cost=cost,
+    )
+
+
+def _search(
+    *,
+    cost: Decimal,
+    run_id: uuid.UUID,
+    provider: str = "serper",
     units: Decimal = Decimal("1"),
 ) -> SpendEstimate:
     return SpendEstimate(
         provider=provider,
-        kind=kind,
+        kind=SpendKind.search,
         units=units,
         unit_label="request",
         estimated_cost=cost,
         related_run_id=run_id,
-        applicant_id=applicant_id,
     )
 
 
 def test_t3_cap_zero_blocks_paid_calls(session: Session) -> None:
-    from sqlalchemy import select
-
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("0"), now)
     gate = _gate(session, now)
     with pytest.raises(BudgetWait) as exc:
-        gate.reserve(_estimate(cost=Decimal("1.00")))
+        gate.reserve(_paid(cost=Decimal("1.00")))
     assert exc.value.cap == "monthly"
     assert list(session.scalars(select(SpendLedger))) == []
 
@@ -118,31 +128,28 @@ def test_t3_missing_policy_blocks_paid_calls(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     gate = _gate(session, now)
     with pytest.raises(BudgetWait) as exc:
-        gate.reserve(_estimate(cost=Decimal("1.00")))
+        gate.reserve(_paid(cost=Decimal("1.00")))
     assert exc.value.cap == "monthly"
 
 
 def test_t3_monthly_cap_refuses_and_leaves_no_ledger(session: Session) -> None:
-    from sqlalchemy import select
-
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("10.00"), now)
-    # Prior days in the month already used £9.50; today is empty so daily still allows £0.33+.
     session.add(
         SpendLedger(
             provider="serper",
-            kind=SpendKind.search,
+            kind=SpendKind.ai_extraction,
             estimated_cost=Decimal("9.50"),
             actual_cost=Decimal("9.50"),
             units=Decimal("1"),
-            unit_label="request",
+            unit_label="token",
             occurred_at=datetime(2026, 11, 1, 12, 0, tzinfo=UTC),
         )
     )
     session.flush()
     gate = _gate(session, now)
     with pytest.raises(BudgetWait) as exc:
-        gate.reserve(_estimate(cost=Decimal("1.00")))
+        gate.reserve(_paid(cost=Decimal("1.00")))
     assert exc.value.cap == "monthly"
     rows = list(session.scalars(select(SpendLedger)))
     assert len(rows) == 1
@@ -151,12 +158,11 @@ def test_t3_monthly_cap_refuses_and_leaves_no_ledger(session: Session) -> None:
 
 def test_t3_daily_cap_refuses(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
-    # monthly 30 → daily 1.00
     _policy(session, Decimal("30.00"), now)
     gate = _gate(session, now)
-    gate.reserve(_estimate(cost=Decimal("0.80")))
+    gate.reserve(_paid(cost=Decimal("0.80")))
     with pytest.raises(BudgetWait) as exc:
-        gate.reserve(_estimate(cost=Decimal("0.30")))
+        gate.reserve(_paid(cost=Decimal("0.30")))
     assert exc.value.cap == "daily"
 
 
@@ -166,9 +172,9 @@ def test_t3_per_run_cap_refuses(session: Session) -> None:
     _, run_id = _applicant_and_run(session)
     gate = _gate(session, now)
     for _ in range(10):
-        gate.reserve(_estimate(cost=Decimal("0.01"), run_id=run_id))
+        gate.reserve(_search(cost=Decimal("0.01"), run_id=run_id))
     with pytest.raises(BudgetWait) as exc:
-        gate.reserve(_estimate(cost=Decimal("0.01"), run_id=run_id))
+        gate.reserve(_search(cost=Decimal("0.01"), run_id=run_id))
     assert exc.value.cap == "per_run"
 
 
@@ -178,7 +184,6 @@ def test_t3_per_applicant_cap_refuses(session: Session) -> None:
     applicant_id, _ = _applicant_and_run(session)
     gate = _gate(session, now)
     for i in range(20):
-        # Separate runs so per-run cap is not hit first.
         _seed_template(session)
         run = SearchRun(
             template_id="CF1",
@@ -189,9 +194,7 @@ def test_t3_per_applicant_cap_refuses(session: Session) -> None:
         )
         session.add(run)
         session.flush()
-        gate.reserve(
-            _estimate(cost=Decimal("0.01"), run_id=run.id, applicant_id=applicant_id)
-        )
+        gate.reserve(_search(cost=Decimal("0.01"), run_id=run.id))
     with pytest.raises(BudgetWait) as exc:
         run = SearchRun(
             template_id="CF1",
@@ -202,34 +205,68 @@ def test_t3_per_applicant_cap_refuses(session: Session) -> None:
         )
         session.add(run)
         session.flush()
-        gate.reserve(
-            _estimate(cost=Decimal("0.01"), run_id=run.id, applicant_id=applicant_id)
-        )
+        gate.reserve(_search(cost=Decimal("0.01"), run_id=run.id))
     assert exc.value.cap == "per_applicant"
 
 
-def test_t3_budget_wait_is_not_a_failure_signal(session: Session) -> None:
-    """Callers branch on BudgetWait and keep work queued (T3)."""
+def test_t3_per_applicant_from_run_without_estimate_applicant_id(
+    session: Session,
+) -> None:
+    now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+    _policy(session, Decimal("1000.00"), now)
+    applicant_id, _ = _applicant_and_run(session)
+    gate = _gate(session, now)
+    for i in range(20):
+        run = SearchRun(
+            template_id="CF1",
+            applicant_id=applicant_id,
+            query=f"q{i}",
+            provider="serper",
+            status=SearchRunStatus.planned,
+        )
+        session.add(run)
+        session.flush()
+        gate.reserve(_search(cost=Decimal("0.01"), run_id=run.id))
+    run = SearchRun(
+        template_id="CF1",
+        applicant_id=applicant_id,
+        query="overflow",
+        provider="serper",
+        status=SearchRunStatus.planned,
+    )
+    session.add(run)
+    session.flush()
+    with pytest.raises(BudgetWait) as exc:
+        gate.reserve(_search(cost=Decimal("0.01"), run_id=run.id))
+    assert exc.value.cap == "per_applicant"
+
+
+def test_t3_budget_wait_leaves_search_run_planned(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("0"), now)
+    _, run_id = _applicant_and_run(session)
     gate = _gate(session, now)
-    work_status = "planned"
-    try:
-        gate.reserve(_estimate(cost=Decimal("1.00")))
-        work_status = "running"
-    except BudgetWait:
-        pass
-    assert work_status == "planned"
+    with pytest.raises(BudgetWait):
+        gate.reserve(_search(cost=Decimal("1.00"), run_id=run_id))
+    run = session.get(SearchRun, run_id)
+    assert run is not None
+    assert run.status == SearchRunStatus.planned
+
+
+def test_negative_cost_rejected(session: Session) -> None:
+    now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+    _policy(session, Decimal("30.00"), now)
+    gate = _gate(session, now)
+    with pytest.raises(ValueError):
+        gate.reserve(_paid(cost=Decimal("-0.01")))
+    assert list(session.scalars(select(SpendLedger))) == []
 
 
 def test_reserve_then_settle_records_actual(session: Session) -> None:
-    from sqlalchemy import select
-
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
-    # monthly 30 → daily 1.00
     _policy(session, Decimal("30.00"), now)
     gate = _gate(session, now)
-    reservation = gate.reserve(_estimate(cost=Decimal("0.50")))
+    reservation = gate.reserve(_paid(cost=Decimal("0.50")))
     assert isinstance(reservation, SpendReservation)
     gate.settle(reservation, actual_cost=Decimal("0.40"))
     row = session.scalars(select(SpendLedger)).one()
@@ -240,6 +277,7 @@ def test_reserve_then_settle_records_actual(session: Session) -> None:
 def test_reed_zero_cost_allowed_when_money_cap_zero(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("0"), now)
+    _, run_id = _applicant_and_run(session)
     gate = _gate(session, now)
     cost = estimate_cost(
         provider="reed",
@@ -247,5 +285,5 @@ def test_reed_zero_cost_allowed_when_money_cap_zero(session: Session) -> None:
         units=Decimal("1"),
         settings=_settings(),
     )
-    reservation = gate.reserve(_estimate(cost=cost, provider="reed"))
+    reservation = gate.reserve(_search(cost=cost, run_id=run_id, provider="reed"))
     assert reservation.estimated_cost == Decimal("0")
