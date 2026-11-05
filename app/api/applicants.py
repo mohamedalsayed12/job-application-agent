@@ -6,6 +6,7 @@ import html
 import secrets
 import uuid
 from decimal import Decimal, InvalidOperation
+from typing import Callable
 
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -22,6 +23,7 @@ from app.applicants.service import (
     parse_preference_input,
     update_applicant,
 )
+from app.applicants.types import PreferenceInput
 from app.core.config import get_settings
 from app.core.db import get_db
 
@@ -122,6 +124,84 @@ def _parse_amount(raw: str) -> Decimal | None:
     return Decimal(text)
 
 
+def _preference_from_fields(
+    *,
+    target_roles: str,
+    locations: str,
+    sector: str,
+    salary_amount: str,
+    salary_currency: str,
+    salary_period: str,
+) -> PreferenceInput:
+    amount = _parse_amount(salary_amount)
+    return parse_preference_input(
+        target_roles=_split_lines(target_roles),
+        locations=_split_lines(locations),
+        sector=sector,
+        salary_amount=amount,
+        salary_currency=(salary_currency or None) if amount is not None else None,
+        salary_period=salary_period if amount is not None else None,
+    )
+
+
+def _save_form(
+    *,
+    db: Session,
+    admin_key: str,
+    title: str,
+    action: str,
+    submit_label: str,
+    email: str,
+    display_name: str,
+    target_roles: str,
+    locations: str,
+    sector: str,
+    salary_amount: str,
+    salary_currency: str,
+    salary_period: str,
+    persist: Callable[[Session, PreferenceInput], None],
+) -> HTMLResponse:
+    if not _form_admin_ok(admin_key):
+        return _page("Unauthorized", "<p class='error'>invalid or missing admin key</p>")
+
+    form_kwargs = dict(
+        action=action,
+        admin_key=admin_key,
+        email=email,
+        display_name=display_name,
+        target_roles=target_roles,
+        locations=locations,
+        salary_amount=salary_amount,
+        salary_currency=salary_currency,
+        salary_period=salary_period,
+        submit_label=submit_label,
+    )
+    try:
+        pref = _preference_from_fields(
+            target_roles=target_roles,
+            locations=locations,
+            sector=sector,
+            salary_amount=salary_amount,
+            salary_currency=salary_currency,
+            salary_period=salary_period,
+        )
+        persist(db, pref)
+        db.commit()
+    except InvalidOperation:
+        return _page(title, _form(**form_kwargs, error="salary amount must be a number"))
+    except ApplicantNotFoundError:
+        db.rollback()
+        return _page("Not found", "<p class='error'>applicant not found</p>")
+    except (PreferenceValidationError, ApplicantConflictError) as exc:
+        db.rollback()
+        return _page(title, _form(**form_kwargs, error=str(exc)))
+
+    return RedirectResponse(
+        url=f"/admin/applicants?admin_key={admin_key}",
+        status_code=303,
+    )
+
+
 @router.get("", response_class=HTMLResponse)
 def applicants_index(
     admin_key: str = Depends(require_admin_key),
@@ -181,46 +261,26 @@ def applicants_create(
     admin_key: str = Form(...),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    if not _form_admin_ok(admin_key):
-        return _page("Unauthorized", "<p class='error'>invalid or missing admin key</p>")
+    def persist(session: Session, pref: PreferenceInput) -> None:
+        create_applicant(
+            session, email=email, preference=pref, display_name=display_name or None
+        )
 
-    form_kwargs = dict(
-        action="/admin/applicants/new",
+    return _save_form(
+        db=db,
         admin_key=admin_key,
+        title="New applicant",
+        action="/admin/applicants/new",
+        submit_label="Create",
         email=email,
         display_name=display_name,
         target_roles=target_roles,
         locations=locations,
+        sector=sector,
         salary_amount=salary_amount,
         salary_currency=salary_currency,
         salary_period=salary_period,
-        submit_label="Create",
-    )
-    try:
-        amount = _parse_amount(salary_amount)
-    except InvalidOperation:
-        return _page("New applicant", _form(**form_kwargs, error="salary amount must be a number"))
-
-    try:
-        pref = parse_preference_input(
-            target_roles=_split_lines(target_roles),
-            locations=_split_lines(locations),
-            sector=sector,
-            salary_amount=amount,
-            salary_currency=(salary_currency or None) if amount is not None else None,
-            salary_period=salary_period if amount is not None else None,
-        )
-        create_applicant(
-            db, email=email, preference=pref, display_name=display_name or None
-        )
-        db.commit()
-    except (PreferenceValidationError, ApplicantConflictError) as exc:
-        db.rollback()
-        return _page("New applicant", _form(**form_kwargs, error=str(exc)))
-
-    return RedirectResponse(
-        url=f"/admin/applicants?admin_key={admin_key}",
-        status_code=303,
+        persist=persist,
     )
 
 
@@ -265,51 +325,28 @@ def applicants_update(
     admin_key: str = Form(...),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    if not _form_admin_ok(admin_key):
-        return _page("Unauthorized", "<p class='error'>invalid or missing admin key</p>")
-
-    form_kwargs = dict(
-        action=f"/admin/applicants/{applicant_id}/edit",
-        admin_key=admin_key,
-        email=email,
-        display_name=display_name,
-        target_roles=target_roles,
-        locations=locations,
-        salary_amount=salary_amount,
-        salary_currency=salary_currency,
-        salary_period=salary_period,
-        submit_label="Update",
-    )
-    try:
-        amount = _parse_amount(salary_amount)
-    except InvalidOperation:
-        return _page("Edit applicant", _form(**form_kwargs, error="salary amount must be a number"))
-
-    try:
-        pref = parse_preference_input(
-            target_roles=_split_lines(target_roles),
-            locations=_split_lines(locations),
-            sector=sector,
-            salary_amount=amount,
-            salary_currency=(salary_currency or None) if amount is not None else None,
-            salary_period=salary_period if amount is not None else None,
-        )
+    def persist(session: Session, pref: PreferenceInput) -> None:
         update_applicant(
-            db,
+            session,
             applicant_id,
             preference=pref,
             display_name=display_name,
             email=email,
         )
-        db.commit()
-    except ApplicantNotFoundError:
-        db.rollback()
-        return _page("Not found", "<p class='error'>applicant not found</p>")
-    except (PreferenceValidationError, ApplicantConflictError) as exc:
-        db.rollback()
-        return _page("Edit applicant", _form(**form_kwargs, error=str(exc)))
 
-    return RedirectResponse(
-        url=f"/admin/applicants?admin_key={admin_key}",
-        status_code=303,
+    return _save_form(
+        db=db,
+        admin_key=admin_key,
+        title="Edit applicant",
+        action=f"/admin/applicants/{applicant_id}/edit",
+        submit_label="Update",
+        email=email,
+        display_name=display_name,
+        target_roles=target_roles,
+        locations=locations,
+        sector=sector,
+        salary_amount=salary_amount,
+        salary_currency=salary_currency,
+        salary_period=salary_period,
+        persist=persist,
     )
