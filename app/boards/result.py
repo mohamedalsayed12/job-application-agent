@@ -25,6 +25,10 @@ class BoardFetchResult:
     detail: str | None = None
     attempts: tuple[BoardInstance, ...] = field(default_factory=tuple)
 
+    def is_full_read(self) -> bool:
+        """True when the body is a whole board list (including zero jobs)."""
+        return self.label in (FetchOutcome.complete, FetchOutcome.empty)
+
 
 def invalid_board_id_result(system: BoardSystem) -> BoardFetchResult:
     return BoardFetchResult(

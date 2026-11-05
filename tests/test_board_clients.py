@@ -68,6 +68,7 @@ async def test_greenhouse_complete() -> None:
     result = await fetch_greenhouse_board(gateway, "example")
     await gateway.aclose()
     assert result.label == FetchOutcome.complete
+    assert result.is_full_read()
     assert result.system == "greenhouse"
     assert len(result.jobs) == 2
     assert "updated_at" in result.jobs[0]
@@ -84,6 +85,7 @@ async def test_greenhouse_empty() -> None:
     result = await fetch_greenhouse_board(gateway, "empty-board")
     await gateway.aclose()
     assert result.label == FetchOutcome.empty
+    assert result.is_full_read()
     assert result.jobs == ()
 
 
@@ -141,6 +143,7 @@ async def test_greenhouse_failed_server_error() -> None:
     result = await fetch_greenhouse_board(gateway, "example")
     await gateway.aclose()
     assert result.label == FetchOutcome.failed
+    assert not result.is_full_read()
     assert result.detail == "http_503"
 
 

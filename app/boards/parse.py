@@ -61,7 +61,7 @@ def parse_greenhouse_jobs(payload: Any) -> tuple[tuple[dict[str, Any], ...], str
     meta = payload.get("meta")
     if isinstance(meta, dict) and "total" in meta:
         total = meta["total"]
-        if not isinstance(total, int) or total != len(jobs):
+        if type(total) is not int or total != len(jobs):
             return jobs, "meta_total_mismatch"
     return jobs, None
 
