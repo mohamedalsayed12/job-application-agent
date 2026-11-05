@@ -78,3 +78,4 @@ uv run pytest
 
 - Monthly budget is unset until B1; paid calls stay blocked (stubs in `.env.example`).
 - Milestone 1 tables land in revision `0002_milestone1_schema` (`app/models.py`). Unique-key proofs are in `tests/test_unique_keys.py`.
+- Admin applicants (Milestone 1): set `ADMIN_KEY`, then open `/admin/applicants?admin_key=…` (or send header `X-Admin-Key`). Expected salary is a matching preference only (D3).
