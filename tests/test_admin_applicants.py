@@ -277,7 +277,7 @@ def test_budget_and_fetch_modules_do_not_read_applicant_salary() -> None:
     root = Path(__file__).resolve().parents[1] / "app"
     forbidden_names = {"salary_amount", "salary_currency", "salary_period", "ExpectedSalary"}
     scanned: list[Path] = []
-    for package in ("budget", "fetch"):
+    for package in ("budget", "fetch", "search"):
         for path in (root / package).rglob("*.py"):
             scanned.append(path)
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -286,7 +286,7 @@ def test_budget_and_fetch_modules_do_not_read_applicant_salary() -> None:
                     pytest.fail(f"{path} references {node.id}")
                 if isinstance(node, ast.Attribute) and node.attr in forbidden_names:
                     pytest.fail(f"{path} references attribute {node.attr}")
-    assert scanned, "expected budget/fetch modules to exist"
+    assert scanned, "expected budget/fetch/search modules to exist"
 
     from app.budget.gate import BudgetGate, SpendEstimate
 

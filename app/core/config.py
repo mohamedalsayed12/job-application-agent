@@ -24,11 +24,18 @@ class Settings(BaseSettings):
         "api.greenhouse.io,boards-api.greenhouse.io,"
         "api.lever.co,api.eu.lever.co,"
         "www.reed.co.uk,api.reed.co.uk,"
-        "api.adzuna.com,api.adzuna.co.uk"
+        "api.adzuna.com,api.adzuna.co.uk,"
+        "api.mojeek.com"
     )
 
-    # Conservative placeholders until V3 / B4; operators override via env.
-    search_request_unit_price: Decimal = Decimal("0.005")
+    # D29: web search provider id is a setting (default Mojeek Business).
+    web_search_provider: str = "mojeek"
+    mojeek_api_key: str = ""
+    reed_api_key: str = ""
+    adzuna_enabled: bool = False
+
+    # Mojeek Business £3/1k ⇒ £0.003 per request (V3); operators override via env.
+    search_request_unit_price: Decimal = Decimal("0.003")
     ai_extraction_unit_price: Decimal = Decimal("0.002")
     ai_summary_unit_price: Decimal = Decimal("0.001")
 
