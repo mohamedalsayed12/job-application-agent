@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any, Literal
+from email.utils import parsedate_to_datetime
+from typing import Literal
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.fetch.policy import (
-    DEFAULT_API_ALLOWLIST,
-    Resolver,
-    check_url,
-    default_resolve,
-)
+from app.core.config import get_settings
+from app.fetch.policy import Resolver, check_ssrf, check_url, default_resolve
 from app.fetch.rate_limit import HostRateLimiter
 from app.fetch.robots import RobotsCache
 
@@ -37,7 +34,7 @@ RefusalReason = Literal[
 MAX_REDIRECTS = 3
 MAX_BODY_BYTES = 2 * 1024 * 1024
 DEFAULT_TIMEOUT_S = 10.0
-ALLOWED_CONTENT_PREFIXES = ("text/html", "application/json", "text/json")
+ALLOWED_CONTENT_TYPES = frozenset({"text/html", "application/json", "text/json"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,30 +71,33 @@ class FetchGateway:
     def __init__(
         self,
         *,
-        user_agent: str,
+        user_agent: str | None = None,
         allowlist: frozenset[str] | None = None,
         resolve: Resolver = default_resolve,
         transport: httpx.AsyncBaseTransport | None = None,
         rate_limiter: HostRateLimiter | None = None,
         robots: RobotsCache | None = None,
-        client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._user_agent = user_agent
-        self._allowlist = allowlist if allowlist is not None else DEFAULT_API_ALLOWLIST
+        settings = get_settings()
+        self._user_agent = user_agent or settings.fetch_user_agent
+        self._allowlist = (
+            allowlist if allowlist is not None else settings.api_allowlist_hosts()
+        )
         self._resolve = resolve
         self._rate_limiter = rate_limiter or HostRateLimiter()
-        self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(
+        self._client = httpx.AsyncClient(
             transport=transport,
             follow_redirects=False,
-            headers={"User-Agent": user_agent},
+            trust_env=False,
+            headers={"User-Agent": self._user_agent},
         )
-        self._robots = robots or RobotsCache(user_agent=user_agent)
-        self._robots.set_fetcher(self._fetch_robots_body)
+        self._robots = robots or RobotsCache(
+            user_agent=self._user_agent,
+            fetch_body=self._fetch_robots_body,
+        )
 
     async def aclose(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
+        await self._client.aclose()
 
     async def fetch(self, request: FetchRequest) -> FetchResponse | FetchRefusal:
         return await self._fetch_hop(request, redirects_left=MAX_REDIRECTS)
@@ -116,7 +116,7 @@ class FetchGateway:
             resolve=self._resolve,
         )
         if refusal is not None:
-            return FetchRefusal(reason=_as_reason(refusal.reason))
+            return FetchRefusal(reason=refusal)
 
         if request.kind == "page":
             allowed = await self._robots.allowed(request.url)
@@ -127,11 +127,8 @@ class FetchGateway:
         if host is None:
             return FetchRefusal(reason="scheme")
 
-        await self._rate_limiter.acquire(host)
-        try:
+        async with self._rate_limiter.hold(host):
             outcome = await self._send_once(request, host=host)
-        finally:
-            self._rate_limiter.release(host)
 
         if isinstance(outcome, _Redirect):
             if redirects_left <= 0:
@@ -148,92 +145,109 @@ class FetchGateway:
         *,
         host: str,
     ) -> FetchResponse | FetchRefusal | _Redirect:
-        headers = {"User-Agent": self._user_agent, **dict(request.headers)}
+        headers = {**dict(request.headers), "User-Agent": self._user_agent}
+        timeout_s = min(request.timeout_s or DEFAULT_TIMEOUT_S, DEFAULT_TIMEOUT_S)
         try:
-            response = await self._client.request(
+            async with self._client.stream(
                 request.method,
                 request.url,
                 headers=headers,
                 content=request.body,
-                timeout=request.timeout_s,
-            )
+                timeout=timeout_s,
+            ) as response:
+                if response.status_code in {429, 503}:
+                    retry_after = _parse_retry_after(response.headers.get("retry-after"))
+                    if retry_after is not None:
+                        self._rate_limiter.defer(host, min(retry_after, 60.0))
+
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location")
+                    if not location:
+                        return FetchRefusal(reason="redirect_limit")
+                    next_url = urljoin(request.url, location)
+                    next_host = urlparse(next_url).hostname
+                    cross_host = (
+                        next_host is not None
+                        and next_host.lower().rstrip(".") != host.lower().rstrip(".")
+                    )
+                    next_headers: Mapping[str, str] = {} if cross_host else request.headers
+                    if response.status_code in {307, 308}:
+                        next_request = replace(
+                            request,
+                            url=next_url,
+                            headers=next_headers,
+                        )
+                    else:
+                        next_request = replace(
+                            request,
+                            url=next_url,
+                            method="GET",
+                            body=None,
+                            headers=next_headers,
+                        )
+                    return _Redirect(next_request=next_request)
+
+                content_type = (
+                    response.headers.get("content-type", "")
+                    .split(";")[0]
+                    .strip()
+                    .lower()
+                )
+                if content_type not in ALLOWED_CONTENT_TYPES:
+                    return FetchRefusal(reason="content_type")
+
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > MAX_BODY_BYTES:
+                        return FetchRefusal(reason="size")
+                    body.extend(chunk)
+
+                return FetchResponse(
+                    url=str(response.url),
+                    status_code=response.status_code,
+                    content_type=content_type,
+                    body=bytes(body),
+                    fetched_at=datetime.now(UTC),
+                )
         except httpx.TimeoutException:
             return FetchRefusal(reason="timeout")
         except httpx.HTTPError:
             return FetchRefusal(reason="http_error")
 
-        if response.status_code in {429, 503}:
-            retry_after = _parse_retry_after(response.headers.get("retry-after"))
-            if retry_after is not None:
-                self._rate_limiter.defer(host, min(retry_after, 60.0))
-
-        if response.status_code in {301, 302, 303, 307, 308}:
-            location = response.headers.get("location")
-            if not location:
-                return FetchRefusal(reason="redirect_limit")
-            next_url = urljoin(request.url, location)
-            next_request = FetchRequest(
-                url=next_url,
-                method=request.method if response.status_code in {307, 308} else "GET",
-                kind=request.kind,
-                headers=request.headers,
-                timeout_s=request.timeout_s,
-                official_domain=request.official_domain,
-            )
-            return _Redirect(next_request=next_request)
-
-        content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
-        if not _allowed_content_type(content_type):
-            return FetchRefusal(reason="content_type")
-
-        body = response.content
-        if len(body) > MAX_BODY_BYTES:
-            return FetchRefusal(reason="size")
-
-        return FetchResponse(
-            url=str(response.url),
-            status_code=response.status_code,
-            content_type=content_type,
-            body=body[:MAX_BODY_BYTES],
-            fetched_at=datetime.now(UTC),
-        )
-
     async def _fetch_robots_body(self, robots_url: str) -> str | None:
-        """Fetch robots.txt with SSRF + rate limits, skipping robots recursion."""
-        refusal = check_url(
-            robots_url,
-            kind="page",
-            official_domain=urlparse(robots_url).hostname,
-            allowlist=self._allowlist,
-            resolve=self._resolve,
-        )
-        if refusal is not None:
-            return None
-        host = urlparse(robots_url).hostname
-        if host is None:
-            return None
-        await self._rate_limiter.acquire(host)
-        try:
-            try:
-                response = await self._client.get(
-                    robots_url,
-                    headers={"User-Agent": self._user_agent},
-                    timeout=DEFAULT_TIMEOUT_S,
-                )
-            except httpx.HTTPError:
+        """Fetch robots.txt with SSRF + rate limits; only a final 200 body is returned."""
+        url = robots_url
+        for _ in range(MAX_REDIRECTS + 1):
+            if check_ssrf(url, resolve=self._resolve) is not None:
                 return None
-            if response.status_code >= 400:
+            host = urlparse(url).hostname
+            if host is None:
                 return None
-            return response.text
-        finally:
-            self._rate_limiter.release(host)
-
-
-def _allowed_content_type(content_type: str) -> bool:
-    return any(
-        content_type == prefix or content_type.startswith(prefix)
-        for prefix in ALLOWED_CONTENT_PREFIXES
-    )
+            async with self._rate_limiter.hold(host):
+                try:
+                    async with self._client.stream(
+                        "GET",
+                        url,
+                        headers={"User-Agent": self._user_agent},
+                        timeout=DEFAULT_TIMEOUT_S,
+                    ) as response:
+                        if response.status_code in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("location")
+                            if not location:
+                                return None
+                            url = urljoin(url, location)
+                            continue
+                        if response.status_code != 200:
+                            return None
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(body) + len(chunk) > MAX_BODY_BYTES:
+                                return None
+                            body.extend(chunk)
+                        return bytes(body).decode("utf-8", errors="replace")
+                except httpx.HTTPError:
+                    return None
+        return None
 
 
 def _parse_retry_after(value: str | None) -> float | None:
@@ -245,32 +259,12 @@ def _parse_retry_after(value: str | None) -> float | None:
     try:
         return float(value)
     except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
         return None
-
-
-def _as_reason(reason: str) -> RefusalReason:
-    allowed: Sequence[str] = (
-        "blocked_host",
-        "robots",
-        "private_address",
-        "allowlist",
-        "size",
-        "redirect_limit",
-        "timeout",
-        "scheme",
-        "userinfo",
-        "content_type",
-        "http_error",
-    )
-    if reason in allowed:
-        return reason  # type: ignore[return-value]
-    return "http_error"
-
-
-def build_default_gateway(
-    *,
-    user_agent: str,
-    allowlist: frozenset[str] | None = None,
-    **kwargs: Any,
-) -> FetchGateway:
-    return FetchGateway(user_agent=user_agent, allowlist=allowlist, **kwargs)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    delta = (when - datetime.now(UTC)).total_seconds()
+    return delta if delta > 0 else None

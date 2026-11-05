@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 
 class HostRateLimiter:
@@ -19,7 +20,7 @@ class HostRateLimiter:
         self._clock = clock
         self._sleeper = sleeper
         self._locks: dict[str, asyncio.Lock] = {}
-        self._last_start: dict[str, float] = {}
+        self._next_allowed_at: dict[str, float] = {}
 
     def _lock_for(self, host: str) -> asyncio.Lock:
         key = host.lower()
@@ -29,26 +30,23 @@ class HostRateLimiter:
             self._locks[key] = lock
         return lock
 
-    async def acquire(self, host: str) -> None:
+    @asynccontextmanager
+    async def hold(self, host: str) -> AsyncIterator[None]:
         key = host.lower()
         lock = self._lock_for(key)
         await lock.acquire()
-        last = self._last_start.get(key)
-        now = self._clock()
-        if last is not None:
-            wait = self._min_interval_s - (now - last)
+        try:
+            now = self._clock()
+            wait = self._next_allowed_at.get(key, now) - now
             if wait > 0:
                 await self._sleeper(wait)
-        self._last_start[key] = self._clock()
+            self._next_allowed_at[key] = self._clock() + self._min_interval_s
+            yield
+        finally:
+            lock.release()
 
     def defer(self, host: str, seconds: float) -> None:
-        """Push the next start for this host at least `seconds` into the future."""
         key = host.lower()
         earliest = self._clock() + max(0.0, seconds)
-        previous = self._last_start.get(key, 0.0)
-        self._last_start[key] = max(previous, earliest - self._min_interval_s)
-
-    def release(self, host: str) -> None:
-        lock = self._locks.get(host.lower())
-        if lock is not None and lock.locked():
-            lock.release()
+        previous = self._next_allowed_at.get(key, 0.0)
+        self._next_allowed_at[key] = max(previous, earliest)

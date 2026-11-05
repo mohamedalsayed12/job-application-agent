@@ -5,45 +5,35 @@ from __future__ import annotations
 import ipaddress
 import socket
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from typing import Literal
 from urllib.parse import urlparse
 
 Resolver = Callable[[str], Sequence[ipaddress.IPv4Address | ipaddress.IPv6Address]]
+PolicyReason = Literal[
+    "blocked_host",
+    "private_address",
+    "allowlist",
+    "scheme",
+    "userinfo",
+]
 
 BLOCKED_SUFFIXES = ("linkedin.com", "indeed.com", "glassdoor.com")
-
-DEFAULT_API_ALLOWLIST = frozenset(
+# Reject bare public suffixes until a real PSL check exists (P2 / thermos).
+_PUBLIC_SUFFIX_BLOCKLIST = frozenset(
     {
-        "api.greenhouse.io",
-        "boards-api.greenhouse.io",
-        "api.lever.co",
-        "api.eu.lever.co",
-        "www.reed.co.uk",
-        "api.reed.co.uk",
-        "api.adzuna.com",
-        "api.adzuna.co.uk",
+        "com",
+        "org",
+        "net",
+        "io",
+        "co",
+        "uk",
+        "co.uk",
+        "org.uk",
+        "ac.uk",
+        "gov.uk",
     }
 )
-
-_PRIVATE_NETWORKS = (
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("100.64.0.0/10"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("::/128"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-    ipaddress.ip_network("ff00::/8"),
-)
-
-
-@dataclass(frozen=True, slots=True)
-class PolicyRefusal:
-    reason: str
+_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 
 
 def default_resolve(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
@@ -71,53 +61,78 @@ def is_allowlisted_host(host: str, allowlist: frozenset[str]) -> bool:
 
 
 def is_official_domain_host(host: str, official_domain: str) -> bool:
-    return host_matches_suffix(host, official_domain)
+    domain = official_domain.lower().rstrip(".")
+    if "." not in domain or domain in _PUBLIC_SUFFIX_BLOCKLIST:
+        return False
+    return host_matches_suffix(host, domain)
+
+
+def _embedded_ipv4(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | None:
+    if isinstance(address, ipaddress.IPv4Address):
+        return address
+    if address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    if address in _NAT64_PREFIX:
+        return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return None
 
 
 def is_disallowed_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if address.is_multicast or address.is_unspecified:
+    if address.is_multicast:
         return True
-    return any(address in network for network in _PRIVATE_NETWORKS)
+    embedded = _embedded_ipv4(address)
+    if embedded is not None:
+        return not embedded.is_global
+    return not address.is_global
 
 
-def check_url(
-    url: str,
-    *,
-    kind: str,
-    official_domain: str | None,
-    allowlist: frozenset[str],
-    resolve: Resolver = default_resolve,
-) -> PolicyRefusal | None:
+def check_ssrf(url: str, *, resolve: Resolver = default_resolve) -> PolicyReason | None:
+    """HTTPS / no userinfo / named host / not blocked / no private DNS — no allowlist."""
     parsed = urlparse(url)
     if parsed.scheme != "https":
-        return PolicyRefusal("scheme")
+        return "scheme"
     if parsed.username is not None or parsed.password is not None:
-        return PolicyRefusal("userinfo")
+        return "userinfo"
     host = parsed.hostname
     if not host:
-        return PolicyRefusal("scheme")
+        return "scheme"
     try:
         ipaddress.ip_address(host)
     except ValueError:
         pass
     else:
-        return PolicyRefusal("private_address")
+        return "private_address"
     if is_blocked_host(host):
-        return PolicyRefusal("blocked_host")
-    if kind == "api":
-        if not is_allowlisted_host(host, allowlist):
-            return PolicyRefusal("allowlist")
-    elif kind == "page":
-        if not official_domain or not is_official_domain_host(host, official_domain):
-            return PolicyRefusal("allowlist")
-    else:
-        return PolicyRefusal("allowlist")
+        return "blocked_host"
     try:
         addresses = list(resolve(host))
     except OSError:
-        return PolicyRefusal("private_address")
+        return "private_address"
     if not addresses:
-        return PolicyRefusal("private_address")
+        return "private_address"
     if any(is_disallowed_ip(address) for address in addresses):
-        return PolicyRefusal("private_address")
+        return "private_address"
+    return None
+
+
+def check_url(
+    url: str,
+    *,
+    kind: Literal["api", "page"],
+    official_domain: str | None,
+    allowlist: frozenset[str],
+    resolve: Resolver = default_resolve,
+) -> PolicyReason | None:
+    refusal = check_ssrf(url, resolve=resolve)
+    if refusal is not None:
+        return refusal
+    host = urlparse(url).hostname
+    assert host is not None
+    if kind == "api":
+        if not is_allowlisted_host(host, allowlist):
+            return "allowlist"
+    elif not official_domain or not is_official_domain_host(host, official_domain):
+        return "allowlist"
     return None

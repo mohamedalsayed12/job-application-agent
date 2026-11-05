@@ -1,15 +1,8 @@
-from app.fetch.gateway import (
-    FetchGateway,
-    FetchRefusal,
-    FetchRequest,
-    FetchResponse,
-    build_default_gateway,
-)
+from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 
 __all__ = [
     "FetchGateway",
     "FetchRefusal",
     "FetchRequest",
     "FetchResponse",
-    "build_default_gateway",
 ]
