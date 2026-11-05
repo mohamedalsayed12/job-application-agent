@@ -5,8 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import get_settings
 from app.core.db import Base
-
-import app.models  # noqa: F401
+import app.models as domain_models
 
 config = context.config
 
@@ -14,6 +13,8 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+if "applicant" not in target_metadata.tables:
+    raise RuntimeError(f"models not registered: {domain_models.__name__}")
 
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url)

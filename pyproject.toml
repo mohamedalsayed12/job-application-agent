@@ -1,7 +1,7 @@
 [project]
 name = "job-application-agent"
 version = "0.1.0"
-description = "Job discovery with data quality — MVP Step 0 scaffold"
+description = "Job discovery with data quality — Milestone 1 schema"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

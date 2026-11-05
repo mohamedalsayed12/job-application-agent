@@ -1,5 +1,3 @@
-"""Milestone 1 tables. Importing this module registers them on Base.metadata."""
-
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -135,7 +133,6 @@ def _text_in(
     *,
     nullable: bool = False,
 ) -> CheckConstraint:
-    """Name is a short token. The ck convention adds the table prefix."""
     literals = ", ".join(f"'{member.value}'" for member in allowed)
     predicate = f"{column} IN ({literals})"
     if nullable:
@@ -182,7 +179,6 @@ def _created():
 
 
 def _updated():
-    """onupdate is ORM-only. Claim SQL sets updated_at itself."""
     return mapped_column(TZ, server_default=func.now(), onupdate=func.now())
 
 
@@ -364,7 +360,6 @@ class SpendLedger(_UuidPk, Base):
 
     provider: Mapped[str] = mapped_column(Text())
     kind: Mapped[str] = mapped_column(Text())
-    # Soft-refs. The target table varies, so these are not foreign keys.
     related_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid())
     related_item_id: Mapped[uuid.UUID | None] = mapped_column(Uuid())
     estimated_cost: Mapped[Decimal] = mapped_column(Numeric())
@@ -711,46 +706,3 @@ class AuditSample(_UuidPk, Base):
     is_useful: Mapped[bool | None] = mapped_column(Boolean())
     notes: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
-
-
-__all__ = [
-    "AiExtraction",
-    "Applicant",
-    "ApplicantJobMatch",
-    "ApplicantPreference",
-    "AuditSample",
-    "BoardStatus",
-    "BudgetPolicy",
-    "CANDIDATE_CLAIMABLE",
-    "CANDIDATE_LIVE_UNIQUE_EXCLUDES",
-    "Candidate",
-    "CandidateEvidence",
-    "CandidateState",
-    "Employer",
-    "EmployerBoard",
-    "EmployerType",
-    "EvidenceLevel",
-    "ExtractedBy",
-    "FetchOutcome",
-    "FetchRun",
-    "Job",
-    "JobFreshness",
-    "JobLink",
-    "JobLinkMethod",
-    "JobPosting",
-    "RawPayload",
-    "ReviewDecision",
-    "ReviewItem",
-    "SEARCH_RUN_CLAIMABLE",
-    "SalaryStatus",
-    "SearchResult",
-    "SearchRun",
-    "SearchRunStatus",
-    "SearchTemplate",
-    "SearchTemplateStatus",
-    "SpendKind",
-    "SpendLedger",
-    "TemplateStats",
-    "VerificationCheck",
-    "VerificationOutcome",
-]

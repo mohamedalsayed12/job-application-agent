@@ -1,12 +1,10 @@
-"""Duplicate natural keys raise IntegrityError naming the model constraint."""
-
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import UniqueConstraint, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -55,6 +53,11 @@ def _declared_unique(model: type, columns: tuple[str, ...]) -> str:
 def test_models_match_applied_revision(migrated_engine: Engine) -> None:
     assert migrated_engine.dialect.name == "postgresql"
     command.check(Config(str(_ALEMBIC_INI)))
+    with migrated_engine.connect() as conn:
+        ext = conn.execute(
+            text("SELECT extname FROM pg_extension WHERE extname = 'citext'")
+        ).scalar_one_or_none()
+    assert ext == "citext"
 
 
 def test_employer_official_domain_unique(session: Session) -> None:
