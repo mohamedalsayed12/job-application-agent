@@ -150,53 +150,71 @@ class FetchGateway:
     ) -> FetchResponse | FetchRefusal | _Redirect:
         headers = {"User-Agent": self._user_agent, **dict(request.headers)}
         try:
-            response = await self._client.request(
+            async with self._client.stream(
                 request.method,
                 request.url,
                 headers=headers,
                 content=request.body,
                 timeout=request.timeout_s,
-            )
+            ) as response:
+                if response.status_code in {429, 503}:
+                    retry_after = _parse_retry_after(response.headers.get("retry-after"))
+                    if retry_after is not None:
+                        self._rate_limiter.defer(host, min(retry_after, 60.0))
+
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location")
+                    if not location:
+                        return FetchRefusal(reason="redirect_limit")
+                    next_url = urljoin(request.url, location)
+                    next_request = FetchRequest(
+                        url=next_url,
+                        method=(
+                            request.method
+                            if response.status_code in {307, 308}
+                            else "GET"
+                        ),
+                        kind=request.kind,
+                        headers=request.headers,
+                        timeout_s=request.timeout_s,
+                        official_domain=request.official_domain,
+                    )
+                    return _Redirect(next_request=next_request)
+
+                content_type = (
+                    response.headers.get("content-type", "")
+                    .split(";")[0]
+                    .strip()
+                    .lower()
+                )
+                if not _allowed_content_type(content_type):
+                    return FetchRefusal(reason="content_type")
+
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        if int(content_length) > MAX_BODY_BYTES:
+                            return FetchRefusal(reason="size")
+                    except ValueError:
+                        pass
+
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > MAX_BODY_BYTES:
+                        return FetchRefusal(reason="size")
+                    body.extend(chunk)
+
+                return FetchResponse(
+                    url=str(response.url),
+                    status_code=response.status_code,
+                    content_type=content_type,
+                    body=bytes(body),
+                    fetched_at=datetime.now(UTC),
+                )
         except httpx.TimeoutException:
             return FetchRefusal(reason="timeout")
         except httpx.HTTPError:
             return FetchRefusal(reason="http_error")
-
-        if response.status_code in {429, 503}:
-            retry_after = _parse_retry_after(response.headers.get("retry-after"))
-            if retry_after is not None:
-                self._rate_limiter.defer(host, min(retry_after, 60.0))
-
-        if response.status_code in {301, 302, 303, 307, 308}:
-            location = response.headers.get("location")
-            if not location:
-                return FetchRefusal(reason="redirect_limit")
-            next_url = urljoin(request.url, location)
-            next_request = FetchRequest(
-                url=next_url,
-                method=request.method if response.status_code in {307, 308} else "GET",
-                kind=request.kind,
-                headers=request.headers,
-                timeout_s=request.timeout_s,
-                official_domain=request.official_domain,
-            )
-            return _Redirect(next_request=next_request)
-
-        content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
-        if not _allowed_content_type(content_type):
-            return FetchRefusal(reason="content_type")
-
-        body = response.content
-        if len(body) > MAX_BODY_BYTES:
-            return FetchRefusal(reason="size")
-
-        return FetchResponse(
-            url=str(response.url),
-            status_code=response.status_code,
-            content_type=content_type,
-            body=body[:MAX_BODY_BYTES],
-            fetched_at=datetime.now(UTC),
-        )
 
     async def _fetch_robots_body(self, robots_url: str) -> str | None:
         """Fetch robots.txt with SSRF + rate limits, skipping robots recursion."""
@@ -224,14 +242,18 @@ class FetchGateway:
                 return None
             if response.status_code >= 400:
                 return None
-            return response.text
+            text = response.text
+            if len(text.encode("utf-8", errors="ignore")) > MAX_BODY_BYTES:
+                return None
+            return text
         finally:
             self._rate_limiter.release(host)
 
 
 def _allowed_content_type(content_type: str) -> bool:
     return any(
-        content_type == prefix or content_type.startswith(prefix)
+        content_type == prefix or content_type.startswith(prefix + ";")
+        or content_type.startswith(prefix + "+")
         for prefix in ALLOWED_CONTENT_PREFIXES
     )
 

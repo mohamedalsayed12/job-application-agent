@@ -197,6 +197,24 @@ async def test_t21_same_host_requests_spaced_one_second() -> None:
 
 
 @pytest.mark.asyncio
+async def test_oversized_body_refused_without_buffering_all() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"x" * (2 * 1024 * 1024 + 1),
+            headers={"content-type": "application/json"},
+        )
+
+    gateway = _gateway(handler)
+    result = await gateway.fetch(
+        FetchRequest(url="https://api.example.com/big", kind="api"),
+    )
+    assert isinstance(result, FetchRefusal)
+    assert result.reason == "size"
+    await gateway.aclose()
+
+
+@pytest.mark.asyncio
 async def test_same_host_redirect_does_not_deadlock() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/start":
