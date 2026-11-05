@@ -17,7 +17,7 @@ DEFAULT_API_ALLOWLIST = frozenset(
         "api.greenhouse.io",
         "boards-api.greenhouse.io",
         "api.lever.co",
-        "eu.lever.co",
+        "api.eu.lever.co",
         "www.reed.co.uk",
         "api.reed.co.uk",
         "api.adzuna.com",
