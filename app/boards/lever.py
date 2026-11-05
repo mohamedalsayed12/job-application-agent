@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from app.boards.ids import normalize_board_id
 from app.boards.parse import label_gateway_outcome, parse_lever_jobs
-from app.boards.result import BoardFetchResult, BoardInstance
+from app.boards.result import BoardFetchResult, BoardInstance, invalid_board_id_result
 from app.fetch.gateway import FetchGateway, FetchRequest
 from app.models import FetchOutcome
 
@@ -21,12 +21,7 @@ async def fetch_lever_board(
 ) -> BoardFetchResult:
     site_id = normalize_board_id(site)
     if site_id is None:
-        return BoardFetchResult(
-            label=FetchOutcome.failed,
-            system="lever",
-            instance=None,
-            detail="invalid_board_id",
-        )
+        return invalid_board_id_result("lever")
 
     global_result = await _fetch_instance(
         gateway,

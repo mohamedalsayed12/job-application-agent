@@ -21,12 +21,11 @@ def label_gateway_outcome(
     parse_jobs: JobsParser,
 ) -> BoardFetchResult:
     if isinstance(outcome, FetchRefusal):
-        return BoardFetchResult(
-            label=FetchOutcome.failed,
+        return _result(
+            FetchOutcome.failed,
             system=system,
             instance=instance,
             detail=outcome.reason,
-            attempts=(instance,),
         )
 
     status = outcome.status_code
@@ -34,67 +33,21 @@ def label_gateway_outcome(
     url = outcome.url
 
     if status == 404:
-        return BoardFetchResult(
-            label=FetchOutcome.not_found,
-            system=system,
-            instance=instance,
-            status_code=status,
-            url=url,
-            raw_body=body,
-            detail=_error_detail(body),
-            attempts=(instance,),
-        )
+        label, jobs, detail = FetchOutcome.not_found, (), _error_detail(body)
+    elif status != 200:
+        label, jobs, detail = FetchOutcome.failed, (), f"http_{status}"
+    else:
+        label, jobs, detail = _label_ok_body(body, parse_jobs)
 
-    if status != 200:
-        return BoardFetchResult(
-            label=FetchOutcome.failed,
-            system=system,
-            instance=instance,
-            status_code=status,
-            url=url,
-            raw_body=body,
-            detail=f"http_{status}",
-            attempts=(instance,),
-        )
-
-    try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return BoardFetchResult(
-            label=FetchOutcome.partial,
-            system=system,
-            instance=instance,
-            status_code=status,
-            url=url,
-            raw_body=body,
-            detail="unparseable_json",
-            attempts=(instance,),
-        )
-
-    jobs, detail = parse_jobs(payload)
-    if detail is not None:
-        return BoardFetchResult(
-            label=FetchOutcome.partial,
-            system=system,
-            instance=instance,
-            jobs=jobs,
-            status_code=status,
-            url=url,
-            raw_body=body,
-            detail=detail,
-            attempts=(instance,),
-        )
-
-    label = FetchOutcome.empty if len(jobs) == 0 else FetchOutcome.complete
-    return BoardFetchResult(
-        label=label,
+    return _result(
+        label,
         system=system,
         instance=instance,
         jobs=jobs,
         status_code=status,
         url=url,
         raw_body=body,
-        attempts=(instance,),
+        detail=detail,
     )
 
 
@@ -117,6 +70,47 @@ def parse_lever_jobs(payload: Any) -> tuple[tuple[dict[str, Any], ...], str | No
     if not isinstance(payload, list) or any(not isinstance(j, dict) for j in payload):
         return (), "unexpected_shape"
     return tuple(payload), None
+
+
+def _label_ok_body(
+    body: bytes,
+    parse_jobs: JobsParser,
+) -> tuple[FetchOutcome, tuple[dict[str, Any], ...], str | None]:
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return FetchOutcome.partial, (), "unparseable_json"
+    jobs, detail = parse_jobs(payload)
+    if detail is not None:
+        return FetchOutcome.partial, jobs, detail
+    if len(jobs) == 0:
+        return FetchOutcome.empty, jobs, None
+    return FetchOutcome.complete, jobs, None
+
+
+def _result(
+    label: FetchOutcome,
+    *,
+    system: BoardSystem,
+    instance: BoardInstance | None,
+    jobs: tuple[dict[str, Any], ...] = (),
+    status_code: int | None = None,
+    url: str | None = None,
+    raw_body: bytes = b"",
+    detail: str | None = None,
+) -> BoardFetchResult:
+    attempts: tuple[BoardInstance, ...] = (instance,) if instance is not None else ()
+    return BoardFetchResult(
+        label=label,
+        system=system,
+        instance=instance,
+        jobs=jobs,
+        status_code=status_code,
+        url=url,
+        raw_body=raw_body,
+        detail=detail,
+        attempts=attempts,
+    )
 
 
 def _error_detail(body: bytes) -> str | None:

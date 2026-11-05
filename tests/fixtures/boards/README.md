@@ -8,7 +8,6 @@ Saved from live public APIs on 2026-11-05 (trimmed where noted). Used by mocked 
 | `greenhouse_empty.json` | Shape from live list responses + docs | Live empty boards rare; `{"jobs":[],"meta":{"total":0}}` |
 | `greenhouse_not_found.json` | Missing board token | Real 404 body |
 | `greenhouse_partial_truncated.json` | First 800 bytes of real example response | Unparseable on purpose |
-| `greenhouse_partial_meta_mismatch.json` | Trimmed example with `meta.total=99` | Shape ok, count mismatch |
 | `lever_global_complete_leverdemo.json` | `api.lever.co/v0/postings/leverdemo?mode=json` | Trimmed to 2 postings |
 | `lever_global_empty_lever.json` | `api.lever.co/v0/postings/lever?mode=json` | Real `[]` |
 | `lever_eu_complete_lever.json` | `api.eu.lever.co/v0/postings/lever?mode=json` | Trimmed to 2 postings |

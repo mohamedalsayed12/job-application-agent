@@ -24,3 +24,12 @@ class BoardFetchResult:
     raw_body: bytes = b""
     detail: str | None = None
     attempts: tuple[BoardInstance, ...] = field(default_factory=tuple)
+
+
+def invalid_board_id_result(system: BoardSystem) -> BoardFetchResult:
+    return BoardFetchResult(
+        label=FetchOutcome.failed,
+        system=system,
+        instance=None,
+        detail="invalid_board_id",
+    )

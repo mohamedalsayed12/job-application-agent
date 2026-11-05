@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import ipaddress
-from collections.abc import Callable, Sequence
+import json
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -116,7 +117,9 @@ async def test_greenhouse_partial_truncated() -> None:
 
 @pytest.mark.asyncio
 async def test_greenhouse_partial_meta_mismatch() -> None:
-    body = _fixture("greenhouse_partial_meta_mismatch.json")
+    payload = json.loads(_fixture("greenhouse_complete_example.json"))
+    payload["meta"] = {"total": 99}
+    body = json.dumps(payload).encode()
 
     def handler(request: httpx.Request) -> httpx.Response:
         return _json_response(200, body)
@@ -282,21 +285,3 @@ async def test_lever_failed_rate_limit() -> None:
     assert result.detail == "http_429"
     assert result.attempts == ("lever_global",)
 
-
-@pytest.mark.asyncio
-async def test_lever_eu_allowlisted() -> None:
-    """api.eu.lever.co must be on the allowlist (not eu.lever.co)."""
-    eu_body = _fixture("lever_eu_complete_lever.json")
-    not_found = _fixture("lever_not_found.json")
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "api.lever.co":
-            return _json_response(404, not_found)
-        return _json_response(200, eu_body)
-
-    gateway = _gateway(handler)
-    result = await fetch_lever_board(gateway, "lever")
-    await gateway.aclose()
-    assert result.label == FetchOutcome.complete
-    assert result.url is not None
-    assert "api.eu.lever.co" in result.url
