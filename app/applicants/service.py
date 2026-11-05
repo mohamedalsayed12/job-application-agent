@@ -50,13 +50,13 @@ def parse_preference_input(
     amount_raw = salary_amount
     if isinstance(amount_raw, str):
         amount_raw = amount_raw.strip() or None
-    currency = (salary_currency or "").strip() or None
-    period = (salary_period or "").strip() or None
-
-    if amount_raw is None and currency is None and period is None:
+    # Blank amount means no salary (HTML forms still post currency/period defaults).
+    if amount_raw is None:
         expected: ExpectedSalary | None = None
     else:
-        if amount_raw is None or currency is None or period is None:
+        currency = (salary_currency or "").strip() or None
+        period = (salary_period or "").strip() or None
+        if currency is None or period is None:
             raise PreferenceValidationError(
                 "salary requires amount, currency, and period together"
             )

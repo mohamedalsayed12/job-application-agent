@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import html
-import secrets
 import uuid
 from decimal import Decimal, InvalidOperation
-from typing import Callable
+from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form
@@ -24,11 +23,33 @@ from app.applicants.service import (
     parse_preference_input,
     update_applicant,
 )
-from app.applicants.types import PreferenceInput
-from app.core.config import get_settings
 from app.core.db import get_db
 
 router = APIRouter(prefix="/admin/applicants", tags=["admin-applicants"])
+
+
+class ApplicantForm:
+    """Shared create/edit form fields."""
+
+    def __init__(
+        self,
+        email: str = Form(...),
+        display_name: str = Form(""),
+        target_roles: str = Form(...),
+        locations: str = Form(...),
+        sector: str = Form("tech"),
+        salary_amount: str = Form(""),
+        salary_currency: str = Form(""),
+        salary_period: str = Form("year"),
+    ) -> None:
+        self.email = email
+        self.display_name = display_name
+        self.target_roles = target_roles
+        self.locations = locations
+        self.sector = sector
+        self.salary_amount = salary_amount
+        self.salary_currency = salary_currency
+        self.salary_period = salary_period
 
 
 def _page(title: str, body: str) -> HTMLResponse:
@@ -57,9 +78,8 @@ def _split_lines(value: str) -> list[str]:
     return [line.strip() for line in value.replace(",", "\n").splitlines() if line.strip()]
 
 
-def _form_admin_ok(admin_key: str) -> bool:
-    expected = get_settings().admin_key or ""
-    return bool(expected) and secrets.compare_digest(admin_key, expected)
+def _action(path: str, admin_key: str) -> str:
+    return f"{path}?admin_key={quote(admin_key, safe='')}"
 
 
 def _form(
@@ -81,7 +101,6 @@ def _form(
 <h1>Applicant</h1>
 {err}
 <form method="post" action="{html.escape(action)}">
-  <input type="hidden" name="admin_key" value="{html.escape(admin_key)}"/>
   <label>Email
     <input name="email" type="email" required value="{html.escape(email)}"/>
   </label>
@@ -114,79 +133,67 @@ def _form(
   </label>
   <p style="margin-top:1rem"><button type="submit">{html.escape(submit_label)}</button></p>
 </form>
-<p><a href="/admin/applicants?admin_key={quote(admin_key, safe='')}">Back to list</a></p>
+<p><a href="{html.escape(_action('/admin/applicants', admin_key))}">Back to list</a></p>
 """
 
 
-def _parse_amount(raw: str) -> Decimal | None:
-    text = raw.strip()
-    if not text:
-        return None
-    return Decimal(text)
-
-
-def _preference_from_fields(
-    *,
-    target_roles: str,
-    locations: str,
-    sector: str,
-    salary_amount: str,
-    salary_currency: str,
-    salary_period: str,
-) -> PreferenceInput:
-    amount = _parse_amount(salary_amount)
-    return parse_preference_input(
-        target_roles=_split_lines(target_roles),
-        locations=_split_lines(locations),
-        sector=sector,
-        salary_amount=amount,
-        salary_currency=(salary_currency or None) if amount is not None else None,
-        salary_period=salary_period if amount is not None else None,
-    )
-
-
-def _save_form(
-    *,
+def _save(
     db: Session,
+    form: ApplicantForm,
+    *,
     admin_key: str,
-    title: str,
-    action: str,
-    submit_label: str,
-    email: str,
-    display_name: str,
-    target_roles: str,
-    locations: str,
-    sector: str,
-    salary_amount: str,
-    salary_currency: str,
-    salary_period: str,
-    persist: Callable[[Session, PreferenceInput], None],
+    applicant_id: uuid.UUID | None,
 ) -> HTMLResponse:
-    if not _form_admin_ok(admin_key):
-        return _page("Unauthorized", "<p class='error'>invalid or missing admin key</p>")
-
+    is_create = applicant_id is None
+    title = "New applicant" if is_create else "Edit applicant"
+    path = (
+        "/admin/applicants/new"
+        if is_create
+        else f"/admin/applicants/{applicant_id}/edit"
+    )
+    action = _action(path, admin_key)
+    submit_label = "Create" if is_create else "Update"
     form_kwargs = dict(
         action=action,
         admin_key=admin_key,
-        email=email,
-        display_name=display_name,
-        target_roles=target_roles,
-        locations=locations,
-        salary_amount=salary_amount,
-        salary_currency=salary_currency,
-        salary_period=salary_period,
+        email=form.email,
+        display_name=form.display_name,
+        target_roles=form.target_roles,
+        locations=form.locations,
+        salary_amount=form.salary_amount,
+        salary_currency=form.salary_currency,
+        salary_period=form.salary_period,
         submit_label=submit_label,
     )
     try:
-        pref = _preference_from_fields(
-            target_roles=target_roles,
-            locations=locations,
-            sector=sector,
-            salary_amount=salary_amount,
-            salary_currency=salary_currency,
-            salary_period=salary_period,
+        amount: Decimal | str | None = form.salary_amount
+        if isinstance(amount, str) and not amount.strip():
+            amount = None
+        elif isinstance(amount, str):
+            amount = Decimal(amount.strip())
+        pref = parse_preference_input(
+            target_roles=_split_lines(form.target_roles),
+            locations=_split_lines(form.locations),
+            sector=form.sector,
+            salary_amount=amount,
+            salary_currency=form.salary_currency or None,
+            salary_period=form.salary_period or None,
         )
-        persist(db, pref)
+        if applicant_id is None:
+            create_applicant(
+                db,
+                email=form.email,
+                preference=pref,
+                display_name=form.display_name or None,
+            )
+        else:
+            update_applicant(
+                db,
+                applicant_id,
+                preference=pref,
+                display_name=form.display_name,
+                email=form.email,
+            )
         db.commit()
     except InvalidOperation:
         return _page(title, _form(**form_kwargs, error="salary amount must be a number"))
@@ -198,7 +205,7 @@ def _save_form(
         return _page(title, _form(**form_kwargs, error=str(exc)))
 
     return RedirectResponse(
-        url=f"/admin/applicants?admin_key={quote(admin_key, safe='')}",
+        url=_action("/admin/applicants", admin_key),
         status_code=303,
     )
 
@@ -218,8 +225,7 @@ def applicants_index(
             if pref.salary_amount is not None
             else "(none)"
         )
-        key_q = quote(admin_key, safe="")
-        edit = f"/admin/applicants/{applicant.id}/edit?admin_key={key_q}"
+        edit = _action(f"/admin/applicants/{applicant.id}/edit", admin_key)
         items.append(
             "<tr>"
             f"<td>{html.escape(applicant.email)}</td>"
@@ -229,10 +235,9 @@ def applicants_index(
             f'<td><a href="{html.escape(edit)}">Edit</a></td>'
             "</tr>"
         )
-    key_q = quote(admin_key, safe="")
     body = f"""
 <h1>Applicants</h1>
-<p><a href="/admin/applicants/new?admin_key={key_q}">Create applicant</a></p>
+<p><a href="{html.escape(_action('/admin/applicants/new', admin_key))}">Create applicant</a></p>
 <table>
   <thead><tr><th>Email</th><th>Roles</th><th>Locations</th><th>Salary</th><th></th></tr></thead>
   <tbody>
@@ -247,44 +252,21 @@ def applicants_index(
 def applicants_new_form(admin_key: str = Depends(require_admin_key)) -> HTMLResponse:
     return _page(
         "New applicant",
-        _form(action="/admin/applicants/new", admin_key=admin_key, submit_label="Create"),
+        _form(
+            action=_action("/admin/applicants/new", admin_key),
+            admin_key=admin_key,
+            submit_label="Create",
+        ),
     )
 
 
 @router.post("/new", response_class=HTMLResponse)
 def applicants_create(
-    email: str = Form(...),
-    display_name: str = Form(""),
-    target_roles: str = Form(...),
-    locations: str = Form(...),
-    sector: str = Form("tech"),
-    salary_amount: str = Form(""),
-    salary_currency: str = Form(""),
-    salary_period: str = Form("year"),
-    admin_key: str = Form(...),
+    form: Annotated[ApplicantForm, Depends()],
+    admin_key: str = Depends(require_admin_key),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    def persist(session: Session, pref: PreferenceInput) -> None:
-        create_applicant(
-            session, email=email, preference=pref, display_name=display_name or None
-        )
-
-    return _save_form(
-        db=db,
-        admin_key=admin_key,
-        title="New applicant",
-        action="/admin/applicants/new",
-        submit_label="Create",
-        email=email,
-        display_name=display_name,
-        target_roles=target_roles,
-        locations=locations,
-        sector=sector,
-        salary_amount=salary_amount,
-        salary_currency=salary_currency,
-        salary_period=salary_period,
-        persist=persist,
-    )
+    return _save(db, form, admin_key=admin_key, applicant_id=None)
 
 
 @router.get("/{applicant_id}/edit", response_class=HTMLResponse)
@@ -300,7 +282,7 @@ def applicants_edit_form(
     return _page(
         "Edit applicant",
         _form(
-            action=f"/admin/applicants/{applicant_id}/edit",
+            action=_action(f"/admin/applicants/{applicant_id}/edit", admin_key),
             admin_key=admin_key,
             email=applicant.email,
             display_name=applicant.display_name or "",
@@ -317,39 +299,8 @@ def applicants_edit_form(
 @router.post("/{applicant_id}/edit", response_class=HTMLResponse)
 def applicants_update(
     applicant_id: uuid.UUID,
-    email: str = Form(...),
-    display_name: str = Form(""),
-    target_roles: str = Form(...),
-    locations: str = Form(...),
-    sector: str = Form("tech"),
-    salary_amount: str = Form(""),
-    salary_currency: str = Form(""),
-    salary_period: str = Form("year"),
-    admin_key: str = Form(...),
+    form: Annotated[ApplicantForm, Depends()],
+    admin_key: str = Depends(require_admin_key),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    def persist(session: Session, pref: PreferenceInput) -> None:
-        update_applicant(
-            session,
-            applicant_id,
-            preference=pref,
-            display_name=display_name,
-            email=email,
-        )
-
-    return _save_form(
-        db=db,
-        admin_key=admin_key,
-        title="Edit applicant",
-        action=f"/admin/applicants/{applicant_id}/edit",
-        submit_label="Update",
-        email=email,
-        display_name=display_name,
-        target_roles=target_roles,
-        locations=locations,
-        sector=sector,
-        salary_amount=salary_amount,
-        salary_currency=salary_currency,
-        salary_period=salary_period,
-        persist=persist,
-    )
+    return _save(db, form, admin_key=admin_key, applicant_id=applicant_id)

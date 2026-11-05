@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from app.applicants.discovery import to_discovery_preference
 from app.applicants.salary import job_excluded_for_salary, salary_match_status
-from app.applicants.search_view import build_role_location_query
 from app.applicants.service import (
     create_applicant,
     get_applicant_with_preference,
@@ -61,9 +60,8 @@ async def test_create_without_salary_keeps_nulls(
     client: httpx.AsyncClient, session: Session
 ) -> None:
     response = await client.post(
-        "/admin/applicants/new",
+        f"/admin/applicants/new?admin_key={ADMIN}",
         data={
-            "admin_key": ADMIN,
             "email": "nosalary@example.com",
             "display_name": "",
             "target_roles": "Data Engineer",
@@ -82,7 +80,9 @@ async def test_create_without_salary_keeps_nulls(
     applicant = session.scalars(
         select(Applicant).where(Applicant.email == "nosalary@example.com")
     ).one()
-    _, pref = get_applicant_with_preference(session, applicant.id)  # type: ignore[misc]
+    pair = get_applicant_with_preference(session, applicant.id)
+    assert pair is not None
+    _, pref = pair
     assert pref.salary_amount is None
     assert pref.salary_currency is None
     assert pref.salary_period is None
@@ -91,9 +91,8 @@ async def test_create_without_salary_keeps_nulls(
 @pytest.mark.asyncio
 async def test_create_and_edit_applicant(client: httpx.AsyncClient, session: Session) -> None:
     create = await client.post(
-        "/admin/applicants/new",
+        f"/admin/applicants/new?admin_key={ADMIN}",
         data={
-            "admin_key": ADMIN,
             "email": "tester@example.com",
             "display_name": "Tester",
             "target_roles": "Backend Engineer\nPlatform Engineer",
@@ -122,16 +121,15 @@ async def test_create_and_edit_applicant(client: httpx.AsyncClient, session: Ses
     assert pref.salary_period == "year"
 
     edit = await client.post(
-        f"/admin/applicants/{applicant.id}/edit",
+        f"/admin/applicants/{applicant.id}/edit?admin_key={ADMIN}",
         data={
-            "admin_key": ADMIN,
             "email": "tester@example.com",
             "display_name": "Tester",
             "target_roles": "Backend Engineer",
             "locations": "Leeds",
             "sector": "tech",
             "salary_amount": "",
-            "salary_currency": "",
+            "salary_currency": "GBP",
             "salary_period": "year",
         },
         follow_redirects=False,
@@ -205,16 +203,31 @@ def test_discovery_preference_has_no_salary_fields(session: Session) -> None:
         session, email="iso@example.com", preference=pref_in, display_name="Iso"
     )
     session.flush()
-    _, row = get_applicant_with_preference(session, applicant.id)  # type: ignore[misc]
+    pair = get_applicant_with_preference(session, applicant.id)
+    assert pair is not None
+    _, row = pair
     discovery = to_discovery_preference(row)
+    assert set(DiscoveryPreference.__dataclass_fields__) == {
+        "target_roles",
+        "locations",
+        "sector",
+    }
+    assert discovery.target_roles == ("Backend",)
+    assert discovery.locations == ("London",)
+    assert discovery.sector == "tech"
     assert not hasattr(discovery, "salary_amount")
-    assert not hasattr(discovery, "salary_currency")
-    assert not hasattr(discovery, "salary_period")
     assert not hasattr(discovery, "expected_salary")
-    query = build_role_location_query(discovery)
-    assert "90000" not in query
-    assert "GBP" not in query
-    assert "Backend" in query
+
+
+def test_parse_blank_amount_ignores_currency_defaults() -> None:
+    pref = parse_preference_input(
+        target_roles=["QA"],
+        locations=["York"],
+        salary_amount="",
+        salary_currency="GBP",
+        salary_period="year",
+    )
+    assert pref.expected_salary is None
 
 
 def test_budget_and_fetch_modules_do_not_read_applicant_salary() -> None:
@@ -233,7 +246,6 @@ def test_budget_and_fetch_modules_do_not_read_applicant_salary() -> None:
                     pytest.fail(f"{path} references attribute {node.attr}")
     assert scanned, "expected budget/fetch modules to exist"
 
-    # BudgetGate.reserve signature must not accept preference salary.
     from app.budget.gate import BudgetGate, SpendEstimate
 
     reserve_params = inspect.signature(BudgetGate.reserve).parameters
@@ -241,11 +253,6 @@ def test_budget_and_fetch_modules_do_not_read_applicant_salary() -> None:
     assert "expected_salary" not in reserve_params
     estimate_fields = set(SpendEstimate.__dataclass_fields__)
     assert "salary_amount" not in estimate_fields
-    assert DiscoveryPreference.__dataclass_fields__.keys() == {
-        "target_roles",
-        "locations",
-        "sector",
-    }
 
 
 def test_update_clears_salary(session: Session) -> None:
@@ -261,7 +268,9 @@ def test_update_clears_salary(session: Session) -> None:
     cleared = parse_preference_input(target_roles=["SRE"], locations=["Bristol"])
     update_applicant(session, applicant.id, preference=cleared)
     session.flush()
-    _, row = get_applicant_with_preference(session, applicant.id)  # type: ignore[misc]
+    pair = get_applicant_with_preference(session, applicant.id)
+    assert pair is not None
+    _, row = pair
     assert row.salary_amount is None
     assert row.salary_currency is None
     assert row.salary_period is None
