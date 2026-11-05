@@ -251,9 +251,9 @@ class FetchGateway:
 
 
 def _allowed_content_type(content_type: str) -> bool:
+    # content_type is already stripped of ;parameters
     return any(
-        content_type == prefix or content_type.startswith(prefix + ";")
-        or content_type.startswith(prefix + "+")
+        content_type == prefix or content_type.startswith(prefix + "+")
         for prefix in ALLOWED_CONTENT_PREFIXES
     )
 
