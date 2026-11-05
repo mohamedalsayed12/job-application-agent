@@ -681,6 +681,7 @@ Read MVP.md. It's the whole plan, and we're starting from an empty folder. We're
 | D25 | CVs are stored privately and not parsed; PDF or DOCX only, up to 5 MB (defaults). |
 | D26 | Authentication uses a standard, well-tested library for password hashing and sessions; no custom security code. |
 | D27 | Milestone 1 schema follows `docs/step1-data-model.md`: domain-row queues on `candidate` and `search_run` with `state`/`status` + `next_attempt_at` + `claimed_at`, claimed via `FOR UPDATE SKIP LOCKED`; unique keys on `employer.official_domain`, `employer_board (system, instance, board_id)`, and `job_posting (source, source_job_id)`; relational evidence tables plus JSONB only for raw payloads and small structured maps; Milestone 2 entities omitted. |
+| D28 | Fetch gateway and budget gate follow `docs/step2-fetch-budget-design.md`: outbound HTTP via `httpx` with manual redirects; stdlib robots.txt parser with 24h in-process cache for page fetches only; in-process per-host 1 req/s limit; HTTPS + DNS/private-address checks on every hop; LinkedIn/Indeed/Glassdoor blocked; paid calls insert `spend_ledger` with estimate before the call and settle after; missing/null/zero monthly `money_cap` refuses paid calls until B1. |
 
 ### Assumptions (believed, not yet proven)
 | ID | Assumption | How it gets tested |
