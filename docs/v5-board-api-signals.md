@@ -49,4 +49,4 @@
 | `empty` | 200, valid expected shape, 0 jobs |
 | `not_found` | 404 (Lever: after global then EU both 404) |
 | `failed` | timeout, gateway refusal, 5xx, 429, transport |
-| `partial` | 200/other with truncated or unparseable body, or wrong JSON shape |
+| `partial` | HTTP 200 with truncated/unparseable body, wrong JSON shape, or Greenhouse `meta.total` mismatch |
