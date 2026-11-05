@@ -197,6 +197,39 @@ async def test_t21_same_host_requests_spaced_one_second() -> None:
 
 
 @pytest.mark.asyncio
+async def test_same_host_redirect_does_not_deadlock() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/start":
+            return httpx.Response(
+                302,
+                headers={"Location": "https://api.example.com/done"},
+            )
+        return httpx.Response(
+            200,
+            json={"ok": True},
+            headers={"content-type": "application/json"},
+        )
+
+    clock = {"now": 0.0}
+
+    async def fake_sleep(seconds: float) -> None:
+        clock["now"] += seconds
+
+    limiter = HostRateLimiter(
+        min_interval_s=1.0,
+        clock=lambda: clock["now"],
+        sleeper=fake_sleep,
+    )
+    gateway = _gateway(handler, rate_limiter=limiter)
+    result = await gateway.fetch(
+        FetchRequest(url="https://api.example.com/start", kind="api"),
+    )
+    assert isinstance(result, FetchResponse)
+    assert result.status_code == 200
+    await gateway.aclose()
+
+
+@pytest.mark.asyncio
 async def test_allowlist_rejects_unknown_api_host() -> None:
     gateway = _gateway(lambda request: httpx.Response(200, json={}))
     result = await gateway.fetch(

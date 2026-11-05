@@ -41,6 +41,13 @@ class HostRateLimiter:
                 await self._sleeper(wait)
         self._last_start[key] = self._clock()
 
+    def defer(self, host: str, seconds: float) -> None:
+        """Push the next start for this host at least `seconds` into the future."""
+        key = host.lower()
+        earliest = self._clock() + max(0.0, seconds)
+        previous = self._last_start.get(key, 0.0)
+        self._last_start[key] = max(previous, earliest - self._min_interval_s)
+
     def release(self, host: str) -> None:
         lock = self._locks.get(host.lower())
         if lock is not None and lock.locked():

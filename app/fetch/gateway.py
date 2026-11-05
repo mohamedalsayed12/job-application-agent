@@ -12,7 +12,6 @@ import httpx
 
 from app.fetch.policy import (
     DEFAULT_API_ALLOWLIST,
-    PolicyRefusal,
     Resolver,
     check_url,
     default_resolve,
@@ -66,6 +65,11 @@ class FetchRefusal:
     reason: RefusalReason
 
 
+@dataclass(frozen=True, slots=True)
+class _Redirect:
+    next_request: FetchRequest
+
+
 class FetchGateway:
     def __init__(
         self,
@@ -115,10 +119,7 @@ class FetchGateway:
             return FetchRefusal(reason=_as_reason(refusal.reason))
 
         if request.kind == "page":
-            try:
-                allowed = await self._robots.allowed(request.url)
-            except Exception:
-                allowed = True
+            allowed = await self._robots.allowed(request.url)
             if not allowed:
                 return FetchRefusal(reason="robots")
 
@@ -128,16 +129,25 @@ class FetchGateway:
 
         await self._rate_limiter.acquire(host)
         try:
-            return await self._send(request, redirects_left=redirects_left)
+            outcome = await self._send_once(request, host=host)
         finally:
             self._rate_limiter.release(host)
 
-    async def _send(
+        if isinstance(outcome, _Redirect):
+            if redirects_left <= 0:
+                return FetchRefusal(reason="redirect_limit")
+            return await self._fetch_hop(
+                outcome.next_request,
+                redirects_left=redirects_left - 1,
+            )
+        return outcome
+
+    async def _send_once(
         self,
         request: FetchRequest,
         *,
-        redirects_left: int,
-    ) -> FetchResponse | FetchRefusal:
+        host: str,
+    ) -> FetchResponse | FetchRefusal | _Redirect:
         headers = {"User-Agent": self._user_agent, **dict(request.headers)}
         try:
             response = await self._client.request(
@@ -152,9 +162,12 @@ class FetchGateway:
         except httpx.HTTPError:
             return FetchRefusal(reason="http_error")
 
+        if response.status_code in {429, 503}:
+            retry_after = _parse_retry_after(response.headers.get("retry-after"))
+            if retry_after is not None:
+                self._rate_limiter.defer(host, min(retry_after, 60.0))
+
         if response.status_code in {301, 302, 303, 307, 308}:
-            if redirects_left <= 0:
-                return FetchRefusal(reason="redirect_limit")
             location = response.headers.get("location")
             if not location:
                 return FetchRefusal(reason="redirect_limit")
@@ -167,10 +180,7 @@ class FetchGateway:
                 timeout_s=request.timeout_s,
                 official_domain=request.official_domain,
             )
-            return await self._fetch_hop(
-                next_request,
-                redirects_left=redirects_left - 1,
-            )
+            return _Redirect(next_request=next_request)
 
         content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
         if not _allowed_content_type(content_type):
@@ -224,6 +234,18 @@ def _allowed_content_type(content_type: str) -> bool:
         content_type == prefix or content_type.startswith(prefix)
         for prefix in ALLOWED_CONTENT_PREFIXES
     )
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 def _as_reason(reason: str) -> RefusalReason:
