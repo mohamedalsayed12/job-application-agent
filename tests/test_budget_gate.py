@@ -32,6 +32,10 @@ def _settings() -> Settings:
     )
 
 
+def _gate(session: Session, now: datetime) -> BudgetGate:
+    return BudgetGate(session, clock=lambda: now)
+
+
 def _seed_template(session: Session) -> None:
     if session.get(SearchTemplate, "CF1") is None:
         session.add(
@@ -103,7 +107,7 @@ def test_t3_cap_zero_blocks_paid_calls(session: Session) -> None:
 
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("0"), now)
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     with pytest.raises(BudgetWait) as exc:
         gate.reserve(_estimate(cost=Decimal("1.00")))
     assert exc.value.cap == "monthly"
@@ -112,7 +116,7 @@ def test_t3_cap_zero_blocks_paid_calls(session: Session) -> None:
 
 def test_t3_missing_policy_blocks_paid_calls(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     with pytest.raises(BudgetWait) as exc:
         gate.reserve(_estimate(cost=Decimal("1.00")))
     assert exc.value.cap == "monthly"
@@ -136,7 +140,7 @@ def test_t3_monthly_cap_refuses_and_leaves_no_ledger(session: Session) -> None:
         )
     )
     session.flush()
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     with pytest.raises(BudgetWait) as exc:
         gate.reserve(_estimate(cost=Decimal("1.00")))
     assert exc.value.cap == "monthly"
@@ -149,7 +153,7 @@ def test_t3_daily_cap_refuses(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     # monthly 30 → daily 1.00
     _policy(session, Decimal("30.00"), now)
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     gate.reserve(_estimate(cost=Decimal("0.80")))
     with pytest.raises(BudgetWait) as exc:
         gate.reserve(_estimate(cost=Decimal("0.30")))
@@ -160,7 +164,7 @@ def test_t3_per_run_cap_refuses(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("1000.00"), now)
     _, run_id = _applicant_and_run(session)
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     for _ in range(10):
         gate.reserve(_estimate(cost=Decimal("0.01"), run_id=run_id))
     with pytest.raises(BudgetWait) as exc:
@@ -172,7 +176,7 @@ def test_t3_per_applicant_cap_refuses(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("1000.00"), now)
     applicant_id, _ = _applicant_and_run(session)
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     for i in range(20):
         # Separate runs so per-run cap is not hit first.
         _seed_template(session)
@@ -208,12 +212,13 @@ def test_t3_budget_wait_is_not_a_failure_signal(session: Session) -> None:
     """Callers branch on BudgetWait and keep work queued (T3)."""
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("0"), now)
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     work_status = "planned"
     try:
         gate.reserve(_estimate(cost=Decimal("1.00")))
+        work_status = "running"
     except BudgetWait:
-        work_status = "planned"  # still waiting, not failed
+        pass
     assert work_status == "planned"
 
 
@@ -223,7 +228,7 @@ def test_reserve_then_settle_records_actual(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     # monthly 30 → daily 1.00
     _policy(session, Decimal("30.00"), now)
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     reservation = gate.reserve(_estimate(cost=Decimal("0.50")))
     assert isinstance(reservation, SpendReservation)
     gate.settle(reservation, actual_cost=Decimal("0.40"))
@@ -235,7 +240,7 @@ def test_reserve_then_settle_records_actual(session: Session) -> None:
 def test_reed_zero_cost_allowed_when_money_cap_zero(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("0"), now)
-    gate = BudgetGate(session, settings=_settings(), clock=lambda: now)
+    gate = _gate(session, now)
     cost = estimate_cost(
         provider="reed",
         kind=SpendKind.search,

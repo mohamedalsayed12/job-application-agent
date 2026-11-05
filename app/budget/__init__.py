@@ -1,5 +1,5 @@
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservation
-from app.budget.pricing import estimate_cost, needs_money_cap
+from app.budget.pricing import estimate_cost
 
 __all__ = [
     "BudgetGate",
@@ -7,5 +7,4 @@ __all__ = [
     "SpendEstimate",
     "SpendReservation",
     "estimate_cost",
-    "needs_money_cap",
 ]

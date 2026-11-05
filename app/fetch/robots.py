@@ -16,39 +16,32 @@ FetchRobots = Callable[[str], Awaitable[str | None]]
 
 @dataclass
 class _CacheEntry:
-    parser: RobotFileParser | None
+    parser: RobotFileParser
     expires_at: float
-    # None parser means "transport failed once; retry next time" — not cached long.
 
 
 class RobotsCache:
     def __init__(
         self,
         *,
+        user_agent: str,
+        fetch_body: FetchRobots,
         ttl_s: float = 24 * 60 * 60,
         clock: Callable[[], float] = time.monotonic,
-        user_agent: str,
-        fetch_body: FetchRobots | None = None,
     ) -> None:
-        self._ttl_s = ttl_s
-        self._clock = clock
         self._user_agent = user_agent
         self._fetch_body = fetch_body
+        self._ttl_s = ttl_s
+        self._clock = clock
         self._cache: dict[str, _CacheEntry] = {}
-
-    def set_fetcher(self, fetch_body: FetchRobots) -> None:
-        self._fetch_body = fetch_body
 
     async def allowed(self, url: str) -> bool:
         parsed = urlparse(url)
         origin = f"{parsed.scheme}://{parsed.netloc.lower()}"
         now = self._clock()
         entry = self._cache.get(origin)
-        if entry is not None and entry.expires_at > now and entry.parser is not None:
+        if entry is not None and entry.expires_at > now:
             return entry.parser.can_fetch(self._user_agent, url)
-
-        if self._fetch_body is None:
-            raise RuntimeError("robots fetcher not configured")
 
         body = await self._fetch_body(f"{origin}/robots.txt")
         if body is None:
