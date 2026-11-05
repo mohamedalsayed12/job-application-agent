@@ -1,0 +1,26 @@
+---
+description: Always-on code quality gate — ponytail, pstack/poteto, thermos dual review
+alwaysApply: true
+---
+
+# Code quality gate (always on)
+
+Every nontrivial code change in this repo must satisfy all of the following before it is treated as done (commit, push, PR, or "step complete"):
+
+1. **Ponytail** — Follow `.cursor/rules/ponytail.mdc` (lazy-senior ladder): smallest complete diff; reuse codebase/stdlib; finish callers and tests; never cut validation, security, or error handling at trust boundaries.
+2. **pstack / poteto-mode** — Follow poteto-mode principles for domain modeling and prove-it-works: name domain data shapes first; smallest verifiable unit; prove behavior with real tests (pytest); keep prose unslopped. Read poteto-mode / relevant principle skills when the change is nontrivial. Use model mapping in `.cursor/rules/pstack-models.mdc` (`large` budget).
+3. **Thermos dual review** — Before marking done, gather the `git diff` and run both thermos passes:
+   - `thermo-nuclear-review` (correctness / security)
+   - `thermo-nuclear-code-quality-review` (code quality / code-judo)
+   Fix all P0/P1 findings. Waive nits only with an explicit reason in the step report.
+
+## Pointers
+
+- Stack overview: [`docs/quality-stack.md`](docs/quality-stack.md)
+- Step checklist: [`docs/code-quality-gate.md`](docs/code-quality-gate.md)
+- Project Context also tracks this as workflow `code-quality-gate` (store: `workflows/code-quality-gate.md`).
+
+## Exceptions
+
+- Pure docs / decision recording may skip thermos; keep prose minimal.
+- User-explicit skip for a throwaway spike must be stated in the report.
