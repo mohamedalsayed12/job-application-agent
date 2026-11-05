@@ -2,11 +2,13 @@
 
 Always-on for this Project’s `job-application-agent` work.
 
+**Default agent style:** `/poteto-mode` (pstack) is the default way agents work in this Project — domain modeling first, smallest verifiable unit, prove-it-works, unslopped prose — not an optional extra for hard tasks.
+
 | Tool | Role | How it stays active |
 |---|---|---|
 | **Ponytail** | Lazy-senior minimal diffs | Always-applied `.cursor/rules/ponytail.mdc` in the repo + Project preference |
-| **pstack** | Poteto-mode principles, subagent rigor | Plugin enabled in `.cursor/settings.json`; `pstack-models.mdc` at `large`; poteto-mode on nontrivial work |
-| **Thermos** | Thermo-nuclear dual review | Plugin enabled; `docs/code-quality-gate.md` requires both review passes before done |
+| **pstack** | Poteto-mode principles, subagent rigor | Plugin enabled in `.cursor/settings.json`; `pstack-models.mdc` at `large`; poteto-mode is the default agent style |
+| **Thermos** | Thermo-nuclear dual review | Plugin enabled in `.cursor/settings.json`; `docs/code-quality-gate.md` requires both review passes before done |
 
 ## Install on your machine (Cursor IDE)
 
