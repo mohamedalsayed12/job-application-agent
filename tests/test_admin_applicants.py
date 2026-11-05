@@ -10,11 +10,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.applicants.discovery import to_discovery_preference
 from app.applicants.salary import job_excluded_for_salary, salary_match_status
 from app.applicants.service import (
+    PreferenceValidationError,
     create_applicant,
     get_applicant_with_preference,
     parse_preference_input,
@@ -24,7 +26,7 @@ from app.applicants.types import DiscoveryPreference, ExpectedSalary
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
-from app.models import SalaryStatus
+from app.models import Applicant, SalaryStatus
 
 ADMIN = "test-admin-key-step4"
 
@@ -74,9 +76,6 @@ async def test_create_without_salary_keeps_nulls(
         follow_redirects=False,
     )
     assert response.status_code == 303
-    from sqlalchemy import select
-    from app.models import Applicant
-
     applicant = session.scalars(
         select(Applicant).where(Applicant.email == "nosalary@example.com")
     ).one()
@@ -105,10 +104,6 @@ async def test_create_and_edit_applicant(client: httpx.AsyncClient, session: Ses
         follow_redirects=False,
     )
     assert create.status_code == 303
-
-    from sqlalchemy import select
-    from app.models import Applicant
-
     applicant = session.scalars(select(Applicant)).one()
     pair = get_applicant_with_preference(session, applicant.id)
     assert pair is not None
@@ -228,6 +223,53 @@ def test_parse_blank_amount_ignores_currency_defaults() -> None:
         salary_period="year",
     )
     assert pref.expected_salary is None
+
+
+def test_parse_rejects_infinite_salary() -> None:
+    with pytest.raises(PreferenceValidationError, match="finite"):
+        parse_preference_input(
+            target_roles=["QA"],
+            locations=["York"],
+            salary_amount=Decimal("Infinity"),
+            salary_currency="GBP",
+            salary_period="year",
+        )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_email_create_is_form_error(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    first = await client.post(
+        f"/admin/applicants/new?admin_key={ADMIN}",
+        data={
+            "email": "dup@example.com",
+            "target_roles": "Dev",
+            "locations": "London, UK",
+            "sector": "tech",
+        },
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+    applicant = session.scalars(
+        select(Applicant).where(Applicant.email == "dup@example.com")
+    ).one()
+    pair = get_applicant_with_preference(session, applicant.id)
+    assert pair is not None
+    assert pair[1].locations == ["London, UK"]
+
+    second = await client.post(
+        f"/admin/applicants/new?admin_key={ADMIN}",
+        data={
+            "email": "DUP@example.com",
+            "target_roles": "Dev",
+            "locations": "Leeds",
+            "sector": "tech",
+        },
+        follow_redirects=False,
+    )
+    assert second.status_code == 200
+    assert "email already exists" in second.text
 
 
 def test_budget_and_fetch_modules_do_not_read_applicant_salary() -> None:

@@ -61,8 +61,8 @@ def parse_preference_input(
                 "salary requires amount, currency, and period together"
             )
         amount = amount_raw if isinstance(amount_raw, Decimal) else Decimal(amount_raw)
-        if amount <= 0:
-            raise PreferenceValidationError("salary amount must be positive")
+        if not amount.is_finite() or amount <= 0:
+            raise PreferenceValidationError("salary amount must be a finite positive number")
         if period not in SALARY_PERIODS:
             raise PreferenceValidationError(
                 f"salary period must be one of: {', '.join(sorted(SALARY_PERIODS))}"
@@ -106,11 +106,12 @@ def create_applicant(
         display_name=(display_name.strip() if display_name else None) or None,
     )
     session.add(applicant)
-    session.flush()
-    pref_row = ApplicantPreference(applicant_id=applicant.id)
-    _apply_preference(pref_row, preference)
-    session.add(pref_row)
     try:
+        # Email uniqueness raises here (CITEXT); preference flush is in the same try.
+        session.flush()
+        pref_row = ApplicantPreference(applicant_id=applicant.id)
+        _apply_preference(pref_row, preference)
+        session.add(pref_row)
         session.flush()
     except IntegrityError as exc:
         raise ApplicantConflictError("email already exists") from exc

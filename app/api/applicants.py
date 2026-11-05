@@ -75,7 +75,7 @@ def _page(title: str, body: str) -> HTMLResponse:
 
 
 def _split_lines(value: str) -> list[str]:
-    return [line.strip() for line in value.replace(",", "\n").splitlines() if line.strip()]
+    return [line.strip() for line in value.splitlines() if line.strip()]
 
 
 def _action(path: str, admin_key: str) -> str:
