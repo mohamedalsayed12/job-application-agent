@@ -1,7 +1,7 @@
 """Candidate queue: dedupe, claim, and verification retry scheduling (Step 8)."""
 
 from app.queue.claim import claim_next_candidate, release_stale_claims
-from app.queue.dedupe import finalize_new_candidate, ingest_candidate
+from app.queue.dedupe import ingest_candidate
 from app.queue.domains import normalize_domain
 from app.queue.retry import schedule_verification_failure
 from app.queue.types import (
@@ -18,7 +18,6 @@ __all__ = [
     "DedupeResult",
     "RetrySchedule",
     "claim_next_candidate",
-    "finalize_new_candidate",
     "ingest_candidate",
     "next_retry_schedule",
     "normalize_domain",

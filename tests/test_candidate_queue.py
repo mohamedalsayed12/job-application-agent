@@ -102,6 +102,27 @@ def test_t13_name_alone_never_merges_across_domains(session: Session) -> None:
     assert second.survivor.state == CandidateState.queued
 
 
+def test_t13_name_with_disjoint_domain_candidates_stay_separate(session: Session) -> None:
+    first = ingest_candidate(
+        session,
+        company_name="Acme Ltd",
+        extracted_by=ExtractedBy.ai,
+        domain_candidates=["acme.com", "acme.co.uk"],
+        evidence=_evidence(1),
+    )
+    second = ingest_candidate(
+        session,
+        company_name="Acme Limited",
+        extracted_by=ExtractedBy.ai,
+        domain_candidates=["other-acme.com", "other-acme.io"],
+        evidence=_evidence(2),
+    )
+    session.flush()
+    assert first.survivor.id != second.survivor.id
+    assert first.survivor.primary_domain is None
+    assert second.survivor.primary_domain is None
+
+
 def test_t13_name_without_domain_groups_into_one(session: Session) -> None:
     rows = [
         ingest_candidate(
@@ -140,19 +161,43 @@ def test_dedupe_board_already_in_directory(session: Session) -> None:
     )
     session.flush()
 
-    result = ingest_candidate(
+    first = ingest_candidate(
         session,
         company_name="Example",
         extracted_by=ExtractedBy.code,
         board_system="greenhouse",
         board_instance="greenhouse",
         board_id="example",
-        evidence=_evidence(),
+        evidence=_evidence(1),
+    )
+    second = ingest_candidate(
+        session,
+        company_name="Example Corp",
+        extracted_by=ExtractedBy.code,
+        board_system="greenhouse",
+        board_instance="greenhouse",
+        board_id="example",
+        evidence=_evidence(2),
     )
     session.flush()
-    assert result.reason == "board_directory"
-    assert result.survivor.state == CandidateState.duplicate
-    assert result.survivor.employer_id == employer.id
+    assert first.reason == "board_directory"
+    assert first.survivor.state == CandidateState.duplicate
+    assert first.survivor.employer_id == employer.id
+    assert second.survivor.id == first.survivor.id
+    evidence_count = session.scalar(
+        select(func.count())
+        .select_from(CandidateEvidence)
+        .where(CandidateEvidence.candidate_id == first.survivor.id)
+    )
+    assert evidence_count == 2
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(Candidate)
+            .where(Candidate.board_id == "example")
+        )
+        == 1
+    )
 
 
 def test_dedupe_discovery_cache_blocks_before_revisit(session: Session) -> None:
