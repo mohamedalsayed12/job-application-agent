@@ -1,4 +1,4 @@
-"""T5 / T6 / T9 and search_run states with mocked Mojeek and Reed responses."""
+"""T5 / T6 / T9 and search_run states with mocked SerpAPI, Mojeek, and Reed responses."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from math import ceil
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, unquote_plus
 
 import httpx
 import pytest
@@ -40,7 +40,8 @@ from app.search.templates import (
 
 def _settings(**overrides: object) -> Settings:
     base: dict[str, object] = dict(
-        web_search_provider="mojeek",
+        web_search_provider="serpapi",
+        serpapi_api_key="test-serpapi-key",
         mojeek_api_key="test-mojeek-key",
         reed_api_key="test-reed-key",
         adzuna_enabled=False,
@@ -88,10 +89,31 @@ def _gateway(handler: object) -> FetchGateway:
     transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
     return FetchGateway(
         user_agent="JobApplicationAgent-Test/0.1",
-        allowlist=frozenset({"api.mojeek.com", "www.reed.co.uk", "api.reed.co.uk"}),
+        allowlist=frozenset(
+            {
+                "serpapi.com",
+                "api.mojeek.com",
+                "www.reed.co.uk",
+                "api.reed.co.uk",
+            }
+        ),
         resolve=_public_resolve,
         transport=transport,
     )
+
+
+def _serpapi_ok_body(
+    *,
+    link: str = "https://boards.greenhouse.io/acme/jobs/1",
+    title: str = "Engineer",
+    snippet: str = "Build things",
+) -> dict[str, object]:
+    return {
+        "search_metadata": {"status": "Success"},
+        "organic_results": [
+            {"position": 1, "link": link, "title": title, "snippet": snippet},
+        ],
+    }
 
 
 def test_templates_seeded_cf1b_disabled(session: Session) -> None:
@@ -101,8 +123,8 @@ def test_templates_seeded_cf1b_disabled(session: Session) -> None:
     assert not is_template_enabled("CF1b", cfg)
     by_id = {r.id: r for r in rows}
     assert by_id["CF1"].provider == "reed"
-    assert by_id["CF2"].provider == "mojeek"
-    assert by_id["BD1"].provider == "mojeek"
+    assert by_id["CF2"].provider == "serpapi"
+    assert by_id["BD1"].provider == "serpapi"
     assert by_id["BD1"].pattern.startswith("Greenhouse")
 
 
@@ -180,33 +202,25 @@ async def test_t9_cost_recorded_immediately(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     ensure_search_templates(session, cfg)
-    _policy(session, Decimal("100"), now)
+    _policy(session, Decimal("0"), now)
     applicant = _applicant(session)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.host == "api.mojeek.com"
+        assert request.url.host == "serpapi.com"
+        assert request.method == "GET"
         qs = parse_qs(urlparse(str(request.url)).query)
-        assert qs["api_key"] == ["test-mojeek-key"]
-        body = {
-            "response": {
-                "status": "OK",
-                "results": [
-                    {
-                        "url": "https://boards.greenhouse.io/acme/jobs/1",
-                        "title": "Engineer",
-                        "desc": "Build things",
-                    }
-                ],
-            }
-        }
-        return httpx.Response(200, json=body)
+        assert qs["api_key"] == ["test-serpapi-key"]
+        assert qs["engine"] == ["google"]
+        assert qs["q"] == ["Software Engineer London hiring"]
+        assert "site:" not in qs["q"][0]
+        return httpx.Response(200, json=_serpapi_ok_body())
 
     gateway = _gateway(handler)
     run = SearchRun(
         template_id="CF2",
         applicant_id=applicant.id,
         query="Software Engineer London hiring",
-        provider="mojeek",
+        provider="serpapi",
         status=SearchRunStatus.planned,
         next_attempt_at=now,
     )
@@ -223,10 +237,10 @@ async def test_t9_cost_recorded_immediately(session: Session) -> None:
     await gateway.aclose()
 
     assert outcome.status == "succeeded"
-    assert outcome.cost_amount == Decimal("0.003")
+    assert outcome.cost_amount == Decimal("0")
     session.refresh(run)
     assert run.status == SearchRunStatus.succeeded
-    assert run.cost_amount == Decimal("0.003")
+    assert run.cost_amount == Decimal("0")
     assert run.result_count == 1
     assert run.finished_at == now
     results = session.scalars(
@@ -234,13 +248,51 @@ async def test_t9_cost_recorded_immediately(session: Session) -> None:
     ).all()
     assert len(results) == 1
     assert results[0].url.startswith("https://boards.greenhouse.io/")
+    assert results[0].title == "Engineer"
+    assert results[0].snippet == "Build things"
     ledger = session.scalars(select(SpendLedger)).all()
     assert len(ledger) == 1
-    assert ledger[0].actual_cost == Decimal("0.003")
+    assert ledger[0].actual_cost == Decimal("0")
     stats = session.get(TemplateStats, "CF2")
     assert stats is not None
     assert stats.run_count == 1
-    assert stats.total_cost == Decimal("0.003")
+    assert stats.total_cost == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_serpapi_bd1_site_filter(session: Session) -> None:
+    cfg = _settings()
+    now = datetime(2026, 11, 5, 12, 30, tzinfo=UTC)
+    ensure_search_templates(session, cfg)
+    _policy(session, Decimal("0"), now)
+    applicant = _applicant(session)
+    seen_q: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        qs = parse_qs(urlparse(str(request.url)).query)
+        seen_q.append(unquote_plus(qs["q"][0]))
+        return httpx.Response(
+            200,
+            json=_serpapi_ok_body(link="https://boards.greenhouse.io/acme/jobs/9"),
+        )
+
+    gateway = _gateway(handler)
+    run = SearchRun(
+        template_id="BD1",
+        applicant_id=applicant.id,
+        query="Software Engineer London",
+        provider="serpapi",
+        status=SearchRunStatus.planned,
+        next_attempt_at=now,
+    )
+    session.add(run)
+    session.flush()
+
+    outcome = await run_search(session, gateway, run, settings=cfg, clock=lambda: now)
+    await gateway.aclose()
+    assert outcome.status == "succeeded"
+    assert seen_q[0].endswith("site:boards.greenhouse.io")
+    assert "Software Engineer London" in seen_q[0]
 
 
 @pytest.mark.asyncio
@@ -316,7 +368,7 @@ async def test_search_run_failed_schedules_retry(session: Session) -> None:
         template_id="CF2",
         applicant_id=applicant.id,
         query="role city",
-        provider="mojeek",
+        provider="serpapi",
         status=SearchRunStatus.planned,
         next_attempt_at=now,
     )
@@ -349,7 +401,7 @@ async def test_search_run_third_retry_uses_thirty_minutes(session: Session) -> N
         template_id="CF2",
         applicant_id=applicant.id,
         query="role city",
-        provider="mojeek",
+        provider="serpapi",
         status=SearchRunStatus.failed,
         attempt_count=2,
         next_attempt_at=now,
@@ -366,6 +418,50 @@ async def test_search_run_third_retry_uses_thirty_minutes(session: Session) -> N
 
 
 @pytest.mark.asyncio
+async def test_serpapi_success_empty_results_not_failure(session: Session) -> None:
+    """SerpAPI Success + empty Google results must be zero-hit success, not failed."""
+    cfg = _settings()
+    now = datetime(2026, 11, 5, 14, 45, tzinfo=UTC)
+    ensure_search_templates(session, cfg)
+    _policy(session, Decimal("0"), now)
+    applicant = _applicant(session)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "search_metadata": {"status": "Success"},
+                "search_information": {
+                    "organic_results_state": "Fully empty",
+                },
+                "error": "Google hasn't returned any results for this query.",
+                "organic_results": [],
+            },
+        )
+
+    gateway = _gateway(handler)
+    run = SearchRun(
+        template_id="CF2",
+        applicant_id=applicant.id,
+        query="obscure niche role nowhere",
+        provider="serpapi",
+        status=SearchRunStatus.planned,
+        next_attempt_at=now,
+    )
+    session.add(run)
+    session.flush()
+
+    outcome = await run_search(session, gateway, run, settings=cfg, clock=lambda: now)
+    await gateway.aclose()
+    assert outcome.status == "succeeded"
+    assert outcome.result_count == 0
+    session.refresh(run)
+    assert run.status == SearchRunStatus.succeeded
+    assert run.result_count == 0
+    assert run.cost_amount == Decimal("0")
+
+
+@pytest.mark.asyncio
 async def test_search_run_inconclusive_no_usable_urls(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 15, 0, tzinfo=UTC)
@@ -378,10 +474,9 @@ async def test_search_run_inconclusive_no_usable_urls(session: Session) -> None:
             200,
             content=json.dumps(
                 {
-                    "response": {
-                        "status": "OK",
-                        "results": [{"url": "", "title": "Empty", "desc": "No link"}],
-                    }
+                    "organic_results": [
+                        {"link": "", "title": "Empty", "snippet": "No link"},
+                    ]
                 }
             ).encode(),
             headers={"content-type": "application/json"},
@@ -392,7 +487,7 @@ async def test_search_run_inconclusive_no_usable_urls(session: Session) -> None:
         template_id="CF2",
         applicant_id=applicant.id,
         query="role city",
-        provider="mojeek",
+        provider="serpapi",
         status=SearchRunStatus.planned,
         next_attempt_at=now,
     )
@@ -405,11 +500,12 @@ async def test_search_run_inconclusive_no_usable_urls(session: Session) -> None:
     session.refresh(run)
     assert run.status == SearchRunStatus.inconclusive
     assert run.next_attempt_at is None
-    assert run.cost_amount == Decimal("0.003")
+    assert run.cost_amount == Decimal("0")
 
 
 @pytest.mark.asyncio
 async def test_budget_wait_leaves_run_planned_with_backoff(session: Session) -> None:
+    """Paid Mojeek path still hits money_cap; SerpAPI free credits do not."""
     cfg = _settings()
     now = datetime(2026, 11, 5, 16, 0, tzinfo=UTC)
     ensure_search_templates(session, cfg)

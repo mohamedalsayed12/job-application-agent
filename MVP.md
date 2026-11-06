@@ -61,7 +61,7 @@ Give each user the highest-quality job listings for the roles they target, with 
 **A "permitted" search API** is an official API whose terms allow programmatic searching and keeping the result URLs and short evidence snippets this pipeline needs. No scraping of search engines.
 - **Candidate to evaluate:** Brave Search API. Its pricing page lists $5 per 1,000 searches with $5 of free monthly credit (about 1,000 searches), though the page header mentions up to $20 free. Storing results needs a plan that includes storage rights. See V1–V3.
 - **Not available:** Bing Search APIs (Microsoft retired them on 11 August 2025). Google's Custom Search JSON API (closed to new customers since 20 January 2026; shuts down 1 January 2027).
-- **Not used:** services that scrape Google results (Google sued SerpApi in December 2025), JobSpy, and any scraping of LinkedIn, Indeed or Glassdoor.
+- **SerpAPI exception (D29):** operator chose SerpAPI as the default web-search API despite Google litigation risk noted historically; JobSpy and LinkedIn/Indeed/Glassdoor scraping remain forbidden.
 
 **Terms that affect the MVP:**
 - **Adzuna** limits commercial use to a 14-day trial, needs a licence for products that generate revenue or leads, requires an "Adzuna" label linking back on every listing, and needs written consent for published aggregated stats.
@@ -682,7 +682,7 @@ Read MVP.md. It's the whole plan, and we're starting from an empty folder. We're
 | D26 | Authentication uses a standard, well-tested library for password hashing and sessions; no custom security code. |
 | D27 | Milestone 1 schema follows `docs/step1-data-model.md`: domain-row queues on `candidate` and `search_run` with `state`/`status` + `next_attempt_at` + `claimed_at`, claimed via `FOR UPDATE SKIP LOCKED`; unique keys on `employer.official_domain`, `employer_board (system, instance, board_id)`, and `job_posting (source, source_job_id)`; relational evidence tables plus JSONB only for raw payloads and small structured maps; Milestone 2 entities omitted. |
 | D28 | Fetch gateway and budget gate follow `docs/step2-fetch-budget-design.md`: outbound HTTP via `httpx` with manual redirects; stdlib robots.txt parser with 24h in-process cache for page fetches only; in-process per-host 1 req/s limit; HTTPS + DNS/private-address checks on every hop; LinkedIn/Indeed/Glassdoor blocked; paid calls insert `spend_ledger` with estimate before the call and settle after; missing/null/zero monthly `money_cap` refuses paid calls until B1. |
-| D29 | Web search provider for CF2/CF3/BD1/BD2 is Mojeek Search API on the Business plan (indefinite storage rights; `site` filter), per `docs/step5-search-provider-design.md`. Brave Search remains a candidate only after written storage rights. Reed powers CF1. CF1b (Adzuna) stays disabled until V9 is confirmed by the operator. Provider id is a setting, not a hard-coded domain type. |
+| D29 | Web search provider for CF2/CF3/BD1/BD2 is **SerpAPI** (Google engine; free plan 250 searches/mo = £0 money cost; BD1/BD2 use Google `site:`). Signup: https://serpapi.com. **V1 note:** SerpAPI Terms do not publish a Tavily/Mojeek-style durable-storage FAQ; Legal Shield covers collection only and excludes Free/Starter/Developer — MVP still persists URL/title/snippet as audit evidence with that caveat (prefer Mojeek Business if explicit retention rights are required). Reed powers CF1. CF1b (Adzuna) stays disabled until V9. **Mojeek Business** remains the optional paid fallback (indefinite storage; `site` filter). Brave only after written storage rights. Provider id is a setting (`WEB_SEARCH_PROVIDER`), not a hard-coded domain type. |
 
 ### Assumptions (believed, not yet proven)
 | ID | Assumption | How it gets tested |
@@ -713,9 +713,9 @@ Read MVP.md. It's the whole plan, and we're starting from an empty folder. We're
 ### Needs validation before or during Stage A
 | ID | What to check | Why it matters |
 |---|---|---|
-| V1 | Search API terms: storing URLs and snippets, caching, attribution, commercial use | Mojeek Business: pass for URL/title/snippet retention (operator still accepts terms at signup). Brave self-serve: fail until Order Form. |
-| V2 | Whether the search API can limit results to one website (or equivalent) | Mojeek `site` / Brave `site:`: pass. |
-| V3 | Search API pricing, free credit and rate limits | Mojeek Business £3/1k, 10 qps, 400k/day (unit price £0.003 in `pricing` / settings). Brave Search $5/1k + $5 free/month, 50 qps. |
+| V1 | Search API terms: storing URLs and snippets, caching, attribution, commercial use | SerpAPI: no explicit durable-storage grant (weaker than Mojeek/Tavily FAQs); proceed with documented caveat for MVP audit rows. Mojeek Business: pass. Brave self-serve: fail until Order Form. |
+| V2 | Whether the search API can limit results to one website (or equivalent) | SerpAPI Google `site:`; Mojeek `site`; Brave `site:`: pass. |
+| V3 | Search API pricing, free credit and rate limits | SerpAPI Free: 250 searches/mo, 50/hr throughput, £0 money_cap. Paid from Starter $25/mo (1k searches). Mojeek Business £3/1k (unit price £0.003). |
 | V4 | Reed: key, cost, limits, terms for showing jobs, fields returned, and what job details return for expired jobs | Key free; display/storage/rate limit still operator-owned (CF1). |
 | V5 | Greenhouse and Lever: how each signals "not found", "empty" and "error"; Lever EU detection; real date fields; rate limits; terms for third parties showing jobs | Verification labels and the failure rules |
 | V6 | AI provider cost, limits and model choice | AI caps and value per £ |

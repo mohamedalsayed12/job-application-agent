@@ -25,16 +25,18 @@ class Settings(BaseSettings):
         "api.lever.co,api.eu.lever.co,"
         "www.reed.co.uk,api.reed.co.uk,"
         "api.adzuna.com,api.adzuna.co.uk,"
+        "serpapi.com,"
         "api.mojeek.com"
     )
 
-    # D29: web search provider id is a setting (default Mojeek Business).
-    web_search_provider: str = "mojeek"
+    # D29: web search provider id is a setting (default SerpAPI free tier).
+    web_search_provider: str = "serpapi"
+    serpapi_api_key: str = ""
     mojeek_api_key: str = ""
     reed_api_key: str = ""
     adzuna_enabled: bool = False
 
-    # Mojeek Business £3/1k ⇒ £0.003 per request (V3); operators override via env.
+    # Paid Mojeek Business fallback £3/1k ⇒ £0.003; SerpAPI free tier is £0 via FREE_MONEY.
     search_request_unit_price: Decimal = Decimal("0.003")
     ai_extraction_unit_price: Decimal = Decimal("0.002")
     ai_summary_unit_price: Decimal = Decimal("0.001")
