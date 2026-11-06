@@ -8,7 +8,7 @@ def normalize_board_id(board_id: str) -> str | None:
     value = board_id.strip()
     if not value:
         return None
-    if any(ch in value for ch in ("/", "\\", "?", "#", "&", " ")):
+    if any(ch in value for ch in ("/", "\\", "?", "#", "&", " ", "\x00", "\n", "\r")):
         return None
     if ".." in value:
         return None

@@ -1,0 +1,10 @@
+{
+  "source": "reed_jobseeker_details_shape",
+  "note": "Details with no external ATS link; apply stays on reed.co.uk.",
+  "jobId": 51234568,
+  "employerName": "Democorp PLC",
+  "jobTitle": "Software Engineer",
+  "jobUrl": "https://www.reed.co.uk/jobs/software-engineer/51234568",
+  "externalUrl": null,
+  "jobDescription": "Build services in London."
+}

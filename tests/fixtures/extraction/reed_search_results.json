@@ -1,0 +1,20 @@
+{
+  "source": "reed_jobseeker_search_shape",
+  "note": "Search list shape from Reed Jobseeker docs. External Url is only on Jobs Details; see reed_job_details_*.json.",
+  "results": [
+    {
+      "jobId": 51234567,
+      "employerName": "Example Corp Ltd",
+      "jobTitle": "Account Director",
+      "jobUrl": "https://www.reed.co.uk/jobs/account-director/51234567",
+      "jobDescription": "Lead accounts for Example."
+    },
+    {
+      "jobId": 51234568,
+      "employerName": "Democorp PLC",
+      "jobTitle": "Software Engineer",
+      "jobUrl": "https://www.reed.co.uk/jobs/software-engineer/51234568",
+      "jobDescription": "Build services in London."
+    }
+  ]
+}
