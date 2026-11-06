@@ -1,0 +1,24 @@
+{
+  "source": "adzuna_search_shape",
+  "note": "Adzuna GB search result shape; one redirect_url is a real Lever EU hostedUrl from fixtures.",
+  "results": [
+    {
+      "id": "1234567890",
+      "title": "Backend Engineer",
+      "company": {
+        "display_name": "Lever Demo EU Limited"
+      },
+      "redirect_url": "https://jobs.eu.lever.co/lever/065f4538-7347-4207-909f-4ea68f63b4af",
+      "description": "EU Lever-hosted role."
+    },
+    {
+      "id": "1234567891",
+      "title": "Product Manager",
+      "company": {
+        "display_name": "Acme Agency"
+      },
+      "redirect_url": "https://www.adzuna.co.uk/details/1234567891",
+      "description": "Agency listing with Adzuna redirect."
+    }
+  ]
+}
