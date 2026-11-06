@@ -682,7 +682,7 @@ Read MVP.md. It's the whole plan, and we're starting from an empty folder. We're
 | D26 | Authentication uses a standard, well-tested library for password hashing and sessions; no custom security code. |
 | D27 | Milestone 1 schema follows `docs/step1-data-model.md`: domain-row queues on `candidate` and `search_run` with `state`/`status` + `next_attempt_at` + `claimed_at`, claimed via `FOR UPDATE SKIP LOCKED`; unique keys on `employer.official_domain`, `employer_board (system, instance, board_id)`, and `job_posting (source, source_job_id)`; relational evidence tables plus JSONB only for raw payloads and small structured maps; Milestone 2 entities omitted. |
 | D28 | Fetch gateway and budget gate follow `docs/step2-fetch-budget-design.md`: outbound HTTP via `httpx` with manual redirects; stdlib robots.txt parser with 24h in-process cache for page fetches only; in-process per-host 1 req/s limit; HTTPS + DNS/private-address checks on every hop; LinkedIn/Indeed/Glassdoor blocked; paid calls insert `spend_ledger` with estimate before the call and settle after; missing/null/zero monthly `money_cap` refuses paid calls until B1. |
-| D29 | Web search provider for CF2/CF3/BD1/BD2 is Mojeek Search API on the Business plan (indefinite storage rights; `site` filter), per `docs/step5-search-provider-design.md`. Brave Search remains a candidate only after written storage rights. Reed powers CF1. CF1b (Adzuna) stays disabled until V9 is confirmed by the operator. Provider id is a setting, not a hard-coded domain type. |
+| D29 | Web search provider for CF2/CF3/BD1/BD2 is **Tavily Search** (Researcher free tier OK; Help Center allows long-term URL/title/snippet storage; BD1/BD2 use `include_domains`). Signup: https://app.tavily.com. Reed powers CF1. CF1b (Adzuna) stays disabled until V9. **Mojeek Business** remains the optional paid fallback (indefinite storage; `site` filter). Brave only after written storage rights. Provider id is a setting (`WEB_SEARCH_PROVIDER`), not a hard-coded domain type. See `docs/search-api-alternatives.md`. |
 
 ### Assumptions (believed, not yet proven)
 | ID | Assumption | How it gets tested |
@@ -713,9 +713,9 @@ Read MVP.md. It's the whole plan, and we're starting from an empty folder. We're
 ### Needs validation before or during Stage A
 | ID | What to check | Why it matters |
 |---|---|---|
-| V1 | Search API terms: storing URLs and snippets, caching, attribution, commercial use | Mojeek Business: pass for URL/title/snippet retention (operator still accepts terms at signup). Brave self-serve: fail until Order Form. |
-| V2 | Whether the search API can limit results to one website (or equivalent) | Mojeek `site` / Brave `site:`: pass. |
-| V3 | Search API pricing, free credit and rate limits | Mojeek Business £3/1k, 10 qps, 400k/day (unit price £0.003 in `pricing` / settings). Brave Search $5/1k + $5 free/month, 50 qps. |
+| V1 | Search API terms: storing URLs and snippets, caching, attribution, commercial use | Tavily: pass (Help: long-term metadata + snippets; email support before multi-customer cache sharing). Mojeek Business: pass. Brave self-serve: fail until Order Form. |
+| V2 | Whether the search API can limit results to one website (or equivalent) | Tavily `include_domains` (restrict); Mojeek `site`; Brave `site:`: pass. |
+| V3 | Search API pricing, free credit and rate limits | Tavily Researcher: 1,000 credits/mo free, no card; basic search = 1 credit; PAYGO ~$0.008/credit. Mojeek Business £3/1k (unit price £0.003). |
 | V4 | Reed: key, cost, limits, terms for showing jobs, fields returned, and what job details return for expired jobs | Key free; display/storage/rate limit still operator-owned (CF1). |
 | V5 | Greenhouse and Lever: how each signals "not found", "empty" and "error"; Lever EU detection; real date fields; rate limits; terms for third parties showing jobs | Verification labels and the failure rules |
 | V6 | AI provider cost, limits and model choice | AI caps and value per £ |

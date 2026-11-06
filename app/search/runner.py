@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.search.mojeek import search_mojeek
 from app.search.reed import search_reed
+from app.search.tavily import search_tavily
 from app.search.templates import get_template_spec
 from app.search.types import (
     ProviderFailure,
@@ -258,6 +259,13 @@ async def _call_provider(
             gateway,
             keywords=query,
             location_name=location,
+            settings=settings,
+        )
+    if provider == "tavily":
+        return await search_tavily(
+            gateway,
+            query=query,
+            site=site,
             settings=settings,
         )
     if provider == "mojeek":

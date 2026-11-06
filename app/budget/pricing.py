@@ -7,7 +7,8 @@ from decimal import Decimal
 from app.core.config import Settings
 from app.models import SpendKind
 
-FREE_MONEY_PROVIDERS = frozenset({"reed", "adzuna"})
+# Reed/Adzuna quotas and Tavily Researcher free credits do not spend money_cap.
+FREE_MONEY_PROVIDERS = frozenset({"reed", "adzuna", "tavily"})
 
 
 def estimate_cost(
