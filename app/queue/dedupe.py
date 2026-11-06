@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
-from app.extraction.names import clean_company_name
 from app.models import (
     CANDIDATE_LIVE_UNIQUE_EXCLUDES,
     Candidate,
@@ -20,6 +20,7 @@ from app.models import (
     EmployerBoard,
 )
 from app.queue.domains import normalize_domain
+from app.queue.names import clean_company_name
 from app.queue.types import BoardKey, DedupeReason, DedupeResult
 
 # Partial-unique indexes ignore duplicate/rejected; live queue lookups also
@@ -27,6 +28,8 @@ from app.queue.types import BoardKey, DedupeReason, DedupeResult
 _EXCLUDED_FROM_LIVE = tuple(CANDIDATE_LIVE_UNIQUE_EXCLUDES)
 _CACHE_STATES = (CandidateState.unsupported, CandidateState.rejected)
 _NOT_ACTIVE = _EXCLUDED_FROM_LIVE + (CandidateState.unsupported,)
+_CLAIMABLE = (CandidateState.new, CandidateState.queued, CandidateState.retry_wait, CandidateState.verifying)
+_DIRECTORY_REASONS = frozenset({"board_directory", "domain_directory"})
 
 
 def ingest_candidate(
@@ -49,7 +52,9 @@ def ingest_candidate(
     ``evidence`` items are ``(search_result_id, quoted_text, source_url)``.
     """
     stamp = now or datetime.now(UTC)
-    domains = [d for d in (normalize_domain(x) for x in (domain_candidates or [])) if d]
+    domains = list(
+        dict.fromkeys(d for d in (normalize_domain(x) for x in (domain_candidates or [])) if d)
+    )
     primary = normalize_domain(primary_domain)
     if primary is None and len(domains) == 1:
         primary = domains[0]
@@ -101,10 +106,24 @@ def ingest_candidate(
     else:
         survivor = hit.candidate
         assert survivor is not None
+        if hit.kind == "requeue_cache":
+            survivor.state = CandidateState.queued
+            survivor.attempt_count = 0
+            survivor.claimed_at = None
+            survivor.last_error = None
+            survivor.next_attempt_at = stamp
+            survivor.revisit_at = None
         _enrich(survivor, company_name=company_name, domains=domains, primary=primary, board=board)
         if ai_extraction_id is not None and survivor.ai_extraction_id is None:
             survivor.ai_extraction_id = ai_extraction_id
-        if survivor.state == CandidateState.new:
+        if hit.reason in _DIRECTORY_REASONS:
+            if hit.employer_id is not None:
+                survivor.employer_id = hit.employer_id
+            if survivor.state in _CLAIMABLE:
+                survivor.state = CandidateState.duplicate
+                survivor.claimed_at = None
+                survivor.next_attempt_at = None
+        elif survivor.state == CandidateState.new:
             survivor.state = CandidateState.queued
             if survivor.next_attempt_at is None:
                 survivor.next_attempt_at = stamp
@@ -125,7 +144,7 @@ def ingest_candidate(
 
 @dataclass(frozen=True, slots=True)
 class _ResolveHit:
-    kind: Literal["none", "existing", "directory_only"]
+    kind: Literal["none", "existing", "directory_only", "requeue_cache"]
     reason: DedupeReason
     candidate: Candidate | None = None
     employer_id: uuid.UUID | None = None
@@ -140,7 +159,9 @@ def _resolve(
     board: BoardKey | None,
     now: datetime,
 ) -> _ResolveHit:
-    # 1. Board key — directory first, then live queue, then discovery cache.
+    domain_keys = list(dict.fromkeys([*( [primary] if primary else [] ), *domains]))
+
+    # 1. Board key — directory, live, discovery cache (active or due for requeue).
     if board is not None:
         directory = _board_in_directory(session, board)
         if directory is not None:
@@ -148,7 +169,12 @@ def _resolve(
                 session, directory.employer_id
             )
             if linked is not None:
-                return _ResolveHit("existing", "board_directory", candidate=linked)
+                return _ResolveHit(
+                    "existing",
+                    "board_directory",
+                    candidate=linked,
+                    employer_id=directory.employer_id,
+                )
             return _ResolveHit(
                 "directory_only",
                 "board_directory",
@@ -160,33 +186,54 @@ def _resolve(
         cached = _discovery_cache_board(session, board, now=now)
         if cached is not None:
             return _ResolveHit("existing", "discovery_cache", candidate=cached)
+        due = _due_cache_board(session, board, now=now)
+        if due is not None:
+            return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
 
-    # 2. Official / primary domain — directory, live, then discovery cache.
-    if primary is not None:
+    # 2. Official / primary domain — try each domain key (primary + candidates).
+    for domain in domain_keys:
         employer = session.scalars(
-            select(Employer).where(Employer.official_domain == primary)
+            select(Employer).where(Employer.official_domain == domain)
         ).first()
         if employer is not None:
-            linked = _live_by_domain(session, primary) or _any_for_employer(
-                session, employer.id
+            linked = (
+                _live_by_domain(session, domain)
+                or _live_by_domain_candidate(session, domain)
+                or _any_for_employer(session, employer.id)
             )
             if linked is not None:
-                return _ResolveHit("existing", "domain_directory", candidate=linked)
+                return _ResolveHit(
+                    "existing",
+                    "domain_directory",
+                    candidate=linked,
+                    employer_id=employer.id,
+                )
             return _ResolveHit(
                 "directory_only",
                 "domain_directory",
                 employer_id=employer.id,
             )
-        live = _live_by_domain(session, primary)
+        live = _live_by_domain(session, domain) or _live_by_domain_candidate(
+            session, domain
+        )
         if live is not None:
             return _ResolveHit("existing", "domain_live", candidate=live)
-        cached = _discovery_cache_domain(session, primary, now=now)
+        cached = _discovery_cache_domain(session, domain, now=now)
         if cached is not None:
             return _ResolveHit("existing", "discovery_cache", candidate=cached)
+        due = _due_cache_domain(session, domain, now=now)
+        if due is not None:
+            return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
 
     # 3. Cleaned name — group only when both sides have no board and no domains.
     #    A matching name alone never merges across different domains.
     if primary is None and board is None and not domains:
+        cached = _discovery_cache_name(session, cleaned, now=now)
+        if cached is not None:
+            return _ResolveHit("existing", "discovery_cache", candidate=cached)
+        due = _due_cache_name(session, cleaned, now=now)
+        if due is not None:
+            return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
         grouped = _live_by_name_bare(session, cleaned)
         if grouped is not None:
             return _ResolveHit("existing", "name_group", candidate=grouped)
@@ -253,6 +300,22 @@ def _live_by_domain(session: Session, domain: str) -> Candidate | None:
     ).first()
 
 
+def _array_has(column: ColumnElement[list[str]], value: str):
+    """True when a text[] column contains ``value`` (Postgres ``@>``)."""
+    return column.contains([value])
+
+
+def _live_by_domain_candidate(session: Session, domain: str) -> Candidate | None:
+    """Match a host listed in domain_candidates when primary_domain is unset."""
+    return session.scalars(
+        select(Candidate).where(
+            Candidate.primary_domain.is_(None),
+            _array_has(Candidate.domain_candidates, domain),
+            Candidate.state.notin_(_NOT_ACTIVE),
+        )
+    ).first()
+
+
 def _live_by_name_bare(session: Session, cleaned: str) -> Candidate | None:
     """Same cleaned name with no board and empty domain list — one queue row (T13)."""
     return session.scalars(
@@ -287,6 +350,25 @@ def _any_for_employer(session: Session, employer_id: uuid.UUID) -> Candidate | N
     ).first()
 
 
+def _active_cache_predicate(now: datetime):
+    """Rejected never retries; unsupported blocks until revisit_at is due."""
+    return or_(
+        Candidate.state == CandidateState.rejected,
+        and_(
+            Candidate.state == CandidateState.unsupported,
+            or_(Candidate.revisit_at.is_(None), Candidate.revisit_at > now),
+        ),
+    )
+
+
+def _due_unsupported_predicate(now: datetime):
+    return and_(
+        Candidate.state == CandidateState.unsupported,
+        Candidate.revisit_at.is_not(None),
+        Candidate.revisit_at <= now,
+    )
+
+
 def _discovery_cache_board(
     session: Session,
     board: BoardKey,
@@ -298,8 +380,23 @@ def _discovery_cache_board(
             Candidate.board_system == board.system,
             Candidate.board_instance == board.instance,
             Candidate.board_id == board.board_id,
-            Candidate.state.in_(_CACHE_STATES),
-            or_(Candidate.revisit_at.is_(None), Candidate.revisit_at > now),
+            _active_cache_predicate(now),
+        )
+    ).first()
+
+
+def _due_cache_board(
+    session: Session,
+    board: BoardKey,
+    *,
+    now: datetime,
+) -> Candidate | None:
+    return session.scalars(
+        select(Candidate).where(
+            Candidate.board_system == board.system,
+            Candidate.board_instance == board.instance,
+            Candidate.board_id == board.board_id,
+            _due_unsupported_predicate(now),
         )
     ).first()
 
@@ -312,9 +409,62 @@ def _discovery_cache_domain(
 ) -> Candidate | None:
     return session.scalars(
         select(Candidate).where(
-            Candidate.primary_domain == domain,
-            Candidate.state.in_(_CACHE_STATES),
-            or_(Candidate.revisit_at.is_(None), Candidate.revisit_at > now),
+            or_(
+                Candidate.primary_domain == domain,
+                _array_has(Candidate.domain_candidates, domain),
+            ),
+            _active_cache_predicate(now),
+        )
+    ).first()
+
+
+def _due_cache_domain(
+    session: Session,
+    domain: str,
+    *,
+    now: datetime,
+) -> Candidate | None:
+    return session.scalars(
+        select(Candidate).where(
+            or_(
+                Candidate.primary_domain == domain,
+                _array_has(Candidate.domain_candidates, domain),
+            ),
+            _due_unsupported_predicate(now),
+        )
+    ).first()
+
+
+def _discovery_cache_name(
+    session: Session,
+    cleaned: str,
+    *,
+    now: datetime,
+) -> Candidate | None:
+    return session.scalars(
+        select(Candidate).where(
+            Candidate.cleaned_name == cleaned,
+            Candidate.primary_domain.is_(None),
+            Candidate.board_system.is_(None),
+            func.cardinality(Candidate.domain_candidates) == 0,
+            _active_cache_predicate(now),
+        )
+    ).first()
+
+
+def _due_cache_name(
+    session: Session,
+    cleaned: str,
+    *,
+    now: datetime,
+) -> Candidate | None:
+    return session.scalars(
+        select(Candidate).where(
+            Candidate.cleaned_name == cleaned,
+            Candidate.primary_domain.is_(None),
+            Candidate.board_system.is_(None),
+            func.cardinality(Candidate.domain_candidates) == 0,
+            _due_unsupported_predicate(now),
         )
     ).first()
 

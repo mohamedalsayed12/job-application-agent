@@ -200,6 +200,26 @@ def test_dedupe_board_already_in_directory(session: Session) -> None:
     )
 
 
+def test_import_app_queue_has_no_cycle() -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root)
+    proc = subprocess.run(
+        [sys.executable, "-c", "from app.queue import ingest_candidate, claim_next_candidate"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_dedupe_discovery_cache_blocks_before_revisit(session: Session) -> None:
     now = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
     cached = Candidate(
@@ -317,6 +337,134 @@ def test_stale_verifying_claim_recovered(session: Session) -> None:
     assert row.attempt_count == 1
     assert row.claimed_at is None
     assert row.next_attempt_at == now
+
+
+def test_name_only_unsupported_stays_cached(session: Session) -> None:
+    now = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+    cached = Candidate(
+        company_name="Brightly Software",
+        cleaned_name="brightly software",
+        state=CandidateState.unsupported,
+        extracted_by=ExtractedBy.ai,
+        revisit_at=now + timedelta(days=90),
+        domain_candidates=[],
+    )
+    session.add(cached)
+    session.flush()
+    result = ingest_candidate(
+        session,
+        company_name="Brightly Software",
+        extracted_by=ExtractedBy.ai,
+        evidence=_evidence(),
+        now=now,
+    )
+    session.flush()
+    assert result.survivor.id == cached.id
+    assert result.reason == "discovery_cache"
+    assert result.survivor.state == CandidateState.unsupported
+
+
+def test_due_unsupported_is_requeued_not_duplicated(session: Session) -> None:
+    now = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+    cached = Candidate(
+        company_name="Workday Co",
+        cleaned_name="workday co",
+        primary_domain="workdayco.example",
+        state=CandidateState.unsupported,
+        extracted_by=ExtractedBy.code,
+        revisit_at=now - timedelta(seconds=1),
+        attempt_count=3,
+    )
+    session.add(cached)
+    session.flush()
+    result = ingest_candidate(
+        session,
+        company_name="Workday Co",
+        extracted_by=ExtractedBy.code,
+        primary_domain="workdayco.example",
+        evidence=_evidence(),
+        now=now,
+    )
+    session.flush()
+    assert result.survivor.id == cached.id
+    assert result.survivor.state == CandidateState.queued
+    assert result.survivor.attempt_count == 0
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(Candidate)
+            .where(Candidate.primary_domain == "workdayco.example")
+        )
+        == 1
+    )
+
+
+def test_multi_domain_candidates_merge_on_shared_host(session: Session) -> None:
+    first = ingest_candidate(
+        session,
+        company_name="Acme",
+        extracted_by=ExtractedBy.ai,
+        domain_candidates=["https://www.acme.com/jobs", "acme.com"],
+        evidence=_evidence(1),
+    )
+    second = ingest_candidate(
+        session,
+        company_name="Acme Inc",
+        extracted_by=ExtractedBy.ai,
+        domain_candidates=["http://acme.com"],
+        evidence=_evidence(2),
+    )
+    session.flush()
+    assert first.survivor.id == second.survivor.id
+    assert first.survivor.primary_domain == "acme.com"
+
+
+def test_directory_hit_marks_queued_duplicate(session: Session) -> None:
+    now = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+    queued = ingest_candidate(
+        session,
+        company_name="Example",
+        extracted_by=ExtractedBy.code,
+        board_system="greenhouse",
+        board_instance="greenhouse",
+        board_id="example",
+        evidence=_evidence(1),
+        now=now,
+    ).survivor
+    assert queued.state == CandidateState.queued
+    employer = Employer(
+        name="Example",
+        cleaned_name="example",
+        official_domain="example.example",
+        careers_system="greenhouse",
+    )
+    session.add(employer)
+    session.flush()
+    session.add(
+        EmployerBoard(
+            employer_id=employer.id,
+            system="greenhouse",
+            instance="greenhouse",
+            board_id="example",
+            evidence_level=EvidenceLevel.strong,
+            status=BoardStatus.verified,
+        )
+    )
+    session.flush()
+    result = ingest_candidate(
+        session,
+        company_name="Example",
+        extracted_by=ExtractedBy.code,
+        board_system="greenhouse",
+        board_instance="greenhouse",
+        board_id="example",
+        evidence=_evidence(2),
+        now=now,
+    )
+    session.flush()
+    assert result.survivor.id == queued.id
+    assert result.survivor.state == CandidateState.duplicate
+    assert claim_next_candidate(session, now=now) is None
 
 
 def test_unsupported_revisit_requeues(session: Session) -> None:
