@@ -26,7 +26,8 @@ class Settings(BaseSettings):
         "www.reed.co.uk,api.reed.co.uk,"
         "api.adzuna.com,api.adzuna.co.uk,"
         "serpapi.com,"
-        "api.mojeek.com"
+        "api.mojeek.com,"
+        "api.openai.com"
     )
 
     # D29: web search provider id is a setting (default SerpAPI free tier).
@@ -36,9 +37,18 @@ class Settings(BaseSettings):
     reed_api_key: str = ""
     adzuna_enabled: bool = False
 
+    # D30: leftover AI extraction (OpenAI gpt-4o-mini + strict JSON Schema).
+    ai_provider: str = "openai"
+    ai_extraction_model: str = "gpt-4o-mini"
+    openai_api_key: str = ""
+    # B4 seed ≈ $0.0005 per leftover batch (1.5k in + 0.4k out).
+    ai_extraction_per_item_token_cap: int = 2500
+    ai_extraction_max_output_tokens: int = 500
+    ai_extraction_daily_token_cap: int = 100_000
+
     # Paid Mojeek Business fallback £3/1k ⇒ £0.003; SerpAPI free tier is £0 via FREE_MONEY.
     search_request_unit_price: Decimal = Decimal("0.003")
-    ai_extraction_unit_price: Decimal = Decimal("0.002")
+    ai_extraction_unit_price: Decimal = Decimal("0.0005")
     ai_summary_unit_price: Decimal = Decimal("0.001")
 
     @field_validator(

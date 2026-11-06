@@ -1,0 +1,16 @@
+{
+  "results": [
+    {
+      "rank": 1,
+      "url": "https://brightlysoftware.example/about",
+      "title": "Brightly Software careers hub",
+      "snippet": "Brightly Software is hiring backend engineers in Manchester. Visit brightlysoftware.example for openings."
+    },
+    {
+      "rank": 2,
+      "url": "https://news.example/uk-tech-roundup",
+      "title": "UK tech hiring roundup",
+      "snippet": "Brightly Software opened a new Manchester office this spring."
+    }
+  ]
+}
