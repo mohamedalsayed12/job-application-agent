@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 from app.models import Candidate, VerificationOutcome
 from app.queue.domains import normalize_domain
@@ -11,6 +13,7 @@ from app.verify.html import page_title
 from app.verify.types import CheckRecord, OfficialDomainCheck
 
 _RETRYABLE_REFUSALS = frozenset({"timeout", "http_error"})
+_PHRASE = re.compile(r"\s+")
 
 
 def candidate_domains(candidate: Candidate) -> list[str]:
@@ -27,11 +30,18 @@ def candidate_domains(candidate: Candidate) -> list[str]:
 
 
 def names_match(company_name: str, page_title_text: str) -> bool:
+    """Whole cleaned phrase match (word boundaries), not bare substring."""
     cleaned_company = clean_company_name(company_name)
     cleaned_title = clean_company_name(page_title_text)
     if not cleaned_company or not cleaned_title:
         return False
-    return cleaned_company in cleaned_title or cleaned_title in cleaned_company
+    if cleaned_company == cleaned_title:
+        return True
+    pattern = re.compile(
+        rf"(?:^|\s){re.escape(cleaned_company)}(?:\s|$)",
+        re.IGNORECASE,
+    )
+    return pattern.search(_PHRASE.sub(" ", cleaned_title)) is not None
 
 
 async def confirm_official_domain(

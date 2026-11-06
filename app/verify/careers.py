@@ -2,25 +2,33 @@
 
 from __future__ import annotations
 
-from urllib.parse import urljoin, urlparse
+from typing import Literal
+from urllib.parse import urlparse
 
-from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
+from app.fetch.gateway import FetchGateway
+from app.fetch.policy import host_matches_suffix
 from app.models import VerificationOutcome
 from app.verify.html import extract_hrefs, host_of
+from app.verify.pages import fetch_official_page
 from app.verify.types import (
     UNSUPPORTED_CAREERS_MARKERS,
     CheckRecord,
     UnsupportedCareers,
 )
 
-_CAREERS_PATHS = ("/careers", "/careers/", "/jobs", "/jobs/", "/about/careers")
-_RETRYABLE = frozenset({"timeout", "http_error"})
+_CAREERS_PATHS = ("/careers", "/jobs")
+_MAX_PAGE_FETCHES = 3
+
+CareersResult = UnsupportedCareers | None | Literal["retry"]
 
 
-def detect_unsupported_marker(url: str, html: str = "") -> str | None:
-    haystack = f"{url}\n{html}".lower()
+def detect_unsupported_host(url: str) -> str | None:
+    """Match unsupported ATS by link host suffix only (never page-body substrings)."""
+    host = host_of(url)
+    if host is None:
+        return None
     for system, marker in UNSUPPORTED_CAREERS_MARKERS:
-        if marker in haystack:
+        if host_matches_suffix(host, marker):
             return system
     return None
 
@@ -31,100 +39,74 @@ async def find_unsupported_careers(
     domain: str,
     homepage_html: str | None = None,
     homepage_url: str | None = None,
-) -> UnsupportedCareers | None | str:
-    """Return UnsupportedCareers, None if none found, or 'retry' on transport error."""
+) -> CareersResult:
+    """Return UnsupportedCareers, None if none found, or ``\"retry\"`` on transport error."""
     pages: list[tuple[str, str]] = []
+    fetches = 0
+
     if homepage_html is not None and homepage_url is not None:
         pages.append((homepage_url, homepage_html))
         for href in extract_hrefs(homepage_html, base_url=homepage_url):
-            if _looks_like_careers_link(href, domain):
-                fetched = await _fetch_page(gateway, href, domain)
-                if fetched == "retry":
-                    return "retry"
-                if fetched is not None:
-                    pages.append(fetched)
+            system = detect_unsupported_host(href)
+            if system is not None:
+                return _hit(system, href)
+            if fetches >= _MAX_PAGE_FETCHES:
+                break
+            if not _looks_like_same_domain_careers(href, domain):
+                continue
+            fetched = await fetch_official_page(gateway, href, domain=domain)
+            fetches += 1
+            if fetched.kind == "retry":
+                return "retry"
+            if fetched.kind == "ok" and fetched.url and fetched.html is not None:
+                pages.append((fetched.url, fetched.html))
 
     for path in _CAREERS_PATHS:
+        if fetches >= _MAX_PAGE_FETCHES:
+            break
         url = f"https://{domain}{path}"
         if any(p[0].rstrip("/") == url.rstrip("/") for p in pages):
             continue
-        fetched = await _fetch_page(gateway, url, domain)
-        if fetched == "retry":
+        fetched = await fetch_official_page(gateway, url, domain=domain)
+        fetches += 1
+        if fetched.kind == "retry":
             return "retry"
-        if fetched is not None:
-            pages.append(fetched)
+        if fetched.kind == "ok" and fetched.url and fetched.html is not None:
+            pages.append((fetched.url, fetched.html))
 
     for url, html in pages:
-        system = detect_unsupported_marker(url, html)
+        # Current page URL itself may be a Workday vanity host under official_domain
+        # only when the host matches — normally Workday is off-domain via href.
+        system = detect_unsupported_host(url)
         if system is not None:
-            snippet = _snippet_for(system, url, html)
-            return UnsupportedCareers(
-                system=system,
-                evidence_url=url,
-                evidence_snippet=snippet,
-                record=CheckRecord(
-                    check_type="unsupported_careers",
-                    outcome=VerificationOutcome.pass_,
-                    evidence_url=url,
-                    evidence_snippet=snippet,
-                ),
-            )
+            return _hit(system, url)
         for href in extract_hrefs(html, base_url=url):
-            system = detect_unsupported_marker(href)
+            system = detect_unsupported_host(href)
             if system is not None:
-                snippet = href[:200]
-                return UnsupportedCareers(
-                    system=system,
-                    evidence_url=href,
-                    evidence_snippet=snippet,
-                    record=CheckRecord(
-                        check_type="unsupported_careers",
-                        outcome=VerificationOutcome.pass_,
-                        evidence_url=href,
-                        evidence_snippet=snippet,
-                    ),
-                )
+                return _hit(system, href)
     return None
 
 
-def _looks_like_careers_link(url: str, domain: str) -> bool:
+def _hit(system: str, url: str) -> UnsupportedCareers:
+    snippet = (host_of(url) or url)[:200]
+    return UnsupportedCareers(
+        system=system,
+        evidence_url=url,
+        evidence_snippet=snippet,
+        record=CheckRecord(
+            check_type="unsupported_careers",
+            outcome=VerificationOutcome.pass_,
+            evidence_url=url,
+            evidence_snippet=snippet,
+        ),
+    )
+
+
+def _looks_like_same_domain_careers(url: str, domain: str) -> bool:
     host = host_of(url)
     if host is None:
         return False
-    if host == domain or host.endswith("." + domain):
-        path = (urlparse(url).path or "").lower()
-        return any(token in path for token in ("career", "job", "join", "vacanc"))
-    # Off-domain Workday/Ashby hosts linked from the official site.
-    return detect_unsupported_marker(url) is not None
-
-
-async def _fetch_page(
-    gateway: FetchGateway,
-    url: str,
-    domain: str,
-) -> tuple[str, str] | None | str:
-    outcome = await gateway.fetch(
-        FetchRequest(url=url, kind="page", official_domain=domain)
-    )
-    if isinstance(outcome, FetchRefusal):
-        if outcome.reason in _RETRYABLE:
-            return "retry"
-        # Cross-host Workday links are not under official_domain; record URL only.
-        if outcome.reason == "allowlist" and detect_unsupported_marker(url):
-            return (url, "")
-        return None
-    assert isinstance(outcome, FetchResponse)
-    if outcome.status_code != 200:
-        return None
-    return (outcome.url, outcome.body.decode("utf-8", errors="replace"))
-
-
-def _snippet_for(system: str, url: str, html: str) -> str:
-    for _, marker in UNSUPPORTED_CAREERS_MARKERS:
-        if marker in url.lower() or marker in html.lower():
-            return marker[:200]
-    return f"{system}:{url}"[:200]
-
-
-def careers_probe_url(domain: str, path: str = "/careers") -> str:
-    return urljoin(f"https://{domain}/", path.lstrip("/"))
+    if not (host == domain or host.endswith("." + domain)):
+        return False
+    path = (urlparse(url).path or "").lower()
+    return any(token in path for token in ("career", "job", "join", "vacanc"))

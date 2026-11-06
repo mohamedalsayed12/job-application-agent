@@ -16,14 +16,14 @@ from app.verify.types import (
 )
 
 
-def decide_verified(
+def from_board_checks(
     *,
     domain: OfficialDomainCheck,
     ownership: OwnershipAssessment,
     api: ApiAccessCheck,
-    now: datetime,
 ) -> VerifyDecision:
     checks = (domain.record, ownership.record, api.record)
+    confirmed = domain.domain if domain.confirmed else None
     if (
         domain.confirmed
         and ownership.level == EvidenceLevel.strong
@@ -36,6 +36,7 @@ def decide_verified(
             evidence_level=EvidenceLevel.strong,
             board_instance=api.instance,
             last_job_count=api.job_count,
+            confirmed_domain=confirmed,
         )
     if api.access == "not_found":
         return VerifyDecision(
@@ -43,7 +44,7 @@ def decide_verified(
             reason="api_not_found",
             checks=checks,
             evidence_level=ownership.level,
-            board_instance=api.instance,
+            confirmed_domain=confirmed,
             review_priority=40,
         )
     return VerifyDecision(
@@ -51,13 +52,13 @@ def decide_verified(
         reason=f"ownership_{ownership.level.value}",
         checks=checks,
         evidence_level=ownership.level,
-        board_instance=api.instance,
         last_job_count=api.job_count,
+        confirmed_domain=confirmed,
         review_priority=30 if ownership.level == EvidenceLevel.medium else 50,
     )
 
 
-def decide_unsupported(
+def unsupported(
     *,
     domain: OfficialDomainCheck,
     careers: UnsupportedCareers,
@@ -69,29 +70,28 @@ def decide_unsupported(
         checks=(domain.record, careers.record),
         careers_system=careers.system,
         revisit_at=now + UNSUPPORTED_REVISIT,
+        confirmed_domain=domain.domain if domain.confirmed else None,
         review_priority=10,
     )
 
 
-def decide_needs_review(
+def needs_review(
     *,
     reason: str,
     checks: tuple[CheckRecord, ...],
     evidence_level: EvidenceLevel | None = None,
     priority: int = 50,
+    confirmed_domain: str | None = None,
 ) -> VerifyDecision:
     return VerifyDecision(
         state="needs_review",
         reason=reason,
         checks=checks,
         evidence_level=evidence_level,
+        confirmed_domain=confirmed_domain,
         review_priority=priority,
     )
 
 
-def decide_retry(reason: str, checks: tuple[CheckRecord, ...]) -> VerifyDecision:
-    return VerifyDecision(
-        state="retry_wait",
-        reason=reason,
-        checks=checks,
-    )
+def retry(reason: str, checks: tuple[CheckRecord, ...]) -> VerifyDecision:
+    return VerifyDecision(state="retry_wait", reason=reason, checks=checks)

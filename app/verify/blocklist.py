@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from app.fetch.policy import host_matches_suffix
+from app.fetch.policy import BLOCKED_SUFFIXES, host_matches_suffix
 
-# MVP §7 examples plus close cousins already blocked for outbound fetch.
-OFFICIAL_DOMAIN_BLOCKLIST: tuple[str, ...] = (
-    "linkedin.com",
-    "indeed.com",
-    "glassdoor.com",
+# Board hosts from extraction URL parsing — never official company domains.
+_BOARD_HOSTS = (
+    "jobs.lever.co",
+    "jobs.eu.lever.co",
+    "boards.greenhouse.io",
+    "job-boards.greenhouse.io",
+    "boards.eu.greenhouse.io",
+    "job-boards.eu.greenhouse.io",
+)
+
+# MVP §7 examples beyond the outbound fetch blocklist.
+_MVP_AGGREGATORS = (
     "reed.co.uk",
     "adzuna.co.uk",
     "adzuna.com",
@@ -16,12 +23,12 @@ OFFICIAL_DOMAIN_BLOCKLIST: tuple[str, ...] = (
     "cwjobs.co.uk",
     "monster.co.uk",
     "monster.com",
-    "jobs.lever.co",
-    "jobs.eu.lever.co",
-    "boards.greenhouse.io",
-    "job-boards.greenhouse.io",
-    "boards.eu.greenhouse.io",
-    "job-boards.eu.greenhouse.io",
+)
+
+OFFICIAL_DOMAIN_BLOCKLIST: tuple[str, ...] = (
+    *BLOCKED_SUFFIXES,
+    *_MVP_AGGREGATORS,
+    *_BOARD_HOSTS,
 )
 
 

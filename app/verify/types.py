@@ -77,3 +77,4 @@ class VerifyDecision:
     board_instance: str | None = None
     last_job_count: int | None = None
     review_priority: int = 50
+    confirmed_domain: str | None = None
