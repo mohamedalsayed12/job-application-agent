@@ -19,7 +19,7 @@ PolicyReason = Literal[
 
 BLOCKED_SUFFIXES = ("linkedin.com", "indeed.com", "glassdoor.com")
 # Reject bare public suffixes until a real PSL check exists (P2 / thermos).
-_PUBLIC_SUFFIX_BLOCKLIST = frozenset(
+PUBLIC_SUFFIX_BLOCKLIST = frozenset(
     {
         "com",
         "org",
@@ -33,6 +33,7 @@ _PUBLIC_SUFFIX_BLOCKLIST = frozenset(
         "gov.uk",
     }
 )
+_PUBLIC_SUFFIX_BLOCKLIST = PUBLIC_SUFFIX_BLOCKLIST  # compat for in-module callers
 _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 
 

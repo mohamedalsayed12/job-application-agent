@@ -15,6 +15,7 @@ from app.extraction.ai_types import (
     LeftoverResult,
     UngroundedItem,
 )
+from app.queue.domains import normalize_domain
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ def _ground_one(
     corpus_domains = _domains_in_text(corpus)
     accepted_domains: list[str] = []
     for raw in suggestion.domain_candidates:
-        domain = _normalize_domain(raw)
+        domain = normalize_domain(raw)
         if domain is None:
             rejects.append(
                 UngroundedItem(
@@ -183,23 +184,6 @@ def _domain_in_urls(
         if host == domain or host.endswith("." + domain):
             return True
     return False
-
-
-def _normalize_domain(value: str) -> str | None:
-    text = value.strip().lower()
-    if not text:
-        return None
-    if "://" in text:
-        host = urlparse(text).hostname
-        if host is None:
-            return None
-        text = host
-    text = text.rstrip(".").split("/")[0]
-    if text.startswith("www."):
-        text = text[4:]
-    if not _DOMAIN_RE.fullmatch(text):
-        return None
-    return text
 
 
 def parse_suggestions(payload: object) -> tuple[list[AiSuggestion], list[UngroundedItem]]:

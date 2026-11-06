@@ -244,7 +244,7 @@ def test_t10_persist_search_results_with_evidence(session: Session) -> None:
     assert ("lever", "lever_global", "leverdemo") in board_ids
     assert ("lever", "lever_eu", "lever") in board_ids
     assert all(c.extracted_by == ExtractedBy.code for c in candidates)
-    assert all(c.state == CandidateState.new for c in candidates)
+    assert all(c.state == CandidateState.queued for c in candidates)
 
     result_ids = {row.id for row in rows}
     for cand in candidates:
