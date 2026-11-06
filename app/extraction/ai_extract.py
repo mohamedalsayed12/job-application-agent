@@ -37,17 +37,15 @@ from app.extraction.ai_types import (
     UngroundedItem,
 )
 from app.extraction.leftovers import leftover_search_results
-from app.extraction.names import clean_company_name
 from app.fetch.gateway import FetchGateway
 from app.models import (
     AiExtraction,
     Candidate,
-    CandidateEvidence,
-    CandidateState,
     ExtractedBy,
     SearchResult,
     SpendKind,
 )
+from app.queue.dedupe import ingest_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -505,25 +503,21 @@ def _persist_grounded(
 ) -> list[Candidate]:
     urls = {row.id: row.url for row in leftovers}
     touched: list[Candidate] = []
+    seen: set[uuid.UUID] = set()
     for hit in outcome.grounded:
-        candidate = Candidate(
+        evidence = [
+            (item.result_id, item.quote, urls.get(item.result_id, ""))
+            for item in hit.evidence
+        ]
+        result = ingest_candidate(
+            session,
             company_name=hit.company_name,
-            cleaned_name=clean_company_name(hit.company_name),
-            domain_candidates=list(hit.domain_candidates),
-            state=CandidateState.new,
             extracted_by=ExtractedBy.ai,
+            domain_candidates=list(hit.domain_candidates),
             ai_extraction_id=outcome.ai_extraction_id,
+            evidence=evidence,
         )
-        session.add(candidate)
-        session.flush()
-        for evidence in hit.evidence:
-            session.add(
-                CandidateEvidence(
-                    candidate_id=candidate.id,
-                    search_result_id=evidence.result_id,
-                    quoted_text=evidence.quote[:200],
-                    source_url=urls.get(evidence.result_id, ""),
-                )
-            )
-        touched.append(candidate)
+        if result.survivor.id not in seen:
+            seen.add(result.survivor.id)
+            touched.append(result.survivor)
     return touched

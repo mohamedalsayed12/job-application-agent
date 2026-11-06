@@ -40,6 +40,7 @@ from app.models import (
     BudgetPolicy,
     Candidate,
     CandidateEvidence,
+    CandidateState,
     ExtractedBy,
     SearchResult,
     SearchRun,
@@ -321,9 +322,9 @@ async def test_t12_injection_page_marked_suspicious_and_never_auto_verified(
     names = {hit.company_name for hit in outcome.grounded}
     assert "Acme Engineering" in names
     # FakeCorp quote is grounded in the injection page text, but still only
-    # becomes a candidate — verification is a later code step, never "verified".
+    # becomes a queued candidate — verification is a later code step, never "verified".
     candidates = session.scalars(select(Candidate)).all()
-    assert all(row.state == "new" for row in candidates)
+    assert all(row.state == CandidateState.queued for row in candidates)
     assert all(row.extracted_by == ExtractedBy.ai for row in candidates)
     stored = session.scalars(select(AiExtraction)).one()
     assert str(inject_id) in stored.output["suspicious_result_ids"]
