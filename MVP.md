@@ -682,6 +682,7 @@ Read MVP.md. It's the whole plan, and we're starting from an empty folder. We're
 | D26 | Authentication uses a standard, well-tested library for password hashing and sessions; no custom security code. |
 | D27 | Milestone 1 schema follows `docs/step1-data-model.md`: domain-row queues on `candidate` and `search_run` with `state`/`status` + `next_attempt_at` + `claimed_at`, claimed via `FOR UPDATE SKIP LOCKED`; unique keys on `employer.official_domain`, `employer_board (system, instance, board_id)`, and `job_posting (source, source_job_id)`; relational evidence tables plus JSONB only for raw payloads and small structured maps; Milestone 2 entities omitted. |
 | D28 | Fetch gateway and budget gate follow `docs/step2-fetch-budget-design.md`: outbound HTTP via `httpx` with manual redirects; stdlib robots.txt parser with 24h in-process cache for page fetches only; in-process per-host 1 req/s limit; HTTPS + DNS/private-address checks on every hop; LinkedIn/Indeed/Glassdoor blocked; paid calls insert `spend_ledger` with estimate before the call and settle after; missing/null/zero monthly `money_cap` refuses paid calls until B1. |
+| D29 | Web search provider for CF2/CF3/BD1/BD2 is Mojeek Search API on the Business plan (indefinite storage rights; `site` filter), per `docs/step5-search-provider-design.md`. Brave Search remains a candidate only after written storage rights. Reed powers CF1. CF1b (Adzuna) stays disabled until V9 is confirmed by the operator. Provider id is a setting, not a hard-coded domain type. |
 
 ### Assumptions (believed, not yet proven)
 | ID | Assumption | How it gets tested |
@@ -712,15 +713,15 @@ Read MVP.md. It's the whole plan, and we're starting from an empty folder. We're
 ### Needs validation before or during Stage A
 | ID | What to check | Why it matters |
 |---|---|---|
-| V1 | Search API terms: storing URLs and snippets, caching, attribution, commercial use | Decides what can be kept as evidence |
-| V2 | Whether the search API can limit results to one website (or equivalent) | Board-direct searches depend on it |
-| V3 | Search API pricing, free credit and rate limits | Budget and planner settings |
-| V4 | Reed: key, cost, limits, terms for showing jobs, fields returned, and what job details return for expired jobs | CF1, collection and the closing rule |
+| V1 | Search API terms: storing URLs and snippets, caching, attribution, commercial use | Mojeek Business: pass for URL/title/snippet retention (operator still accepts terms at signup). Brave self-serve: fail until Order Form. |
+| V2 | Whether the search API can limit results to one website (or equivalent) | Mojeek `site` / Brave `site:`: pass. |
+| V3 | Search API pricing, free credit and rate limits | Mojeek Business £3/1k, 10 qps, 400k/day (unit price £0.003 in `pricing` / settings). Brave Search $5/1k + $5 free/month, 50 qps. |
+| V4 | Reed: key, cost, limits, terms for showing jobs, fields returned, and what job details return for expired jobs | Key free; display/storage/rate limit still operator-owned (CF1). |
 | V5 | Greenhouse and Lever: how each signals "not found", "empty" and "error"; Lever EU detection; real date fields; rate limits; terms for third parties showing jobs | Verification labels and the failure rules |
 | V6 | AI provider cost, limits and model choice | AI caps and value per £ |
 | V7 | Robots.txt policies and how many UK tech careers pages need JavaScript (sample of 20) | Review volume |
 | V8 | Audit thresholds in D21 still make sense after the first audit | Whether Milestone 1 is "done" |
-| V9 | Adzuna: whether this MVP counts as commercial use, the attribution label rules, storage, and limits | Whether and how Adzuna joins Milestone 1 |
+| V9 | Adzuna: whether this MVP counts as commercial use, the attribution label rules, storage, and limits | Unchanged; CF1b off until the operator confirms (D29). |
 | V10 | ESCO: licence terms, download format and update frequency | Skills mapping in Milestone 2 |
 
 ---
