@@ -1,13 +1,12 @@
 {
   "source": "reed_jobseeker_search_shape",
-  "note": "Shape matches Reed Jobseeker search; apply URLs include a real Greenhouse absolute_url from fixtures.",
+  "note": "Search list shape from Reed Jobseeker docs. External Url is only on Jobs Details; see reed_job_details_*.json.",
   "results": [
     {
       "jobId": 51234567,
       "employerName": "Example Corp Ltd",
       "jobTitle": "Account Director",
       "jobUrl": "https://www.reed.co.uk/jobs/account-director/51234567",
-      "externalUrl": "https://job-boards.greenhouse.io/example/jobs/44735",
       "jobDescription": "Lead accounts for Example."
     },
     {
@@ -15,7 +14,6 @@
       "employerName": "Democorp PLC",
       "jobTitle": "Software Engineer",
       "jobUrl": "https://www.reed.co.uk/jobs/software-engineer/51234568",
-      "externalUrl": null,
       "jobDescription": "Build services in London."
     }
   ]

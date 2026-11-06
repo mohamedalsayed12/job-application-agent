@@ -41,9 +41,6 @@ def _resolve_candidate(session: Session, hit: CodeHit) -> Candidate:
             )
         ).first()
         if existing is not None:
-            if hit.company_name and existing.company_name == existing.board_id:
-                existing.company_name = hit.company_name
-                existing.cleaned_name = clean_company_name(hit.company_name)
             return existing
 
     company_name = hit.company_name or (hit.board.board_id if hit.board else "")
@@ -64,6 +61,6 @@ def _add_evidence(session: Session, candidate: Candidate, hit: CodeHit) -> None:
             candidate_id=candidate.id,
             search_result_id=hit.search_result_id,
             quoted_text=hit.quoted_text[:200],
-            source_url=hit.source_url or hit.apply_url or "",
+            source_url=hit.source_url,
         )
     )

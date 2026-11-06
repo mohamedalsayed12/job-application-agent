@@ -1,3 +1,9 @@
 # Extraction fixtures (Step 6 / T10)
 
-Saved board URLs come from the live public Greenhouse/Lever responses under `tests/fixtures/boards/` (captured 2026-11-05). Reed and Adzuna JSON follow each provider's public search response shape; apply links reuse those real board URLs where marked.
+Board URLs come from live public Greenhouse/Lever responses under `tests/fixtures/boards/` (captured 2026-11-05).
+
+Reed:
+- `reed_search_results.json` — Jobseeker search list shape (no External Url).
+- `reed_job_details_*.json` — Jobseeker details shape, where External Url appears.
+
+Adzuna fixture follows the public search result shape; tests store `employer=` in the snippet the same way the Reed client does.

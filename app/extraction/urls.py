@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from app.boards.ids import normalize_board_id
-from app.extraction.types import BoardInstance, BoardRef
+from app.boards.result import BoardInstance, BoardSystem
+from app.extraction.types import BoardRef
 
 _GREENHOUSE_HOSTS = frozenset(
     {
@@ -27,6 +28,8 @@ _SKIP_SEGMENTS = frozenset(
         "job_board",
         "v1",
         "boards",
+        ".",
+        "..",
     }
 )
 
@@ -41,7 +44,9 @@ def parse_board_from_url(url: str) -> BoardRef | None:
     if not raw:
         return None
     parsed = urlparse(raw)
-    host = (parsed.hostname or "").lower()
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
     if host in _GREENHOUSE_HOSTS:
         return _greenhouse_board(parsed)
     if host in _LEVER_GLOBAL_HOSTS:
@@ -52,43 +57,37 @@ def parse_board_from_url(url: str) -> BoardRef | None:
 
 
 def _greenhouse_board(parsed) -> BoardRef | None:
-    query = parse_qs(parsed.query)
-    for_values = query.get("for") or []
-    if for_values:
-        board_id = normalize_board_id(for_values[0])
-        if board_id is not None:
-            return BoardRef(
-                system="greenhouse",
-                instance="greenhouse",
-                board_id=board_id,
-            )
+    segments = [unquote(s) for s in parsed.path.split("/") if s]
+    if segments and segments[0].lower() == "embed":
+        query = parse_qs(parsed.query)
+        for_values = query.get("for") or []
+        if not for_values:
+            return None
+        return _board("greenhouse", "greenhouse", for_values[0])
 
-    segments = [s for s in parsed.path.split("/") if s]
     if not segments:
-        return None
-    if segments[0] in {"embed", "v1"}:
         return None
     token = segments[0]
     if token.lower() in _SKIP_SEGMENTS:
         return None
-    board_id = normalize_board_id(token)
-    if board_id is None:
-        return None
-    return BoardRef(
-        system="greenhouse",
-        instance="greenhouse",
-        board_id=board_id,
-    )
+    return _board("greenhouse", "greenhouse", token)
 
 
 def _lever_board(parsed, *, instance: BoardInstance) -> BoardRef | None:
-    segments = [s for s in parsed.path.split("/") if s]
+    segments = [unquote(s) for s in parsed.path.split("/") if s]
     if not segments:
         return None
     site = segments[0]
     if site.lower() in _SKIP_SEGMENTS:
         return None
-    board_id = normalize_board_id(site)
+    return _board("lever", instance, site)
+
+
+def _board(
+    system: BoardSystem, instance: BoardInstance, raw_id: str
+) -> BoardRef | None:
+    board_id = normalize_board_id(raw_id)
     if board_id is None:
         return None
-    return BoardRef(system="lever", instance=instance, board_id=board_id)
+    # Live unique key is case-sensitive text; canonicalize to lowercase.
+    return BoardRef(system=system, instance=instance, board_id=board_id.lower())

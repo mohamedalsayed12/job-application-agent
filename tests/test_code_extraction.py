@@ -6,21 +6,21 @@ import json
 import uuid
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.extraction import (
     clean_company_name,
-    extract_and_persist_adzuna_payload,
-    extract_and_persist_reed_payload,
     extract_and_persist_search_results,
+    format_employer_snippet,
     parse_board_from_url,
 )
-from app.extraction.postings import extract_from_adzuna_payload, extract_from_reed_payload
+from app.extraction.postings import extract_hit
+from app.fetch.gateway import FetchGateway
 from app.models import (
     Applicant,
-    Candidate,
     CandidateEvidence,
     CandidateState,
     ExtractedBy,
@@ -29,6 +29,8 @@ from app.models import (
     SearchRunStatus,
     SearchTemplate,
 )
+from app.search.reed import search_reed
+from app.search.types import ProviderSuccess
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures" / "extraction"
 
@@ -92,37 +94,104 @@ def test_t10_gh_jid_without_board_token_does_not_invent_board() -> None:
     assert parse_board_from_url("https://www.example.com/careers?gh_jid=44735") is None
 
 
-def test_clean_company_name_strips_legal_suffixes() -> None:
+def test_t10_for_query_ignored_on_non_embed_greenhouse_path() -> None:
+    ref = parse_board_from_url(
+        "https://boards.greenhouse.io/example/jobs/1?for=evil"
+    )
+    assert ref is not None
+    assert ref.board_id == "example"
+
+
+def test_clean_company_name_trailing_suffixes_only() -> None:
     assert clean_company_name("Example Corp Ltd.") == "example"
     assert clean_company_name("Democorp PLC") == "democorp"
+    assert clean_company_name("The Co-operative Group") == "the co operative group"
+    assert clean_company_name("Limited Edition Ltd") == "limited edition"
 
 
-def test_reed_fixture_employer_and_apply_board() -> None:
-    payload = _load("reed_search_results.json")
-    hits = extract_from_reed_payload(payload)
-    by_company = {h.company_name: h for h in hits}
-    assert "Example Corp Ltd" in by_company
-    assert by_company["Example Corp Ltd"].board is not None
-    assert by_company["Example Corp Ltd"].board.board_id == "example"
-    assert by_company["Example Corp Ltd"].apply_url.startswith(
-        "https://job-boards.greenhouse.io/"
-    ) or by_company["Example Corp Ltd"].apply_url.startswith(
-        "https://boards.greenhouse.io/"
+def test_em_dash_web_title_does_not_invent_employer() -> None:
+    hit = extract_hit(
+        url="https://boards.greenhouse.io/example/jobs/1",
+        title="Senior Engineer — London",
+        snippet="Hiring in London.",
     )
-    assert by_company["Democorp PLC"].board is None
-    assert by_company["Democorp PLC"].apply_url.startswith("https://www.reed.co.uk/")
+    assert hit is not None
+    assert hit.board is not None
+    assert hit.board.board_id == "example"
+    assert hit.company_name is None
 
 
-def test_adzuna_fixture_employer_and_lever_eu_apply() -> None:
+def test_employer_prefix_only_on_first_snippet_line() -> None:
+    hit = extract_hit(
+        url="https://www.reed.co.uk/jobs/1",
+        title="Engineer",
+        snippet="Nice role.\nemployer=ShouldNotWin",
+    )
+    assert hit is None
+
+
+@pytest.mark.asyncio
+async def test_reed_search_enriches_external_url_from_details() -> None:
+    search_body = _load("reed_search_results.json")
+    details = {
+        "51234567": _load("reed_job_details_51234567.json"),
+        "51234568": _load("reed_job_details_51234568.json"),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/search"):
+            return httpx.Response(200, json=search_body)
+        job_id = path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json=details[job_id])
+
+    import ipaddress
+
+    from app.core.config import Settings
+
+    gateway = FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset({"www.reed.co.uk"}),
+        resolve=lambda host: [ipaddress.IPv4Address("93.184.216.34")],
+        transport=httpx.MockTransport(handler),
+    )
+    outcome = await search_reed(
+        gateway,
+        keywords="engineer",
+        location_name="London",
+        settings=Settings(reed_api_key="test-reed-key"),  # type: ignore[arg-type]
+    )
+    await gateway.aclose()
+    assert isinstance(outcome, ProviderSuccess)
+    first, second = outcome.hits
+    assert first.url.startswith("https://job-boards.greenhouse.io/")
+    assert first.snippet.startswith("employer=Example Corp Ltd")
+    hit = extract_hit(url=first.url, title=first.title, snippet=first.snippet)
+    assert hit is not None
+    assert hit.company_name == "Example Corp Ltd"
+    assert hit.board is not None
+    assert hit.board.board_id == "example"
+    second_hit = extract_hit(url=second.url, title=second.title, snippet=second.snippet)
+    assert second_hit is not None
+    assert second_hit.company_name == "Democorp PLC"
+    assert second_hit.board is None
+    assert second.url.startswith("https://www.reed.co.uk/")
+
+
+def test_adzuna_style_search_result_employer_and_lever_eu() -> None:
     payload = _load("adzuna_search_results.json")
-    hits = extract_from_adzuna_payload(payload)
-    by_company = {h.company_name: h for h in hits}
-    eu = by_company["Lever Demo EU Limited"]
-    assert eu.board is not None
-    assert eu.board.system == "lever"
-    assert eu.board.instance == "lever_eu"
-    assert eu.board.board_id == "lever"
-    assert by_company["Acme Agency"].board is None
+    item = payload["results"][0]
+    employer = item["company"]["display_name"]
+    hit = extract_hit(
+        url=item["redirect_url"],
+        title=item["title"],
+        snippet=format_employer_snippet(employer, item["description"]),
+    )
+    assert hit is not None
+    assert hit.company_name == employer
+    assert hit.board is not None
+    assert hit.board.instance == "lever_eu"
+    assert hit.board.board_id == "lever"
 
 
 def _seed_run(session: Session) -> SearchRun:
@@ -170,7 +239,6 @@ def test_t10_persist_search_results_with_evidence(session: Session) -> None:
     candidates = extract_and_persist_search_results(session, rows)
     session.flush()
 
-    # Careers page with only gh_jid must not create a board candidate.
     board_ids = {(c.board_system, c.board_instance, c.board_id) for c in candidates}
     assert ("greenhouse", "greenhouse", "example") in board_ids
     assert ("lever", "lever_global", "leverdemo") in board_ids
@@ -178,12 +246,7 @@ def test_t10_persist_search_results_with_evidence(session: Session) -> None:
     assert all(c.extracted_by == ExtractedBy.code for c in candidates)
     assert all(c.state == CandidateState.new for c in candidates)
 
-    evidence = session.scalars(select(CandidateEvidence)).all()
-    assert evidence
     result_ids = {row.id for row in rows}
-    linked = [e for e in evidence if e.search_result_id in result_ids]
-    assert linked
-    # Every board candidate evidence points at the exact search_result URL it came from.
     for cand in candidates:
         if cand.board_id is None:
             continue
@@ -194,56 +257,76 @@ def test_t10_persist_search_results_with_evidence(session: Session) -> None:
         assert any(e.search_result_id in result_ids for e in ev)
 
 
-def test_t10_reed_and_adzuna_persist_evidence_links(session: Session) -> None:
+@pytest.mark.asyncio
+async def test_t10_reed_and_adzuna_persist_via_search_results(session: Session) -> None:
     run = _seed_run(session)
-    reed = _load("reed_search_results.json")
+    search_body = _load("reed_search_results.json")
+    details = {
+        "51234567": _load("reed_job_details_51234567.json"),
+        "51234568": _load("reed_job_details_51234568.json"),
+    }
     adzuna = _load("adzuna_search_results.json")
 
-    reed_ids: dict[str, uuid.UUID] = {}
-    for rank, item in enumerate(reed["results"], start=1):
-        apply_url = item.get("externalUrl") or item["jobUrl"]
+    import ipaddress
+
+    from app.core.config import Settings
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/search"):
+            return httpx.Response(200, json=search_body)
+        job_id = path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json=details[job_id])
+
+    gateway = FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset({"www.reed.co.uk"}),
+        resolve=lambda host: [ipaddress.IPv4Address("93.184.216.34")],
+        transport=httpx.MockTransport(handler),
+    )
+    outcome = await search_reed(
+        gateway,
+        keywords="engineer",
+        settings=Settings(reed_api_key="test-reed-key"),  # type: ignore[arg-type]
+    )
+    await gateway.aclose()
+    assert isinstance(outcome, ProviderSuccess)
+
+    rows: list[SearchResult] = []
+    for rank, hit in enumerate(outcome.hits, start=1):
         row = SearchResult(
             search_run_id=run.id,
             rank=rank,
-            url=apply_url,
-            title=f"{item['jobTitle']} — {item['employerName']}",
-            snippet=item["jobDescription"],
+            url=hit.url,
+            title=hit.title,
+            snippet=hit.snippet,
         )
         session.add(row)
-        session.flush()
-        reed_ids[apply_url] = row.id
+        rows.append(row)
 
-    adzuna_ids: dict[str, uuid.UUID] = {}
     for rank, item in enumerate(adzuna["results"], start=100):
-        apply_url = item["redirect_url"]
+        employer = item["company"]["display_name"]
         row = SearchResult(
             search_run_id=run.id,
             rank=rank,
-            url=apply_url,
+            url=item["redirect_url"],
             title=item["title"],
-            snippet=item["description"],
+            snippet=format_employer_snippet(employer, item["description"]),
         )
         session.add(row)
-        session.flush()
-        adzuna_ids[apply_url] = row.id
-
-    reed_cands = extract_and_persist_reed_payload(
-        session, reed, search_result_ids=reed_ids
-    )
-    adzuna_cands = extract_and_persist_adzuna_payload(
-        session, adzuna, search_result_ids=adzuna_ids
-    )
+        rows.append(row)
     session.flush()
 
-    assert any(c.company_name == "Example Corp Ltd" for c in reed_cands)
-    example = next(c for c in reed_cands if c.company_name == "Example Corp Ltd")
+    candidates = extract_and_persist_search_results(session, rows)
+    session.flush()
+
+    example = next(c for c in candidates if c.company_name == "Example Corp Ltd")
     assert example.board_system == "greenhouse"
     assert example.board_id == "example"
-
-    eu = next(c for c in adzuna_cands if "Lever Demo" in c.company_name)
+    eu = next(c for c in candidates if c.company_name == "Lever Demo EU Limited")
     assert eu.board_instance == "lever_eu"
 
-    for cand in (*reed_cands, *adzuna_cands):
+    for cand in candidates:
         ev = session.scalars(
             select(CandidateEvidence).where(CandidateEvidence.candidate_id == cand.id)
         ).all()
