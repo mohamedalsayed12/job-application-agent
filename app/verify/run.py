@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -20,6 +19,7 @@ from app.models import (
     VerificationOutcome,
 )
 from app.queue.retry import schedule_verification_failure
+from app.queue.types import next_retry_schedule
 from app.verify import api as api_mod
 from app.verify import careers as careers_mod
 from app.verify import decide
@@ -42,11 +42,13 @@ async def verify_candidate(
             f"candidate {candidate.id} must be verifying, got {candidate.state}"
         )
     stamp = now or (clock() if clock else datetime.now(UTC))
-    decision = await _run_checks(candidate, gateway, now=stamp)
-    return _persist(session, candidate, decision, now=stamp)
+    decision = await _run_checks(session, candidate, gateway, now=stamp)
+    _persist(session, candidate, decision, now=stamp)
+    return decision
 
 
 async def _run_checks(
+    session: Session,
     candidate: Candidate,
     gateway: FetchGateway,
     *,
@@ -54,15 +56,26 @@ async def _run_checks(
 ) -> VerifyDecision:
     domain = await domain_mod.confirm_official_domain(gateway, candidate)
     if domain.record.outcome == VerificationOutcome.error:
-        return decide.retry(
-            domain.record.evidence_snippet or "official_domain_error",
-            (domain.record,),
+        return _maybe_exhaust_retries(
+            candidate,
+            decide.retry(
+                domain.record.evidence_snippet or "official_domain_error",
+                (domain.record,),
+            ),
         )
     if not domain.confirmed or domain.domain is None:
         return decide.needs_review(
             reason=domain.record.evidence_snippet or "official_domain_unconfirmed",
             checks=(domain.record,),
             priority=40,
+        )
+
+    if _domain_taken(session, candidate, domain.domain):
+        return decide.needs_review(
+            reason="official_domain_conflict",
+            checks=(domain.record,),
+            priority=15,
+            confirmed_domain=None,
         )
 
     board_system = candidate.board_system
@@ -74,7 +87,10 @@ async def _run_checks(
             homepage_url=domain.homepage_url,
         )
         if unsupported == "retry":
-            return decide.retry("careers_fetch_error", (domain.record,))
+            return _maybe_exhaust_retries(
+                candidate,
+                decide.retry("careers_fetch_error", (domain.record,)),
+            )
         if unsupported is not None:
             return decide.unsupported(domain=domain, careers=unsupported, now=now)
         return decide.needs_review(
@@ -91,9 +107,12 @@ async def _run_checks(
         board_id=candidate.board_id,
     )
     if api.access == "failed":
-        return decide.retry(
-            api.failure_detail or "api_failed",
-            (domain.record, api.record),
+        return _maybe_exhaust_retries(
+            candidate,
+            decide.retry(
+                api.failure_detail or "api_failed",
+                (domain.record, api.record),
+            ),
         )
 
     ownership = await ownership_mod.assess_ownership(
@@ -106,15 +125,55 @@ async def _run_checks(
         api_job_ids=api.job_ids,
     )
     if ownership == "retry":
-        return decide.retry(
-            "ownership_fetch_error",
-            (domain.record, api.record),
+        return _maybe_exhaust_retries(
+            candidate,
+            decide.retry(
+                "ownership_fetch_error",
+                (domain.record, api.record),
+            ),
         )
 
-    return decide.from_board_checks(
+    decision = decide.from_board_checks(
         domain=domain,
         ownership=ownership,
         api=api,
+    )
+
+    if (
+        decision.state == "verified"
+        and board_system == "lever"
+        and decision.board_instance
+        and _board_taken(
+            session,
+            candidate,
+            system="lever",
+            instance=decision.board_instance,
+            board_id=candidate.board_id,
+        )
+    ):
+        return decide.needs_review(
+            reason="board_instance_conflict",
+            checks=decision.checks,
+            evidence_level=decision.evidence_level,
+            priority=15,
+            confirmed_domain=domain.domain,
+        )
+    return decision
+
+
+def _maybe_exhaust_retries(
+    candidate: Candidate, decision: VerifyDecision
+) -> VerifyDecision:
+    """If this failure would exhaust D12 retries, return needs_review now."""
+    if decision.state != "retry_wait":
+        return decision
+    plan = next_retry_schedule(int(candidate.attempt_count or 0))
+    if plan.state != CandidateState.needs_review:
+        return decision
+    return decide.needs_review(
+        reason=decision.reason,
+        checks=decision.checks,
+        priority=20,
     )
 
 
@@ -124,43 +183,25 @@ def _persist(
     decision: VerifyDecision,
     *,
     now: datetime,
-) -> VerifyDecision:
+) -> None:
     for record in decision.checks:
         _add_check(session, candidate.id, record, now=now)
 
     if decision.state == "retry_wait":
-        plan = schedule_verification_failure(
+        schedule_verification_failure(
             candidate,
             error=decision.reason,
             now=now,
         )
-        if plan.state == CandidateState.needs_review:
-            decision = replace(
-                decision,
-                state="needs_review",
-                review_priority=20,
-            )
-            _open_review(session, candidate, decision)
         session.flush()
-        return decision
-
-    if (
-        decision.confirmed_domain
-        and _domain_taken(session, candidate, decision.confirmed_domain)
-    ):
-        decision = replace(
-            decision,
-            state="needs_review",
-            reason="official_domain_conflict",
-            review_priority=15,
-            board_instance=None,
-        )
+        return
 
     candidate.claimed_at = None
     candidate.next_attempt_at = None
     candidate.last_error = None if decision.state == "verified" else decision.reason
+    if decision.confirmed_domain:
+        candidate.primary_domain = decision.confirmed_domain
 
-    # Only rewrite Lever instance after a confirmed API read (not not_found).
     if (
         decision.state == "verified"
         and decision.board_instance
@@ -168,35 +209,42 @@ def _persist(
     ):
         candidate.board_instance = decision.board_instance
 
-    if decision.confirmed_domain and decision.state != "needs_review":
-        candidate.primary_domain = decision.confirmed_domain
-    elif (
-        decision.confirmed_domain
-        and decision.state == "needs_review"
-        and decision.reason != "official_domain_conflict"
-        and not _domain_taken(session, candidate, decision.confirmed_domain)
-    ):
-        candidate.primary_domain = decision.confirmed_domain
-
     if decision.state == "verified":
         candidate.state = CandidateState.verified
     elif decision.state == "unsupported":
         candidate.state = CandidateState.unsupported
         candidate.revisit_at = decision.revisit_at
-        if decision.confirmed_domain:
-            candidate.primary_domain = decision.confirmed_domain
     else:
         candidate.state = CandidateState.needs_review
         _open_review(session, candidate, decision)
 
     session.flush()
-    return decision
 
 
 def _domain_taken(session: Session, candidate: Candidate, domain: str) -> bool:
     other = session.scalar(
         select(Candidate.id).where(
             Candidate.primary_domain == domain,
+            Candidate.id != candidate.id,
+            Candidate.state.not_in(tuple(CANDIDATE_LIVE_UNIQUE_EXCLUDES)),
+        )
+    )
+    return other is not None
+
+
+def _board_taken(
+    session: Session,
+    candidate: Candidate,
+    *,
+    system: str,
+    instance: str,
+    board_id: str,
+) -> bool:
+    other = session.scalar(
+        select(Candidate.id).where(
+            Candidate.board_system == system,
+            Candidate.board_instance == instance,
+            Candidate.board_id == board_id,
             Candidate.id != candidate.id,
             Candidate.state.not_in(tuple(CANDIDATE_LIVE_UNIQUE_EXCLUDES)),
         )

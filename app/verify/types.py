@@ -13,11 +13,10 @@ VerifyState = Literal["verified", "needs_review", "unsupported", "retry_wait"]
 UNSUPPORTED_REVISIT = timedelta(days=90)
 
 # Careers hosts the MVP does not collect from (T17 / Stage 5 step 4).
+# Use ATS job hosts only — not the vendor marketing site (e.g. workday.com).
 UNSUPPORTED_CAREERS_MARKERS: tuple[tuple[str, str], ...] = (
     ("workday", "myworkdayjobs.com"),
-    ("workday", "workday.com"),
     ("ashby", "ashbyhq.com"),
-    ("ashby", "jobs.ashbyhq.com"),
 )
 
 
