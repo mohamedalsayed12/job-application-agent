@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.extraction.types import CodeHit
 from app.models import Candidate, ExtractedBy
+from app.queue.agencies import is_recruitment_agency
 from app.queue.dedupe import ingest_candidate
 
 
@@ -14,6 +15,8 @@ def persist_code_hits(session: Session, hits: list[CodeHit]) -> list[Candidate]:
     touched: list[Candidate] = []
     seen: set[object] = set()
     for hit in hits:
+        if hit.company_name and is_recruitment_agency(hit.company_name):
+            continue
         result = ingest_candidate(
             session,
             company_name=hit.company_name or (hit.board.board_id if hit.board else ""),

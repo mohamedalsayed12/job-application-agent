@@ -51,8 +51,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     # B4 seed: Haiku 5.5 ≈ $0.00035 per leftover batch (1.5k in × $0.10/M + 0.4k out × $0.50/M);
     # the £0.0005 unit price below stays a conservative ceiling for either provider.
-    ai_extraction_per_item_token_cap: int = 2500
-    ai_extraction_max_output_tokens: int = 500
+    # Step 10 audit C5: 500 output tokens truncated batches (stop_reason max_tokens).
+    # The per-call cap covers input + output, so it rises with the output limit.
+    ai_extraction_per_item_token_cap: int = 4000
+    ai_extraction_max_output_tokens: int = 1500
     ai_extraction_daily_token_cap: int = 100_000
 
     # Paid Mojeek Business fallback £3/1k ⇒ £0.003; SerpAPI free tier is £0 via FREE_MONEY.
