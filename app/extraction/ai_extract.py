@@ -42,6 +42,7 @@ from app.models import (
     SearchResult,
     SpendKind,
 )
+from app.queue.agencies import is_recruitment_agency
 from app.queue.dedupe import ingest_candidate
 
 logger = logging.getLogger(__name__)
@@ -502,6 +503,8 @@ def _persist_grounded(
     touched: list[Candidate] = []
     seen: set[uuid.UUID] = set()
     for hit in outcome.grounded:
+        if is_recruitment_agency(hit.company_name):
+            continue
         evidence = [
             (item.result_id, item.quote, urls.get(item.result_id, ""))
             for item in hit.evidence

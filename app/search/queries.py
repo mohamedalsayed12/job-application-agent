@@ -43,8 +43,8 @@ def _build_for_spec(
     if spec.id == "CF3":
         if not employer_name or not employer_name.strip():
             raise ValueError("CF3 requires employer_name")
-        name = employer_name.strip()
-        return BuiltQuery(text=f'"{name}" careers OR "official site" {location}')
+        # Step 10 audit C3: location and OR pulled in city pages and job boards.
+        return BuiltQuery(text=f'"{employer_name.strip()}" official website')
     if spec.id in {"BD1", "BD2"}:
         return BuiltQuery(text=f"{role} {location}", site=spec.site)
     raise ValueError(f"unknown template_id: {spec.id}")

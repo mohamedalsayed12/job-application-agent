@@ -25,9 +25,40 @@ _MVP_AGGREGATORS = (
     "monster.com",
 )
 
+# Seen in Step 10 CF3 results: job boards, aggregators, directories, social sites.
+_CF3_OBSERVED = (
+    "glassdoor.co.uk",
+    "indeed.co.uk",
+    "cv-library.co.uk",
+    "jobsite.co.uk",
+    "jooble.org",
+    "bebee.com",
+    "torre.ai",
+    "studysmarter.co.uk",
+    "efinancialcareers.com",
+    "efinancialcareers.co.uk",
+    "irishjobs.ie",
+    "levels.fyi",
+    "startup.jobs",
+    "devitjobs.uk",
+    "jobbeacon.app",
+    "computerwork.com",
+    "staffera.co.uk",
+    "nationalcareers.service.gov.uk",
+    "find-and-update.company-information.service.gov.uk",
+    "wikipedia.org",
+    "facebook.com",
+    "reddit.com",
+    "x.com",
+    "twitter.com",
+    "instagram.com",
+    "youtube.com",
+)
+
 OFFICIAL_DOMAIN_BLOCKLIST: tuple[str, ...] = (
     *BLOCKED_SUFFIXES,
     *_MVP_AGGREGATORS,
+    *_CF3_OBSERVED,
     *_BOARD_HOSTS,
 )
 
