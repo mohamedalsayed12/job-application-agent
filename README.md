@@ -97,6 +97,7 @@ a second download re-exports unfilled `audit_sample` rows. Offline fixture JSON:
 
 - Monthly budget is unset until B1; paid calls stay blocked (stubs in `.env.example`).
 - Milestone 1 tables land in revision `0002_milestone1_schema` (`app/models.py`). Unique-key proofs are in `tests/test_unique_keys.py`.
-- Leftover AI extraction (D30 / Step 7) uses OpenAI `gpt-4o-mini` through the fetch gateway. Set `OPENAI_API_KEY` in `.env` for live runs; CI mocks OpenAI (T11/T12).
+- Leftover AI extraction (D30 / Step 7) uses Anthropic Claude Haiku 5.5 through the fetch gateway. Set `ANTHROPIC_API_KEY` in `.env` and a monthly `money_cap` in `budget_policy` for live runs; CI mocks the provider (T11/T12, `tests/test_ai_anthropic.py`). `AI_PROVIDER=openai` switches back to `gpt-4o-mini`.
+- Tests assume an empty database. Once you have run live discovery, point tests at a separate one: `DATABASE_URL=postgresql+psycopg://…/job_app_agent_test uv run pytest`.
 - Step 6 code extraction: `app/extraction/` (Greenhouse/Lever board IDs from URLs; Reed/Adzuna employer + apply). T10 fixtures under `tests/fixtures/extraction/`.
 - Admin applicants (Milestone 1): set `ADMIN_KEY`, then open `/admin/applicants?admin_key=…` (or send header `X-Admin-Key`). Expected salary is a matching preference only (D3).

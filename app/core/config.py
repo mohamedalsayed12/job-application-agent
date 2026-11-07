@@ -4,6 +4,11 @@ from functools import lru_cache
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_DEFAULT_AI_MODELS = {
+    "anthropic": "claude-haiku-5-5",
+    "openai": "gpt-4o-mini",
+}
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment / .env."""
@@ -27,7 +32,8 @@ class Settings(BaseSettings):
         "api.adzuna.com,api.adzuna.co.uk,"
         "serpapi.com,"
         "api.mojeek.com,"
-        "api.openai.com"
+        "api.openai.com,"
+        "api.anthropic.com"
     )
 
     # D29: web search provider id is a setting (default SerpAPI free tier).
@@ -37,11 +43,14 @@ class Settings(BaseSettings):
     reed_api_key: str = ""
     adzuna_enabled: bool = False
 
-    # D30: leftover AI extraction (OpenAI gpt-4o-mini + strict JSON Schema).
-    ai_provider: str = "openai"
-    ai_extraction_model: str = "gpt-4o-mini"
+    # D30: leftover AI extraction (Anthropic Claude Haiku 5.5 + JSON Schema outputs).
+    # AI_PROVIDER=openai keeps the gpt-4o-mini client. Blank model = provider default.
+    ai_provider: str = "anthropic"
+    ai_extraction_model: str = ""
+    anthropic_api_key: str = ""
     openai_api_key: str = ""
-    # B4 seed ≈ $0.0005 per leftover batch (1.5k in + 0.4k out).
+    # B4 seed: Haiku 5.5 ≈ $0.00035 per leftover batch (1.5k in × $0.10/M + 0.4k out × $0.50/M);
+    # the £0.0005 unit price below stays a conservative ceiling for either provider.
     ai_extraction_per_item_token_cap: int = 2500
     ai_extraction_max_output_tokens: int = 500
     ai_extraction_daily_token_cap: int = 100_000
@@ -62,6 +71,12 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return Decimal(value)
         return value
+
+    def resolved_ai_extraction_model(self) -> str:
+        explicit = self.ai_extraction_model.strip()
+        if explicit:
+            return explicit
+        return _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def api_allowlist_hosts(self) -> frozenset[str]:
         return frozenset(

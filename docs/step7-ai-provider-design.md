@@ -101,3 +101,16 @@ Also mark V6:
 3. Provider/model stay in settings
 4. Add D30 (+ V6 note) to MVP.md §20
 5. Stop until approved; Step 7 Build then implements leftover AI extraction, grounding, cache, T11/T12
+
+---
+
+## Revision 2026-11-07: switch default to Anthropic Claude Haiku 5.5
+
+The operator asked to use their Anthropic API key instead of OpenAI. Claude Haiku 5.5 was already the paid-unit-price runner-up above.
+
+- `app/extraction/ai_anthropic.py` calls `POST https://api.anthropic.com/v1/messages` (`anthropic-version: 2026-10-21`) through `FetchGateway`. Raw HTTP, not the `anthropic` SDK, because every outside call must pass the gateway's allowlist, SSRF guard, and rate limits.
+- Structured outputs: `output_config.format = {type: json_schema, schema}`. Anthropic rejects `maxLength`, so the request uses `schema_without_string_limits(EXTRACTION_JSON_SCHEMA)`; grounding already rejects quotes over 200 characters.
+- `thinking: {type: "disabled"}` keeps the 500-token output budget for JSON (allowed on Haiku 5.5 at its default effort).
+- Any `stop_reason` other than `end_turn` (refusal, max_tokens) is a provider failure: no candidates, reservation released, nothing spent.
+- `app/extraction/ai_call.py` routes on `AI_PROVIDER` (`anthropic` default, `openai` kept). `AI_EXTRACTION_MODEL` blank means the provider default.
+- Cost: ≈ $0.00035 per 1.5k-in / 0.4k-out batch; `AI_EXTRACTION_UNIT_PRICE` stays £0.0005 as a conservative ceiling.
