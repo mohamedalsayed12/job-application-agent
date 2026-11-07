@@ -10,7 +10,13 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservation
+from app.budget.gate import (
+    PER_APPLICANT_DAY_SEARCH_CAP,
+    BudgetGate,
+    BudgetWait,
+    SpendEstimate,
+    SpendReservation,
+)
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.models import (
@@ -183,7 +189,7 @@ def test_t3_per_applicant_cap_refuses(session: Session) -> None:
     _policy(session, Decimal("1000.00"), now)
     applicant_id, _ = _applicant_and_run(session)
     gate = _gate(session, now)
-    for i in range(20):
+    for i in range(PER_APPLICANT_DAY_SEARCH_CAP):
         _seed_template(session)
         run = SearchRun(
             template_id="CF1",
@@ -216,7 +222,7 @@ def test_t3_per_applicant_from_run_without_estimate_applicant_id(
     _policy(session, Decimal("1000.00"), now)
     applicant_id, _ = _applicant_and_run(session)
     gate = _gate(session, now)
-    for i in range(20):
+    for i in range(PER_APPLICANT_DAY_SEARCH_CAP):
         run = SearchRun(
             template_id="CF1",
             applicant_id=applicant_id,
