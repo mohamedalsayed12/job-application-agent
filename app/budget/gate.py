@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 CapName = Literal["monthly", "daily", "per_run", "per_applicant"]
 PER_RUN_SEARCH_CAP = 10
-PER_APPLICANT_DAY_SEARCH_CAP = 20
+PER_APPLICANT_DAY_SEARCH_CAP = 50
 WARN_RATIO = Decimal("0.8")
 # Fixed advisory key for all budget reserves (one worker / one gate).
 _BUDGET_ADVISORY_LOCK_KEY = 0x4A414142  # "JAAB"

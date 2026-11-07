@@ -147,7 +147,7 @@ Manual redirects (max 3) are required for T19. Auto-follow would skip the privat
 **Algorithm (paid call).**
 
 1. Build `SpendEstimate` from `pricing.py` (conservative unit price × units). Never read `applicant_preference` salary fields (D3, T1).
-2. In one short DB transaction, sum `spend_ledger` rows that count toward each cap (use `coalesce(actual_cost, estimated_cost)` so open holds count). Compare against monthly, daily, per-run (max 10 search requests) and per-applicant-per-day (max 20 search requests).
+2. In one short DB transaction, sum `spend_ledger` rows that count toward each cap (use `coalesce(actual_cost, estimated_cost)` so open holds count). Compare against monthly, daily, per-run (max 10 search requests) and per-applicant-per-day (max 50 search requests).
 3. If any cap would be exceeded, raise `BudgetWait`. Caller leaves the work queued / planned. Do not mark failed (T3, §11).
 4. Else insert `spend_ledger` with `estimated_cost`, `actual_cost=NULL`, `units`, `occurred_at=now()`, and return `SpendReservation`.
 5. Perform the call through the fetch gateway (or AI client later).
