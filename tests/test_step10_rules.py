@@ -260,3 +260,98 @@ async def test_r1_r4_r5_cf3_end_to_end(session: Session) -> None:
     assert board.state == CandidateState.queued
     assert session.scalar(select(func.count()).select_from(Candidate)) == 1
     assert seen[0] == "jobs.lever.co/octoenergy"
+
+
+# --- PR-C: R3 / R7 ------------------------------------------------------------------
+
+from app.verify import verify_candidate  # noqa: E402
+from app.verify.domain import names_match  # noqa: E402
+from tests.test_verifier import _evidence, _gateway, _html  # noqa: E402
+
+_PADDING = "<p>We are hiring across engineering, design and operations.</p>" * 40
+
+
+@pytest.mark.parametrize(
+    ("company", "title", "match"),
+    [
+        ("Octopus Energy Group", "Octopus Energy: The UK's greenest energy supplier", True),
+        ("Octopus Energy Group", "Home | Octopus Energy", True),
+        ("Matillion", "Matillion \u2013 Data Productivity Cloud", True),
+        ("Lorien Assisted Living", "Lorien | IT recruitment", False),
+        ("Arm", "Armstrong Ltd", False),
+        ("Acme", "Welcome", False),
+    ],
+)
+def test_r7_title_matches_brand_segment(company: str, title: str, match: bool) -> None:
+    assert names_match(company, title) is match
+
+
+async def _verify_site(session: Session, company: str, pages: dict[str, bytes]):
+    row = ingest_candidate(
+        session,
+        company_name=company,
+        extracted_by=ExtractedBy.code,
+        primary_domain="site.test",
+        evidence=_evidence(),
+        now=_NOW,
+    ).survivor
+    session.flush()
+    claimed = claim_next_candidate(session, now=_NOW)
+    assert claimed is not None and claimed.id == row.id
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = pages.get(request.url.path.rstrip("/") or "/")
+        if request.url.host != "site.test" or body is None:
+            return httpx.Response(404, headers={"content-type": "text/html"})
+        return httpx.Response(200, content=body, headers={"content-type": "text/html"})
+
+    gateway = _gateway(handler)
+    try:
+        return await verify_candidate(session, claimed, gateway, now=_NOW)
+    finally:
+        await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_r3_careers_page_without_board_is_unsupported(session: Session) -> None:
+    decision = await _verify_site(session, "Acme Widgets", {
+        "/": _html("Acme Widgets | Home", '<a href="/careers">Careers</a>'),
+        "/careers": _html("Careers at Acme Widgets", "<p>Email cv@acme.test to apply.</p>" + _PADDING),
+    })
+    assert decision.state == "unsupported"
+    assert decision.reason == "unsupported_careers:no_public_board"
+
+
+@pytest.mark.asyncio
+async def test_r3_new_ats_marker_is_unsupported(session: Session) -> None:
+    decision = await _verify_site(session, "Acme Widgets", {
+        "/": _html("Acme Widgets", '<a href="https://acme.teamtailor.com/jobs">Jobs</a>'),
+    })
+    assert decision.state == "unsupported"
+    assert decision.careers_system == "teamtailor"
+
+
+@pytest.mark.asyncio
+async def test_r3_board_link_stays_for_review(session: Session) -> None:
+    decision = await _verify_site(session, "Acme Widgets", {
+        "/": _html("Acme Widgets", '<a href="/careers">Careers</a>'),
+        "/careers": _html("Careers", '<script src="https://boards.greenhouse.io/embed/job_board/js?for=acme"></script>' + _PADDING),
+    })
+    assert decision.state == "needs_review"
+    assert decision.reason == "board_link_on_careers_page"
+
+
+@pytest.mark.asyncio
+async def test_r3_no_careers_page_stays_for_review(session: Session) -> None:
+    decision = await _verify_site(session, "Acme Widgets", {"/": _html("Acme Widgets")})
+    assert decision.state == "needs_review"
+    assert decision.reason == "no_supported_public_board"
+
+
+@pytest.mark.asyncio
+async def test_r3_tiny_careers_stub_stays_for_review(session: Session) -> None:
+    decision = await _verify_site(session, "Acme Widgets", {
+        "/": _html("Acme Widgets"),
+        "/careers": _html("Careers", '<div id="root"></div>'),
+    })
+    assert decision.state == "needs_review"

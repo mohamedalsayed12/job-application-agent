@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -11,6 +12,7 @@ from app.models import VerificationOutcome
 from app.verify.html import extract_hrefs, host_of
 from app.verify.pages import fetch_official_page
 from app.verify.types import (
+    MIN_CAREERS_PAGE_BYTES,
     UNSUPPORTED_CAREERS_MARKERS,
     CheckRecord,
     UnsupportedCareers,
@@ -19,7 +21,16 @@ from app.verify.types import (
 _CAREERS_PATHS = ("/careers", "/jobs")
 _MAX_PAGE_FETCHES = 3
 
-CareersResult = UnsupportedCareers | None | Literal["retry"]
+# "board_link": a careers page mentions Greenhouse or Lever, so a person must look.
+CareersResult = UnsupportedCareers | None | Literal["retry", "board_link"]
+
+# Body substring on purpose: embedded board widgets load from a <script src>,
+# which href scanning misses. Erring here only keeps a row in needs_review.
+_SUPPORTED_BOARD_MARKERS = ("greenhouse.io", "jobs.lever.co", "jobs.eu.lever.co")
+
+# A careers page counts as proof of "no public board" only when its final URL
+# still looks like a careers page (a redirect to the homepage proves nothing).
+_CAREERS_PATH_WORDS = re.compile(r"career|job|vacanc|join|work-with-us|opportunit", re.IGNORECASE)
 
 
 def detect_unsupported_host(url: str) -> str | None:
@@ -40,7 +51,13 @@ async def find_unsupported_careers(
     homepage_html: str | None = None,
     homepage_url: str | None = None,
 ) -> CareersResult:
-    """Return UnsupportedCareers, None if none found, or ``\"retry\"`` on transport error."""
+    """Classify the careers system on ``domain`` (Step 10 R3).
+
+    UnsupportedCareers: an unsupported system, or a real careers page with no
+    public board (``no_public_board``). ``"board_link"``: Greenhouse or Lever is
+    mentioned, so a person must decide. None: no careers page could be read.
+    ``"retry"``: transport error.
+    """
     pages: list[tuple[str, str]] = []
     fetches = 0
 
@@ -84,6 +101,17 @@ async def find_unsupported_careers(
             system = detect_unsupported_host(href)
             if system is not None:
                 return _hit(system, href)
+
+    if any(marker in html.lower() for _, html in pages for marker in _SUPPORTED_BOARD_MARKERS):
+        return "board_link"
+    careers_pages = [
+        (url, html)
+        for url, html in pages
+        if _CAREERS_PATH_WORDS.search(urlparse(url).path)
+        and len(html.encode("utf-8")) >= MIN_CAREERS_PAGE_BYTES
+    ]
+    if careers_pages:
+        return _hit("no_public_board", careers_pages[0][0])
     return None
 
 

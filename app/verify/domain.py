@@ -7,7 +7,7 @@ import re
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 from app.models import Candidate, VerificationOutcome
 from app.queue.domains import normalize_domain
-from app.queue.names import clean_company_name
+from app.queue.names import clean_company_name, same_company
 from app.verify.blocklist import is_aggregator_domain
 from app.verify.html import page_title
 from app.verify.types import CheckRecord, OfficialDomainCheck
@@ -29,8 +29,22 @@ def candidate_domains(candidate: Candidate) -> list[str]:
     return ordered
 
 
+_TITLE_SEPARATORS = re.compile(r"\s+[|–—:\-]\s+|\s*[|–—]\s*|:\s+")
+
+
 def names_match(company_name: str, page_title_text: str) -> bool:
-    """Whole cleaned phrase match (word boundaries), not bare substring."""
+    """Whole cleaned phrase match (word boundaries), not bare substring.
+
+    Step 10 R7: a title segment naming the same company also matches, so
+    "Octopus Energy: Home" confirms "Octopus Energy Group". Extra distinctive
+    words still differ ("Lorien Assisted Living" is not "Lorien").
+    """
+    if any(
+        same_company(segment, company_name)
+        for segment in _TITLE_SEPARATORS.split(page_title_text)
+        if segment.strip()
+    ):
+        return True
     cleaned_company = clean_company_name(company_name)
     cleaned_title = clean_company_name(page_title_text)
     if not cleaned_company or not cleaned_title:
@@ -140,7 +154,7 @@ async def _check_one_domain(
                 check_type="official_domain",
                 outcome=VerificationOutcome.fail,
                 evidence_url=outcome.url,
-                evidence_snippet=(title[:200] or "title_mismatch"),
+                evidence_snippet=f"title_mismatch:{title[:180]}",
                 http_status=outcome.status_code,
             ),
         )
