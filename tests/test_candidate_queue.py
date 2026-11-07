@@ -70,6 +70,7 @@ def test_t13_three_searches_one_candidate_by_board(session: Session) -> None:
     ).all()
     assert len(live) == 1
 
+    survivor.domain_searched_at = now  # R2: CF3 has run for this board
     claimed = claim_next_candidate(session, now=now)
     assert claimed is not None
     assert claimed.id == survivor.id
@@ -263,7 +264,7 @@ def test_t16_retry_path_timeouts_then_needs_review(session: Session) -> None:
         board_id="flaky",
         evidence=_evidence(),
         now=now,
-    )
+    ).survivor.domain_searched_at = now  # R2: CF3 has run
     session.flush()
 
     delays = []
@@ -472,6 +473,7 @@ def test_unsupported_revisit_requeues(session: Session) -> None:
     row = Candidate(
         company_name="Old Unsupported",
         cleaned_name="old unsupported",
+        primary_domain="oldunsupported.test",  # unsupported implies a confirmed domain
         state=CandidateState.unsupported,
         extracted_by=ExtractedBy.code,
         revisit_at=now - timedelta(seconds=1),

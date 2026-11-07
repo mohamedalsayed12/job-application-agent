@@ -25,6 +25,7 @@ DedupeReason = Literal[
     "domain_live",
     "name_group",
     "discovery_cache",
+    "cf3_target",
 ]
 
 RetryTerminal = Literal["retry_wait", "needs_review"]

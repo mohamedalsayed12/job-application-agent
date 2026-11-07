@@ -22,3 +22,24 @@ def clean_company_name(name: str) -> str:
         if cleaned == text:
             return cleaned
         text = cleaned
+
+
+# Trailing words that do not tell two companies apart ("Octopus Energy Group").
+_GENERIC_TAIL = frozenset({"group", "uk", "holdings", "company", "co", "international", "global"})
+
+
+def core_name(name: str) -> str:
+    """Cleaned name without trailing generic words."""
+    words = clean_company_name(name).split()
+    while words and words[-1] in _GENERIC_TAIL:
+        words.pop()
+    return " ".join(words)
+
+
+def same_company(a: str, b: str) -> bool:
+    """Equal names once trailing generic words are dropped ("Octopus Energy Group").
+
+    Extra distinctive words still differ: "Lorien" is not "Lorien Assisted Living".
+    """
+    left = core_name(a)
+    return bool(left) and left == core_name(b)

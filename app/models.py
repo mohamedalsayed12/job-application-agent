@@ -426,6 +426,8 @@ class Candidate(_UuidPk, Base):
         ForeignKey("employer.id"),
     )
     revisit_at: Mapped[datetime | None] = mapped_column(TZ)
+    # Step 10 R2: set once a CF3 official-domain search has run for this row.
+    domain_searched_at: Mapped[datetime | None] = mapped_column(TZ)
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 
