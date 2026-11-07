@@ -53,13 +53,7 @@ def audit_sample(
     try:
         rows, summary = create_audit_sheet(db, size=size)
         db.commit()
-    except ValueError as exc:
-        db.rollback()
-        return RedirectResponse(
-            url=action("/admin/audit", admin_key) + f"&error={quote(str(exc))}",
-            status_code=303,
-        )
-    except InsufficientClassifiedError as exc:
+    except (ValueError, InsufficientClassifiedError) as exc:
         db.rollback()
         return RedirectResponse(
             url=action("/admin/audit", admin_key) + f"&error={quote(str(exc))}",

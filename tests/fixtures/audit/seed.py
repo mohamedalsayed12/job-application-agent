@@ -18,9 +18,6 @@ from app.models import (
     VerificationOutcome,
 )
 
-# Keep a copy under tests/ for discoverability; canonical JSON is DEFAULT_FIXTURE.
-TESTS_COPY = Path(__file__).resolve().parent / "classified_companies.json"
-
 
 def seed_classified_from_fixture(
     session: Session,
