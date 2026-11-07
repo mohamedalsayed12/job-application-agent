@@ -11,7 +11,9 @@ from app.models import SearchTemplate, SearchTemplateStatus
 
 UNPROVEN_RUN_THRESHOLD = 5
 
-GREENHOUSE_SITE = "boards.greenhouse.io"
+# Google indexes boards on job-boards.greenhouse.io and the EU hosts too; the
+# hit filter keeps any subdomain, and extraction only accepts real board hosts.
+GREENHOUSE_SITE = "greenhouse.io"
 LEVER_SITE = "jobs.lever.co"
 
 

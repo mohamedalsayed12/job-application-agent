@@ -149,7 +149,7 @@ def test_t5_empty_stats_equal_share_broad_queries(session: Session) -> None:
     assert by_id["CF1"].location == "London"
     assert "hiring" in by_id["CF2"].query.lower() or "careers" in by_id["CF2"].query.lower()
     assert "Acme Ltd" in by_id["CF3"].query
-    assert by_id["BD1"].site == "boards.greenhouse.io"
+    assert by_id["BD1"].site == "greenhouse.io"
     assert by_id["BD2"].site == "jobs.lever.co"
     blob = " ".join(item.query for item in plan.items)
     assert "salary" not in blob.lower()
@@ -291,7 +291,7 @@ async def test_serpapi_bd1_site_filter(session: Session) -> None:
     outcome = await run_search(session, gateway, run, settings=cfg, clock=lambda: now)
     await gateway.aclose()
     assert outcome.status == "succeeded"
-    assert seen_q[0].endswith("site:boards.greenhouse.io")
+    assert seen_q[0].endswith("site:greenhouse.io")
     assert "Software Engineer London" in seen_q[0]
 
 

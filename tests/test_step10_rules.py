@@ -456,3 +456,19 @@ async def test_discovery_leaves_runs_alone_until_their_retry_time(session: Sessi
     assert report.searches == {"not_due": 1}
     assert requests == []
     assert session.scalar(select(func.count()).select_from(SearchRun)) == 1
+
+
+def test_bd1_keeps_new_greenhouse_board_hosts() -> None:
+    from app.search.runner import _filter_hits
+    from app.search.templates import GREENHOUSE_SITE
+    from app.search.types import SearchHit
+
+    urls = [
+        "https://job-boards.greenhouse.io/databricks/jobs/1",
+        "https://job-boards.eu.greenhouse.io/rightmovecareers/jobs/2",
+        "https://boards.greenhouse.io/acme/jobs/3",
+        "https://uk.indeed.com/jobs?q=greenhouse.io",
+    ]
+    hits = tuple(SearchHit(url=u, title="t", snippet="s") for u in urls)
+    kept = [h.url for h in _filter_hits(hits, site=GREENHOUSE_SITE)]
+    assert kept == urls[:3]
