@@ -355,3 +355,28 @@ async def test_r3_tiny_careers_stub_stays_for_review(session: Session) -> None:
         "/careers": _html("Careers", '<div id="root"></div>'),
     })
     assert decision.state == "needs_review"
+
+
+# --- PR-D: discovery pass -----------------------------------------------------------
+
+from app.discovery.run import _waiting_for_cf3, run_discovery  # noqa: E402
+
+
+def test_cf3_waits_only_for_unsearched_domainless_candidates(session: Session) -> None:
+    waiting = ingest_candidate(session, company_name="Acme Widgets", extracted_by=ExtractedBy.code, now=_NOW).survivor
+    searched = ingest_candidate(session, company_name="Searched Co", extracted_by=ExtractedBy.code, now=_NOW).survivor
+    searched.domain_searched_at = _NOW
+    ingest_candidate(session, company_name="Has Domain", extracted_by=ExtractedBy.ai,
+                     domain_candidates=["hasdomain.test"], now=_NOW)
+    session.flush()
+    assert [c.id for c in _waiting_for_cf3(session)] == [waiting.id]
+
+
+@pytest.mark.asyncio
+async def test_discovery_pass_with_no_applicants_does_nothing(session: Session) -> None:
+    gateway = _gateway(lambda request: httpx.Response(500))
+    try:
+        report = await run_discovery(session, gateway, settings=Settings(_env_file=None))  # type: ignore[call-arg]
+    finally:
+        await gateway.aclose()
+    assert not report.searches and not report.cf3 and not report.verified
