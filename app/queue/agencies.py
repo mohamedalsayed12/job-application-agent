@@ -15,7 +15,7 @@ from app.queue.names import clean_company_name
 
 # Whole words in the cleaned name that mark an agency.
 _AGENCY_WORDS: Final = re.compile(
-    r"\b(recruitment|recruiting|recruiters?|resourcing|staffing|headhunters?|"
+    r"\b(recruit|recruitment|recruiting|recruiters?|resourcing|staffing|headhunters?|"
     r"employment agency|executive search|search and selection|"
     r"talent solutions)\b"
 )

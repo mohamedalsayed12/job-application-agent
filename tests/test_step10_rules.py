@@ -49,6 +49,7 @@ def test_r4_real_company_domains_still_allowed() -> None:
     [
         ("Hays Specialist Recruitment Limited", True),
         ("Alex James Resourcing", True),
+        ("ITOL Recruit", True),
         ("Robert Walters", True),
         ("Lorien", True),
         ("Picture More", True),
@@ -397,3 +398,33 @@ def test_rerun_resumes_planned_cold_start_runs(session: Session) -> None:
     session.add_all([cold, cf3])
     session.flush()
     assert [r.id for r in _planned_runs(session, applicant.id)] == [cold.id]
+
+
+@pytest.mark.asyncio
+async def test_cf3_reuses_an_earlier_search_for_the_same_query(session: Session) -> None:
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        web_search_provider="serpapi",
+        serpapi_api_key="test-serpapi",
+        ai_provider="anthropic",
+        anthropic_api_key="test-anthropic",
+    )
+    ensure_search_templates(session, cfg)
+    session.add(BudgetPolicy(provider="*", period="month", money_cap=Decimal("2.00"), request_cap=None,
+                             currency="GBP", effective_from=_NOW, effective_to=None))
+    applicant = Applicant(email=f"{uuid.uuid4()}@example.com")
+    session.add(applicant)
+    board = _lever_board(session)
+    session.flush()
+
+    seen: list[str] = []
+    gateway = _cf3_gateway(seen)
+    try:
+        await search_official_domain(session, gateway, board, applicant_id=applicant.id, pref=_PREF, settings=cfg)
+        board.domain_searched_at = None  # as if the AI step had waited
+        board.domain_candidates = []
+        await search_official_domain(session, gateway, board, applicant_id=applicant.id, pref=_PREF, settings=cfg)
+    finally:
+        await gateway.aclose()
+
+    assert sum(1 for s in seen if s.startswith("serpapi.com")) == 1

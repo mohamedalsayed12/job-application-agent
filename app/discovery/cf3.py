@@ -62,22 +62,23 @@ async def search_official_domain(
     await _adopt_lever_display_name(gateway, candidate)
 
     built = build_query("CF3", pref, employer_name=candidate.company_name)
-    run = SearchRun(
-        template_id="CF3",
-        applicant_id=applicant_id,
-        query=built.text,
-        provider=cfg.web_search_provider,
-        status=SearchRunStatus.planned,
-        attempt_count=0,
-    )
-    session.add(run)
-    persist_fn()
-
-    searched = await run_search(session, gateway, run, settings=cfg, persist=persist)
-    if isinstance(searched, SearchBudgetWait):
-        return Cf3Outcome("budget_wait", detail=searched.cap)
-    if searched.status == SearchRunStatus.failed:
-        return Cf3Outcome("search_failed", detail=searched.error or "")
+    run = _earlier_search(session, built.text)
+    if run is None:
+        run = SearchRun(
+            template_id="CF3",
+            applicant_id=applicant_id,
+            query=built.text,
+            provider=cfg.web_search_provider,
+            status=SearchRunStatus.planned,
+            attempt_count=0,
+        )
+        session.add(run)
+        persist_fn()
+        searched = await run_search(session, gateway, run, settings=cfg, persist=persist)
+        if isinstance(searched, SearchBudgetWait):
+            return Cf3Outcome("budget_wait", detail=searched.cap)
+        if searched.status == SearchRunStatus.failed:
+            return Cf3Outcome("search_failed", detail=searched.error or "")
 
     rows = [
         row
@@ -105,6 +106,24 @@ async def search_official_domain(
         )
     )
     return Cf3Outcome("searched", domains=domains)
+
+
+def _earlier_search(session: Session, query: str) -> SearchRun | None:
+    """A succeeded CF3 run for the same query: reuse its results, do not pay again.
+
+    An AI wait after the search leaves the candidate unsearched, so the next
+    pass reaches this point again with the results already stored.
+    """
+    return session.scalars(
+        select(SearchRun)
+        .where(
+            SearchRun.template_id == "CF3",
+            SearchRun.query == query,
+            SearchRun.status == SearchRunStatus.succeeded,
+        )
+        .order_by(SearchRun.created_at.desc())
+        .limit(1)
+    ).first()
 
 
 def _is_noise(url: str) -> bool:
