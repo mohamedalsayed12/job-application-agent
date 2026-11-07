@@ -428,3 +428,31 @@ async def test_cf3_reuses_an_earlier_search_for_the_same_query(session: Session)
         await gateway.aclose()
 
     assert sum(1 for s in seen if s.startswith("serpapi.com")) == 1
+
+
+@pytest.mark.asyncio
+async def test_discovery_leaves_runs_alone_until_their_retry_time(session: Session) -> None:
+    from datetime import timedelta
+
+    from app.applicants.service import create_applicant, parse_preference_input
+
+    cfg = Settings(_env_file=None)  # type: ignore[call-arg]
+    ensure_search_templates(session, cfg)
+    applicant = create_applicant(
+        session, email=f"{uuid.uuid4()}@example.com", display_name="Due Test",
+        preference=parse_preference_input(target_roles=["Software Engineer"], locations=["Leeds"]),
+    )
+    waiting = SearchRun(template_id="CF2", applicant_id=applicant.id, query="q", provider="serpapi",
+                        status=SearchRunStatus.planned, attempt_count=0,
+                        next_attempt_at=datetime.now(UTC) + timedelta(hours=1))
+    session.add(waiting)
+    session.flush()
+    requests: list[str] = []
+    gateway = _gateway(lambda request: requests.append(str(request.url)) or httpx.Response(500))
+    try:
+        report = await run_discovery(session, gateway, settings=cfg)
+    finally:
+        await gateway.aclose()
+    assert report.searches == {"not_due": 1}
+    assert requests == []
+    assert session.scalar(select(func.count()).select_from(SearchRun)) == 1
