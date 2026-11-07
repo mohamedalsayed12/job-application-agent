@@ -20,7 +20,7 @@ from app.models import (
     EmployerBoard,
 )
 from app.queue.domains import normalize_domain
-from app.queue.names import clean_company_name
+from app.queue.names import clean_company_name, same_company
 from app.queue.types import BoardKey, DedupeReason, DedupeResult
 
 # Partial-unique indexes ignore duplicate/rejected; live queue lookups also
@@ -46,10 +46,13 @@ def ingest_candidate(
     ai_extraction_id: uuid.UUID | None = None,
     evidence: list[tuple[uuid.UUID | None, str, str]] | None = None,
     now: datetime | None = None,
+    cf3_target: Candidate | None = None,
 ) -> DedupeResult:
     """Insert or merge a candidate through the four-step dedupe; leave queued/duplicate.
 
     ``evidence`` items are ``(search_result_id, quoted_text, source_url)``.
+    ``cf3_target`` is the candidate a CF3 search ran for: a same-name hit with
+    domains enriches it instead of becoming a new row (Step 10 R1).
     """
     stamp = now or datetime.now(UTC)
     domains = list(
@@ -72,6 +75,7 @@ def ingest_candidate(
         domains=domains,
         board=board,
         now=stamp,
+        cf3_target=cf3_target,
     )
     if hit.kind == "none":
         survivor = _new_row(
@@ -158,6 +162,7 @@ def _resolve(
     domains: list[str],
     board: BoardKey | None,
     now: datetime,
+    cf3_target: Candidate | None = None,
 ) -> _ResolveHit:
     domain_keys = list(dict.fromkeys([*( [primary] if primary else [] ), *domains]))
 
@@ -225,6 +230,11 @@ def _resolve(
         if due is not None:
             return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
 
+    # 2b. CF3 target — the search ran for this row, so a same-name hit is its
+    #     domain evidence. Only while the target still has no domain of its own.
+    if _accepts_cf3_hit(cf3_target, cleaned=cleaned, board=board):
+        return _ResolveHit("existing", "cf3_target", candidate=cf3_target)
+
     # 3. Cleaned name — group only when both sides have no board and no domains.
     #    A matching name alone never merges across different domains.
     if primary is None and board is None and not domains:
@@ -239,6 +249,18 @@ def _resolve(
             return _ResolveHit("existing", "name_group", candidate=grouped)
 
     return _ResolveHit("none", "fresh")
+
+
+def _accepts_cf3_hit(
+    target: Candidate | None, *, cleaned: str, board: BoardKey | None
+) -> bool:
+    if target is None or board is not None:
+        return False
+    if target.state in CANDIDATE_LIVE_UNIQUE_EXCLUDES:
+        return False
+    if target.primary_domain or target.domain_candidates:
+        return False
+    return same_company(cleaned, target.cleaned_name)
 
 
 def _new_row(

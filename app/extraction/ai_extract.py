@@ -59,8 +59,13 @@ async def extract_ai_leftovers(
     settings: Settings | None = None,
     related_run_id: uuid.UUID | None = None,
     persist: Callable[[], None] | None = None,
+    cf3_target: Candidate | None = None,
 ) -> AiExtractResult:
-    """Run AI only on leftovers. Cached inputs skip the paid call."""
+    """Run AI only on leftovers. Cached inputs skip the paid call.
+
+    ``cf3_target``: the candidate a CF3 search ran for; same-name grounded hits
+    enrich it instead of becoming new rows (Step 10 R1).
+    """
     cfg = settings or get_settings()
     leftovers = leftover_search_results(results)
     if not leftovers:
@@ -100,6 +105,7 @@ async def extract_ai_leftovers(
             settings=cfg,
             related_run_id=related_run_id,
             persist=persist,
+            cf3_target=cf3_target,
         )
         if isinstance(outcome, (AiBudgetWait, AiTokenCapWait, AiInFlightWait)):
             return outcome
@@ -139,6 +145,7 @@ async def _extract_chunk(
     settings: Settings,
     related_run_id: uuid.UUID | None,
     persist: Callable[[], None] | None,
+    cf3_target: Candidate | None = None,
 ) -> AiExtractResult:
     digest = input_hash(leftovers, model=model, prompt_version=PROMPT_VERSION)
     cached = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
@@ -146,7 +153,7 @@ async def _extract_chunk(
         if _is_pending(cached):
             return AiInFlightWait()
         outcome = _outcome_from_cache(cached, leftovers, suspicious)
-        _persist_grounded_if_needed(session, outcome, leftovers)
+        _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
         return outcome
 
     estimated_in = estimate_input_tokens(leftovers)
@@ -178,7 +185,7 @@ async def _extract_chunk(
         if existing is None or _is_pending(existing):
             return AiInFlightWait()
         outcome = _outcome_from_cache(existing, leftovers, suspicious)
-        _persist_grounded_if_needed(session, outcome, leftovers)
+        _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
         return outcome
 
     gate = BudgetGate(session)
@@ -270,7 +277,7 @@ async def _extract_chunk(
         completion_tokens=call.completion_tokens,
         raw_suggestions=tuple(suggestions),
     )
-    _persist_grounded(session, outcome, leftovers)
+    _persist_grounded(session, outcome, leftovers, cf3_target)
     return outcome
 
 
@@ -484,6 +491,7 @@ def _persist_grounded_if_needed(
     session: Session,
     outcome: AiExtractionOutcome,
     leftovers: Sequence[LeftoverResult],
+    cf3_target: Candidate | None = None,
 ) -> None:
     if outcome.ai_extraction_id is None:
         return
@@ -491,13 +499,14 @@ def _persist_grounded_if_needed(
         select(Candidate).where(Candidate.ai_extraction_id == outcome.ai_extraction_id)
     ).first()
     if existing is None:
-        _persist_grounded(session, outcome, leftovers)
+        _persist_grounded(session, outcome, leftovers, cf3_target)
 
 
 def _persist_grounded(
     session: Session,
     outcome: AiExtractionOutcome,
     leftovers: Sequence[LeftoverResult],
+    cf3_target: Candidate | None = None,
 ) -> list[Candidate]:
     urls = {row.id: row.url for row in leftovers}
     touched: list[Candidate] = []
@@ -516,6 +525,7 @@ def _persist_grounded(
             domain_candidates=list(hit.domain_candidates),
             ai_extraction_id=outcome.ai_extraction_id,
             evidence=evidence,
+            cf3_target=cf3_target,
         )
         if result.survivor.id not in seen:
             seen.add(result.survivor.id)

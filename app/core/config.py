@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     )
     api_allowlist: str = (
         "api.greenhouse.io,boards-api.greenhouse.io,"
-        "api.lever.co,api.eu.lever.co,"
+        "api.lever.co,api.eu.lever.co,jobs.lever.co,jobs.eu.lever.co,"
         "www.reed.co.uk,api.reed.co.uk,"
         "api.adzuna.com,api.adzuna.co.uk,"
         "serpapi.com,"

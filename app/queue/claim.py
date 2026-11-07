@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import CANDIDATE_CLAIMABLE, Candidate, CandidateState
@@ -32,6 +32,12 @@ def claim_next_candidate(
             Candidate.state.in_(tuple(CANDIDATE_CLAIMABLE)),
             Candidate.next_attempt_at.is_not(None),
             Candidate.next_attempt_at <= stamp,
+            # Step 10 R2: no domain yet → wait for the CF3 search before verifying.
+            or_(
+                Candidate.primary_domain.is_not(None),
+                func.cardinality(Candidate.domain_candidates) > 0,
+                Candidate.domain_searched_at.is_not(None),
+            ),
         )
         .order_by(Candidate.next_attempt_at.asc())
         .with_for_update(skip_locked=True)

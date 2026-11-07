@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.applicants.types import DiscoveryPreference
@@ -80,3 +80,183 @@ def test_agencies_never_become_candidates(session: Session) -> None:
     names = sorted(c.company_name for c in session.scalars(select(Candidate)))
     assert names == ["Matillion", "octoenergy"]
     assert len(touched) == 2
+
+
+# --- PR-B: R1 / R2 / R4 filter / R5 -------------------------------------------------
+
+import ipaddress  # noqa: E402
+import json  # noqa: E402
+import uuid  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
+from decimal import Decimal  # noqa: E402
+
+import httpx  # noqa: E402
+
+from app.discovery.cf3 import search_official_domain  # noqa: E402
+from app.fetch.gateway import FetchGateway  # noqa: E402
+from app.models import Applicant, BudgetPolicy, CandidateState, ExtractedBy  # noqa: E402
+from app.queue import claim_next_candidate, ingest_candidate  # noqa: E402
+from app.queue.names import same_company  # noqa: E402
+from app.search import ensure_search_templates  # noqa: E402
+
+_NOW = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
+
+
+def _lever_board(session: Session, slug: str = "octoenergy") -> Candidate:
+    return ingest_candidate(
+        session,
+        company_name=slug,
+        extracted_by=ExtractedBy.code,
+        board_system="lever",
+        board_instance="lever_global",
+        board_id=slug,
+        now=_NOW,
+    ).survivor
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("Octopus Energy Group", "Octopus Energy", True),
+        ("matillion", "Matillion", True),
+        ("BAE Systems", "BAE Systems plc", True),
+        ("Lorien", "Lorien Assisted Living", False),
+        ("Arm", "Armstrong", False),
+        ("Group", "Group", False),
+    ],
+)
+def test_same_company(a: str, b: str, same: bool) -> None:
+    assert same_company(a, b) is same
+
+
+def test_r2_domainless_candidate_waits_for_cf3(session: Session) -> None:
+    board = _lever_board(session)
+    session.flush()
+    assert claim_next_candidate(session, now=_NOW) is None
+
+    board.domain_searched_at = _NOW
+    session.flush()
+    claimed = claim_next_candidate(session, now=_NOW)
+    assert claimed is not None and claimed.id == board.id
+
+
+def test_r2_candidate_with_domain_is_claimable_at_once(session: Session) -> None:
+    row = ingest_candidate(
+        session,
+        company_name="Matillion",
+        extracted_by=ExtractedBy.ai,
+        domain_candidates=["matillion.com"],
+        now=_NOW,
+    ).survivor
+    session.flush()
+    claimed = claim_next_candidate(session, now=_NOW)
+    assert claimed is not None and claimed.id == row.id
+
+
+def test_r1_cf3_hit_enriches_its_target(session: Session) -> None:
+    board = _lever_board(session, "matillion")
+    result = ingest_candidate(
+        session,
+        company_name="Matillion",
+        extracted_by=ExtractedBy.ai,
+        domain_candidates=["matillion.com"],
+        now=_NOW,
+        cf3_target=board,
+    )
+    assert result.survivor.id == board.id
+    assert result.reason == "cf3_target"
+    assert board.domain_candidates == ["matillion.com"]
+    assert board.board_id == "matillion"
+    assert session.scalar(select(func.count()).select_from(Candidate)) == 1
+
+
+def test_r1_different_company_does_not_enrich_target(session: Session) -> None:
+    target = ingest_candidate(session, company_name="Lorien", extracted_by=ExtractedBy.code, now=_NOW).survivor
+    other = ingest_candidate(
+        session,
+        company_name="Lorien Assisted Living",
+        extracted_by=ExtractedBy.ai,
+        domain_candidates=["lorienassistedliving.example"],
+        now=_NOW,
+        cf3_target=target,
+    ).survivor
+    assert other.id != target.id
+    assert target.domain_candidates == []
+
+
+def _cf3_gateway(seen: list[str]) -> FetchGateway:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.url.host}{request.url.path}")
+        if request.url.host == "jobs.lever.co":
+            return httpx.Response(200, html="<html><title>Octopus Energy Group</title></html>")
+        if request.url.host == "serpapi.com":
+            assert request.url.params["q"] == '"Octopus Energy Group" official website'
+            return httpx.Response(
+                200,
+                json={
+                    "search_metadata": {"status": "Success"},
+                    "organic_results": [
+                        {"position": 1, "link": "https://uk.jooble.org/jobs-octopus", "title": "Octopus jobs", "snippet": "Jobs at Octopus Energy"},
+                        {"position": 2, "link": "https://octopus.energy/", "title": "Octopus Energy", "snippet": "Octopus Energy: the UK's greenest supplier."},
+                    ],
+                },
+            )
+        if request.url.host == "api.anthropic.com":
+            body = json.loads(request.content.decode("utf-8"))
+            data = body["messages"][0]["content"]
+            assert "jooble" not in data  # R4: noise hosts never reach Claude
+            rows = json.loads(next(line for line in data.splitlines() if line.startswith("[")))
+            rid = rows[0]["result_id"]
+            employers = [{
+                "company_name": "Octopus Energy",
+                "domain_candidates": ["octopus.energy"],
+                "evidence": [{"result_id": rid, "quote": "Octopus Energy"}],
+            }]
+            return httpx.Response(200, json={
+                "model": "claude-haiku-5-5",
+                "content": [{"type": "text", "text": json.dumps({"employers": employers})}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 100, "output_tokens": 40},
+            })
+        raise AssertionError(f"unexpected {request.url}")
+
+    return FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset({"jobs.lever.co", "serpapi.com", "api.anthropic.com"}),
+        resolve=lambda host: [ipaddress.IPv4Address("93.184.216.34")],
+        transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_r1_r4_r5_cf3_end_to_end(session: Session) -> None:
+    cfg = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        web_search_provider="serpapi",
+        serpapi_api_key="test-serpapi",
+        ai_provider="anthropic",
+        anthropic_api_key="test-anthropic",
+    )
+    ensure_search_templates(session, cfg)
+    session.add(BudgetPolicy(provider="*", period="month", money_cap=Decimal("2.00"), request_cap=None,
+                             currency="GBP", effective_from=_NOW, effective_to=None))
+    applicant = Applicant(email=f"{uuid.uuid4()}@example.com")
+    session.add(applicant)
+    board = _lever_board(session)
+    session.flush()
+
+    seen: list[str] = []
+    gateway = _cf3_gateway(seen)
+    try:
+        outcome = await search_official_domain(session, gateway, board, applicant_id=applicant.id, pref=_PREF, settings=cfg)
+    finally:
+        await gateway.aclose()
+
+    assert outcome.status == "searched"
+    assert board.company_name == "Octopus Energy Group"  # R5
+    assert board.board_id == "octoenergy"
+    assert outcome.domains == ("octopus.energy",)  # R1: same row, not a new one
+    assert board.domain_searched_at is not None  # R2
+    assert board.state == CandidateState.queued
+    assert session.scalar(select(func.count()).select_from(Candidate)) == 1
+    assert seen[0] == "jobs.lever.co/octoenergy"
