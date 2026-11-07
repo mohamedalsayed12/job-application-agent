@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,3 +86,20 @@ class AiExtractionOutcome:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     raw_suggestions: tuple[AiSuggestion, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class AiCallResponse:
+    """Parsed structured output from one provider call (any AI_PROVIDER)."""
+
+    payload: dict[str, Any]
+    prompt_tokens: int
+    completion_tokens: int
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
+class AiCallFailure:
+    """Provider call did not yield usable JSON; ``reason`` is ``<provider>_<detail>``."""
+
+    reason: str

@@ -21,7 +21,8 @@ Rules:
 - If nothing is grounded, return an empty employers list.
 """
 
-# Strict JSON Schema for OpenAI Structured Outputs (additionalProperties false).
+# Strict JSON Schema (additionalProperties false). OpenAI strict mode takes it as-is;
+# Anthropic gets ``schema_without_string_limits`` (no maxLength). Grounding re-checks quote length.
 EXTRACTION_JSON_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
@@ -84,3 +85,23 @@ def build_messages(results: Sequence[LeftoverResult]) -> list[dict[str, str]]:
         {"role": "system", "content": SYSTEM_INSTRUCTIONS},
         {"role": "user", "content": wrap_results_as_data(results)},
     ]
+
+
+def schema_without_string_limits(schema: object) -> object:
+    """Copy ``schema`` dropping minLength/maxLength (unsupported by Anthropic structured outputs)."""
+    if isinstance(schema, dict):
+        return {
+            key: schema_without_string_limits(value)
+            for key, value in schema.items()
+            if key not in {"minLength", "maxLength"}
+        }
+    if isinstance(schema, list):
+        return [schema_without_string_limits(item) for item in schema]
+    return schema
+
+
+def estimate_input_tokens(results: Sequence[LeftoverResult]) -> int:
+    """Rough token estimate for the budget gate before the paid call."""
+    text = SYSTEM_INSTRUCTIONS + "\n" + wrap_results_as_data(results)
+    # ~4 chars/token is a coarse upper bound for English JSON wrappers.
+    return max(1, (len(text) + 3) // 4)

@@ -17,16 +17,13 @@ from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings, get_settings
 from app.extraction.ai_cache import input_hash, lookup_cached
+from app.extraction.ai_call import call_leftover_extraction
 from app.extraction.ai_grounding import ground_suggestions, parse_suggestions
 from app.extraction.ai_injection import scan_suspicious
-from app.extraction.ai_openai import (
-    OpenAICallFailure,
-    call_leftover_extraction,
-    estimate_input_tokens,
-)
-from app.extraction.ai_prompt import PROMPT_VERSION
+from app.extraction.ai_prompt import PROMPT_VERSION, estimate_input_tokens
 from app.extraction.ai_types import (
     AiBudgetWait,
+    AiCallFailure,
     AiEvidenceItem,
     AiExtractionOutcome,
     AiInFlightWait,
@@ -71,12 +68,12 @@ async def extract_ai_leftovers(
             ungrounded=(),
             suspicious_result_ids=frozenset(),
             input_hash="",
-            model=cfg.ai_extraction_model,
+            model=cfg.resolved_ai_extraction_model(),
             prompt_version=PROMPT_VERSION,
             cached=True,
         )
 
-    model = (cfg.ai_extraction_model or "gpt-4o-mini").strip()
+    model = cfg.resolved_ai_extraction_model()
     suspicious = scan_suspicious(leftovers)
     chunks = _chunk_leftovers(leftovers, cfg)
     if not chunks:
@@ -161,7 +158,7 @@ async def _extract_chunk(
         return AiTokenCapWait(cap="per_day")
 
     # Claim the cache slot before any paid call so concurrent workers cannot
-    # both hit OpenAI for the same input (§10.6). Survives persist=commit.
+    # both hit the AI provider for the same input (§10.6). Survives persist=commit.
     claim = AiExtraction(
         input_hash=digest,
         model=model,
@@ -215,11 +212,11 @@ async def _extract_chunk(
         settings=settings,
         max_output_tokens=max_out,
     )
-    if isinstance(call, OpenAICallFailure):
+    if isinstance(call, AiCallFailure):
         gate.settle(reservation, consumed=False)
         session.delete(claim)
         session.flush()
-        logger.warning("openai leftover extraction failed: %s", call.reason)
+        logger.warning("%s leftover extraction failed: %s", settings.ai_provider, call.reason)
         return AiExtractionOutcome(
             grounded=(),
             ungrounded=(UngroundedItem(reason=f"provider:{call.reason}"),),
@@ -280,7 +277,7 @@ def _chunk_leftovers(
     leftovers: Sequence[LeftoverResult],
     settings: Settings,
 ) -> list[list[LeftoverResult]]:
-    """Split so each OpenAI call stays under the per-item token cap."""
+    """Split so each provider call stays under the per-item token cap."""
     max_out = settings.ai_extraction_max_output_tokens
     cap = settings.ai_extraction_per_item_token_cap
     if max_out >= cap:
