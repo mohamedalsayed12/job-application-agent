@@ -10,6 +10,7 @@ import uuid
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -79,8 +80,14 @@ async def run_discovery(
     }
     new_runs: list[SearchRun] = []
     for applicant_id, pref in prefs.items():
-        runs = _planned_runs(session, applicant_id)
-        if not runs:
+        planned = _planned_runs(session, applicant_id)
+        now = datetime.now(UTC)
+        runs = [r for r in planned if r.next_attempt_at is None or r.next_attempt_at <= now]
+        if planned and not runs:
+            report.searches["not_due"] += len(planned)
+            log(f"search applicant {applicant_id}: {len(planned)} runs wait for their retry time")
+            continue
+        if not planned:
             plan = plan_cold_start(session, pref, total_slots=slots_per_applicant, settings=cfg)
             runs = create_runs_from_plan(session, plan, applicant_id=applicant_id)
             commit()
