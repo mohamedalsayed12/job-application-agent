@@ -91,6 +91,14 @@ async def _run_checks(
                 candidate,
                 decide.retry("careers_fetch_error", (domain.record,)),
             )
+        if unsupported == "board_link":
+            return decide.needs_review(
+                reason="board_link_on_careers_page",
+                checks=(domain.record,),
+                evidence_level=EvidenceLevel.weak,
+                priority=35,
+                confirmed_domain=domain.domain,
+            )
         if unsupported is not None:
             return decide.unsupported(domain=domain, careers=unsupported, now=now)
         return decide.needs_review(

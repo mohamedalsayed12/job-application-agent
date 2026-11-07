@@ -17,7 +17,25 @@ UNSUPPORTED_REVISIT = timedelta(days=90)
 UNSUPPORTED_CAREERS_MARKERS: tuple[tuple[str, str], ...] = (
     ("workday", "myworkdayjobs.com"),
     ("ashby", "ashbyhq.com"),
+    ("smartrecruiters", "smartrecruiters.com"),
+    ("teamtailor", "teamtailor.com"),
+    ("workable", "workable.com"),
+    ("successfactors", "successfactors.com"),
+    ("successfactors", "successfactors.eu"),
+    ("icims", "icims.com"),
+    ("taleo", "taleo.net"),
+    ("eploy", "eploy.net"),
+    ("firefish", "firefishsoftware.com"),
+    ("getgot", "getgotjobs.co.uk"),
+    ("pinpoint", "pinpointhq.com"),
+    ("recruitee", "recruitee.com"),
+    ("bamboohr", "bamboohr.com"),
+    ("jobvite", "jobvite.com"),
 )
+
+# Step 10 R3: a careers page smaller than this is treated as a JavaScript stub,
+# not as proof that the company has no public board.
+MIN_CAREERS_PAGE_BYTES = 2048
 
 
 @dataclass(frozen=True, slots=True)
