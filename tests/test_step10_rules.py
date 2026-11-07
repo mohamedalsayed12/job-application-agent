@@ -360,6 +360,7 @@ async def test_r3_tiny_careers_stub_stays_for_review(session: Session) -> None:
 # --- PR-D: discovery pass -----------------------------------------------------------
 
 from app.discovery.run import _waiting_for_cf3, run_discovery  # noqa: E402
+from app.models import SearchRun, SearchRunStatus  # noqa: E402
 
 
 def test_cf3_waits_only_for_unsearched_domainless_candidates(session: Session) -> None:
@@ -380,3 +381,19 @@ async def test_discovery_pass_with_no_applicants_does_nothing(session: Session) 
     finally:
         await gateway.aclose()
     assert not report.searches and not report.cf3 and not report.verified
+
+
+def test_rerun_resumes_planned_cold_start_runs(session: Session) -> None:
+    from app.discovery.run import _planned_runs
+
+    ensure_search_templates(session, Settings(_env_file=None))  # type: ignore[call-arg]
+    applicant = Applicant(email=f"{uuid.uuid4()}@example.com")
+    session.add(applicant)
+    session.flush()
+    cold = SearchRun(template_id="CF2", applicant_id=applicant.id, query="q", provider="serpapi",
+                     status=SearchRunStatus.planned, attempt_count=0)
+    cf3 = SearchRun(template_id="CF3", applicant_id=applicant.id, query="q3", provider="serpapi",
+                    status=SearchRunStatus.planned, attempt_count=0)
+    session.add_all([cold, cf3])
+    session.flush()
+    assert [r.id for r in _planned_runs(session, applicant.id)] == [cold.id]
