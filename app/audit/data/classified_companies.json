@@ -1,0 +1,281 @@
+{
+  "description": "Offline Step 10 audit fixtures. Synthetic UK tech employers spanning verified / needs_review / unsupported. Not live discovery results — operator re-runs with Reed + SerpAPI free keys for a real sample.",
+  "companies": [
+    {
+      "company_name": "Verified One Ltd",
+      "cleaned_name": "verified one",
+      "primary_domain": "verified-one.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "verified-one",
+      "state": "verified",
+      "evidence_urls": [
+        "https://verified-one.test/careers",
+        "https://boards-api.greenhouse.io/v1/boards/verified-one/jobs"
+      ],
+      "check_urls": ["https://verified-one.test/"]
+    },
+    {
+      "company_name": "Verified Two Ltd",
+      "cleaned_name": "verified two",
+      "primary_domain": "verified-two.test",
+      "board_system": "lever",
+      "board_instance": "lever_global",
+      "board_id": "verifiedtwo",
+      "state": "verified",
+      "evidence_urls": [
+        "https://verified-two.test/jobs",
+        "https://api.lever.co/v0/postings/verifiedtwo"
+      ],
+      "check_urls": ["https://verified-two.test/"]
+    },
+    {
+      "company_name": "Verified Three Ltd",
+      "cleaned_name": "verified three",
+      "primary_domain": "verified-three.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "verified-three",
+      "state": "verified",
+      "evidence_urls": ["https://verified-three.test/careers"],
+      "check_urls": ["https://verified-three.test/"]
+    },
+    {
+      "company_name": "Verified Four Ltd",
+      "cleaned_name": "verified four",
+      "primary_domain": "verified-four.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "verified-four",
+      "state": "verified",
+      "evidence_urls": ["https://verified-four.test/join"],
+      "check_urls": ["https://verified-four.test/"]
+    },
+    {
+      "company_name": "Verified Five Ltd",
+      "cleaned_name": "verified five",
+      "primary_domain": "verified-five.test",
+      "board_system": "lever",
+      "board_instance": "lever_global",
+      "board_id": "verifiedfive",
+      "state": "verified",
+      "evidence_urls": ["https://verified-five.test/careers"],
+      "check_urls": ["https://verified-five.test/"]
+    },
+    {
+      "company_name": "Verified Six Ltd",
+      "cleaned_name": "verified six",
+      "primary_domain": "verified-six.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "verified-six",
+      "state": "verified",
+      "evidence_urls": ["https://verified-six.test/careers"],
+      "check_urls": ["https://verified-six.test/"]
+    },
+    {
+      "company_name": "Verified Seven Ltd",
+      "cleaned_name": "verified seven",
+      "primary_domain": "verified-seven.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "verified-seven",
+      "state": "verified",
+      "evidence_urls": ["https://verified-seven.test/careers"],
+      "check_urls": ["https://verified-seven.test/"]
+    },
+    {
+      "company_name": "Verified Eight Ltd",
+      "cleaned_name": "verified eight",
+      "primary_domain": "verified-eight.test",
+      "board_system": "lever",
+      "board_instance": "lever_eu",
+      "board_id": "verifiedeight",
+      "state": "verified",
+      "evidence_urls": ["https://verified-eight.test/jobs"],
+      "check_urls": ["https://verified-eight.test/"]
+    },
+    {
+      "company_name": "Review One Ltd",
+      "cleaned_name": "review one",
+      "primary_domain": "review-one.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "review-one",
+      "state": "needs_review",
+      "evidence_urls": ["https://boards.greenhouse.io/review-one"],
+      "check_urls": ["https://review-one.test/"]
+    },
+    {
+      "company_name": "Review Two Ltd",
+      "cleaned_name": "review two",
+      "primary_domain": "review-two.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "review-two",
+      "state": "needs_review",
+      "evidence_urls": ["https://review-two.test/about"],
+      "check_urls": []
+    },
+    {
+      "company_name": "Review Three Ltd",
+      "cleaned_name": "review three",
+      "primary_domain": null,
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "review-three",
+      "state": "needs_review",
+      "evidence_urls": ["https://example.test/review-three-mention"],
+      "check_urls": []
+    },
+    {
+      "company_name": "Review Four Ltd",
+      "cleaned_name": "review four",
+      "primary_domain": "review-four.test",
+      "board_system": "lever",
+      "board_instance": "lever_global",
+      "board_id": "reviewfour",
+      "state": "needs_review",
+      "evidence_urls": ["https://jobs.lever.co/reviewfour"],
+      "check_urls": ["https://review-four.test/"]
+    },
+    {
+      "company_name": "Review Five Ltd",
+      "cleaned_name": "review five",
+      "primary_domain": "review-five.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "review-five",
+      "state": "needs_review",
+      "evidence_urls": ["https://review-five.test/careers"],
+      "check_urls": ["https://review-five.test/"]
+    },
+    {
+      "company_name": "Review Six Ltd",
+      "cleaned_name": "review six",
+      "primary_domain": "review-six.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "needs_review",
+      "evidence_urls": ["https://review-six.test/team"],
+      "check_urls": []
+    },
+    {
+      "company_name": "Review Seven Ltd",
+      "cleaned_name": "review seven",
+      "primary_domain": "review-seven.test",
+      "board_system": "greenhouse",
+      "board_instance": "greenhouse",
+      "board_id": "review-seven",
+      "state": "needs_review",
+      "evidence_urls": ["https://review-seven.test/careers"],
+      "check_urls": ["https://review-seven.test/"]
+    },
+    {
+      "company_name": "Review Eight Ltd",
+      "cleaned_name": "review eight",
+      "primary_domain": "review-eight.test",
+      "board_system": "lever",
+      "board_instance": "lever_global",
+      "board_id": "revieweight",
+      "state": "needs_review",
+      "evidence_urls": ["https://review-eight.test/jobs"],
+      "check_urls": []
+    },
+    {
+      "company_name": "Unsupported One Ltd",
+      "cleaned_name": "unsupported one",
+      "primary_domain": "unsupported-one.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "unsupported",
+      "evidence_urls": [
+        "https://unsupported-one.test/careers",
+        "https://unsupported-one.myworkdayjobs.com/en-US/Careers"
+      ],
+      "check_urls": ["https://unsupported-one.test/careers"]
+    },
+    {
+      "company_name": "Unsupported Two Ltd",
+      "cleaned_name": "unsupported two",
+      "primary_domain": "unsupported-two.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "unsupported",
+      "evidence_urls": [
+        "https://jobs.ashbyhq.com/unsupported-two",
+        "https://unsupported-two.test/careers"
+      ],
+      "check_urls": ["https://unsupported-two.test/careers"]
+    },
+    {
+      "company_name": "Unsupported Three Ltd",
+      "cleaned_name": "unsupported three",
+      "primary_domain": "unsupported-three.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "unsupported",
+      "evidence_urls": ["https://unsupported-three.test/careers"],
+      "check_urls": ["https://unsupported-three.test/careers"]
+    },
+    {
+      "company_name": "Unsupported Four Ltd",
+      "cleaned_name": "unsupported four",
+      "primary_domain": "unsupported-four.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "unsupported",
+      "evidence_urls": ["https://unsupported-four.myworkdayjobs.com/Careers"],
+      "check_urls": ["https://unsupported-four.test/"]
+    },
+    {
+      "company_name": "Unsupported Five Ltd",
+      "cleaned_name": "unsupported five",
+      "primary_domain": "unsupported-five.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "unsupported",
+      "evidence_urls": ["https://jobs.ashbyhq.com/unsupported-five"],
+      "check_urls": ["https://unsupported-five.test/careers"]
+    },
+    {
+      "company_name": "Unsupported Six Ltd",
+      "cleaned_name": "unsupported six",
+      "primary_domain": "unsupported-six.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "unsupported",
+      "evidence_urls": ["https://unsupported-six.test/join"],
+      "check_urls": ["https://unsupported-six.test/join"]
+    },
+    {
+      "company_name": "Unsupported Seven Ltd",
+      "cleaned_name": "unsupported seven",
+      "primary_domain": "unsupported-seven.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "unsupported",
+      "evidence_urls": ["https://unsupported-seven.myworkdayjobs.com/en-US/Jobs"],
+      "check_urls": ["https://unsupported-seven.test/careers"]
+    },
+    {
+      "company_name": "Unsupported Eight Ltd",
+      "cleaned_name": "unsupported eight",
+      "primary_domain": "unsupported-eight.test",
+      "board_system": null,
+      "board_instance": null,
+      "board_id": null,
+      "state": "unsupported",
+      "evidence_urls": ["https://unsupported-eight.test/careers"],
+      "check_urls": ["https://unsupported-eight.test/careers"]
+    }
+  ]
+}
