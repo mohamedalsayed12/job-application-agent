@@ -61,6 +61,23 @@ Health check: `GET http://localhost:8000/health` — returns `200` when the DB i
 uv run pytest
 ```
 
+### 7. Classification audit sheet (Step 10)
+
+Sample classified companies (`verified` / `needs_review` / `unsupported`) into
+`audit_sample` rows and download an operator-fillable CSV (auditor columns stay
+empty — do not auto-judge):
+
+```bash
+# Live DB after discovery/verification
+uv run python -m app.audit --commit --out step10-audit-sample.csv
+
+# Offline when Reed/SerpAPI keys are missing (£0 path; money_cap may stay unset)
+uv run python -m app.audit --seed-fixtures --commit --out step10-audit-sample.csv
+```
+
+Admin UI: `GET /admin/audit` (same admin key as applicants). Fixtures live under
+`tests/fixtures/audit/`.
+
 ## Stack (D22)
 
 | Piece | Choice |
