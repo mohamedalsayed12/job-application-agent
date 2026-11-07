@@ -33,3 +33,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"app/audit/data/classified_companies.json" = "app/audit/data/classified_companies.json"

@@ -1,13 +1,15 @@
 """Stratified audit sampling across verified / needs_review / unsupported.
 
 Never fills auditor_result, is_correct, is_useful, or notes (operator only).
-Skips candidates that already have an audit_sample row (one open sheet).
+One open sheet: if unfilled audit_sample rows already exist, re-export them
+instead of inserting another draw.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from itertools import zip_longest
 from uuid import UUID
 
@@ -40,6 +42,24 @@ def _validate_size(size: int) -> None:
         raise ValueError(f"size must be 1–{MAX_SAMPLE_SIZE}")
 
 
+def round_robin_take(
+    buckets: dict[str, Sequence[object]],
+    *,
+    size: int,
+    order: Sequence[str] = CLASSIFIED_STATES,
+) -> list[object]:
+    """Take up to ``size`` items, cycling state buckets in ``order``."""
+    picked: list[object] = []
+    for group in zip_longest(*(buckets.get(state, ()) for state in order)):
+        for row in group:
+            if row is None:
+                continue
+            picked.append(row)
+            if len(picked) >= size:
+                return picked
+    return picked
+
+
 def _already_sampled_ids(session: Session) -> set[UUID]:
     return set(session.scalars(select(AuditSample.candidate_id)).all()) - {None}
 
@@ -60,10 +80,7 @@ def stratified_sample(
     *,
     size: int = DEFAULT_SAMPLE_SIZE,
 ) -> list[Candidate]:
-    """Pick ``size`` companies, spreading across the three states.
-
-    Round-robin via zip_longest over state buckets. Deterministic given input order.
-    """
+    """Pick ``size`` companies, spreading across the three states."""
     _validate_size(size)
     buckets: dict[str, list[Candidate]] = {state: [] for state in CLASSIFIED_STATES}
     for candidate in candidates:
@@ -74,15 +91,8 @@ def stratified_sample(
     if available < size:
         raise InsufficientClassifiedError(available, size)
 
-    picked: list[Candidate] = []
-    for group in zip_longest(*(buckets[state] for state in CLASSIFIED_STATES)):
-        for row in group:
-            if row is None:
-                continue
-            picked.append(row)
-            if len(picked) >= size:
-                return picked
-    return picked
+    picked = round_robin_take(buckets, size=size)
+    return [row for row in picked if isinstance(row, Candidate)]
 
 
 def _evidence_by_candidate(
@@ -123,43 +133,17 @@ def _evidence_by_candidate(
     return {cid: tuple(urls) for cid, urls in ordered.items()}
 
 
-def create_audit_sheet(
+def _sheet_rows_for(
     session: Session,
+    pairs: Sequence[tuple[AuditSample, Candidate]],
     *,
-    size: int = DEFAULT_SAMPLE_SIZE,
+    requested: int,
+    available: dict[str, int] | None = None,
 ) -> tuple[list[AuditSheetRow], SampleSummary]:
-    """Insert ``audit_sample`` rows for a stratified sample and return sheet rows.
-
-    Auditor judgment columns stay NULL. Skips candidates already sampled.
-    Does not commit — caller commits.
-    """
-    _validate_size(size)
-    classified = list_classified_candidates(session)
-    available_by: dict[str, int] = {state: 0 for state in CLASSIFIED_STATES}
-    for candidate in classified:
-        available_by[candidate.state] = available_by.get(candidate.state, 0) + 1
-
-    selected = stratified_sample(classified, size=size)
-    evidence = _evidence_by_candidate(session, [c.id for c in selected])
-
-    samples: list[AuditSample] = []
-    for candidate in selected:
-        sample = AuditSample(
-            candidate_id=candidate.id,
-            employer_id=candidate.employer_id,
-            system_result=candidate.state,
-            auditor_result=None,
-            is_correct=None,
-            is_useful=None,
-            notes=None,
-        )
-        session.add(sample)
-        samples.append(sample)
-    session.flush()
-
+    evidence = _evidence_by_candidate(session, [c.id for _, c in pairs])
     rows: list[AuditSheetRow] = []
     by_state: dict[str, int] = defaultdict(int)
-    for candidate, sample in zip(selected, samples, strict=True):
+    for sample, candidate in pairs:
         by_state[candidate.state] += 1
         rows.append(
             AuditSheetRow(
@@ -171,17 +155,67 @@ def create_audit_sheet(
                 board_system=candidate.board_system,
                 board_instance=candidate.board_instance,
                 board_id=candidate.board_id,
-                system_result=candidate.state,
+                system_result=sample.system_result,
                 evidence_urls=evidence.get(candidate.id, ()),
             )
         )
-
+    avail = available or {state: 0 for state in CLASSIFIED_STATES}
     summary = SampleSummary(
-        requested=size,
+        requested=requested,
         selected=len(rows),
         by_state={str(state): count for state, count in by_state.items()},
-        classified_available={
-            str(state): available_by[state] for state in CLASSIFIED_STATES
-        },
+        classified_available={str(state): avail.get(state, 0) for state in CLASSIFIED_STATES},
     )
     return rows, summary
+
+
+def _open_sheet_pairs(session: Session) -> list[tuple[AuditSample, Candidate]]:
+    """Unfilled audit_sample rows joined to their candidates, oldest first."""
+    rows = session.execute(
+        select(AuditSample, Candidate)
+        .join(Candidate, Candidate.id == AuditSample.candidate_id)
+        .where(AuditSample.auditor_result.is_(None))
+        .where(AuditSample.candidate_id.is_not(None))
+        .order_by(AuditSample.created_at, AuditSample.id)
+    ).all()
+    return [(sample, candidate) for sample, candidate in rows]
+
+
+def create_audit_sheet(
+    session: Session,
+    *,
+    size: int = DEFAULT_SAMPLE_SIZE,
+) -> tuple[list[AuditSheetRow], SampleSummary]:
+    """Return the open audit sheet, creating one stratified draw if none exists.
+
+    Auditor judgment columns stay NULL on insert. Does not commit.
+    """
+    _validate_size(size)
+    open_pairs = _open_sheet_pairs(session)
+    if open_pairs:
+        return _sheet_rows_for(session, open_pairs, requested=size)
+
+    classified = list_classified_candidates(session)
+    available_by: dict[str, int] = {state: 0 for state in CLASSIFIED_STATES}
+    for candidate in classified:
+        available_by[candidate.state] = available_by.get(candidate.state, 0) + 1
+
+    selected = stratified_sample(classified, size=size)
+    stamp = datetime.now(tz=UTC)
+    samples: list[AuditSample] = []
+    for index, candidate in enumerate(selected):
+        sample = AuditSample(
+            candidate_id=candidate.id,
+            employer_id=candidate.employer_id,
+            system_result=candidate.state,
+            auditor_result=None,
+            is_correct=None,
+            is_useful=None,
+            notes=None,
+            created_at=stamp + timedelta(microseconds=index),
+        )
+        session.add(sample)
+        samples.append(sample)
+    session.flush()
+    pairs = list(zip(samples, selected, strict=True))
+    return _sheet_rows_for(session, pairs, requested=size, available=available_by)

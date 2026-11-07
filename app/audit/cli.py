@@ -97,7 +97,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         rows, summary = create_audit_sheet(session, size=args.size)
         session.commit()
-        path = write_audit_csv(args.out, rows)
     except InsufficientClassifiedError as exc:
         session.rollback()
         print(str(exc), file=sys.stderr)
@@ -108,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         session.close()
 
+    # Write after commit so a disk failure can still re-export the open sheet.
+    path = write_audit_csv(args.out, rows)
     print(
         f"wrote {path} selected={summary.selected} "
         f"by_state={summary.by_state} available={summary.classified_available}"

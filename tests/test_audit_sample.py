@@ -14,13 +14,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit.csv_export import csv_text, write_audit_csv
-from app.audit.fixtures import seed_classified_from_fixture, write_fixture_template_csv
+from app.audit.fixtures import write_fixture_template_csv
 from app.audit.sample import (
     InsufficientClassifiedError,
     create_audit_sheet,
     list_classified_candidates,
     stratified_sample,
 )
+from tests.fixtures.audit.seed import seed_classified_from_fixture
 from app.audit.types import CLASSIFIED_STATES, CSV_COLUMNS, DEFAULT_SAMPLE_SIZE
 from app.core.config import get_settings
 from app.core.db import get_db
@@ -130,13 +131,14 @@ def test_create_audit_sheet_leaves_auditor_fields_null(
         assert row["evidence_urls"]
 
 
-def test_second_sample_skips_already_drawn(session: Session) -> None:
+def test_second_call_reexports_open_sheet(session: Session) -> None:
     seed_classified_from_fixture(session)
     first, _ = create_audit_sheet(session, size=20)
-    with pytest.raises(InsufficientClassifiedError) as exc:
-        create_audit_sheet(session, size=20)
-    assert exc.value.available == 4  # 24 fixtures − 20 sampled
+    second, _ = create_audit_sheet(session, size=20)
     assert len(first) == 20
+    assert [row.audit_sample_id for row in second] == [
+        row.audit_sample_id for row in first
+    ]
     assert session.scalar(select(func.count()).select_from(AuditSample)) == 20
 
 

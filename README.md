@@ -76,9 +76,9 @@ uv run python -m app.audit --commit --out step10-audit-sample.csv
 uv run python -m app.audit --from-fixtures --out step10-audit-sample.csv
 ```
 
-Admin UI: `GET /admin/audit` (same admin key as applicants). Already-sampled
-candidates are skipped. Fixture JSON for offline templates:
-`tests/fixtures/audit/`.
+Admin UI: `GET /admin/audit` (same admin key as applicants). One open sheet:
+a second download re-exports unfilled `audit_sample` rows. Offline fixture JSON:
+`app/audit/data/classified_companies.json`.
 
 ## Stack (D22)
 
