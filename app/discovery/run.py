@@ -79,19 +79,24 @@ async def run_discovery(
     }
     new_runs: list[SearchRun] = []
     for applicant_id, pref in prefs.items():
-        plan = plan_cold_start(session, pref, total_slots=slots_per_applicant, settings=cfg)
-        runs = create_runs_from_plan(session, plan, applicant_id=applicant_id)
-        commit()
+        runs = _planned_runs(session, applicant_id)
+        if not runs:
+            plan = plan_cold_start(session, pref, total_slots=slots_per_applicant, settings=cfg)
+            runs = create_runs_from_plan(session, plan, applicant_id=applicant_id)
+            commit()
         for run in runs:
             outcome = await run_search(session, gateway, run, settings=cfg, persist=commit)
             commit()
             if isinstance(outcome, SearchBudgetWait):
-                report.stopped = f"search budget: {outcome.cap}"
+                # Runs stay planned; the next pass runs them before planning new ones.
+                report.searches[f"wait:{outcome.cap}"] += 1
+                log(f"search {run.template_id:4} applicant {applicant_id} -> wait {outcome.cap}")
                 break
             report.searches[str(run.status)] += 1
             log(f"search {run.template_id:4} {run.query[:50]!r} -> {run.status}")
             new_runs.append(run)
-        if report.stopped:
+        if report.searches.get("wait:monthly") or report.searches.get("wait:daily"):
+            report.stopped = "search money cap"
             break
 
     for run in new_runs:
@@ -115,8 +120,8 @@ async def run_discovery(
         commit()
         report.cf3[outcome.status] += 1
         log(f"cf3  {candidate.company_name[:40]:40} -> {outcome.status} {outcome.domains}")
-        if outcome.status == "budget_wait":
-            report.stopped = f"cf3 budget: {outcome.detail}"
+        if outcome.status == "budget_wait" and outcome.detail in ("monthly", "daily"):
+            report.stopped = f"cf3 money cap: {outcome.detail}"
             break
 
     for _ in range(max_verify):
@@ -135,6 +140,21 @@ async def run_discovery(
         report.verified[decision.state] += 1
         log(f"verify {candidate.company_name[:40]:40} -> {decision.state} ({decision.reason})")
     return report
+
+
+def _planned_runs(session: Session, applicant_id: uuid.UUID) -> list[SearchRun]:
+    """Cold-start runs a budget wait left planned (CF3 runs are made per candidate)."""
+    return list(
+        session.scalars(
+            select(SearchRun)
+            .where(
+                SearchRun.applicant_id == applicant_id,
+                SearchRun.status == SearchRunStatus.planned,
+                SearchRun.template_id != "CF3",
+            )
+            .order_by(SearchRun.created_at)
+        )
+    )
 
 
 def _waiting_for_cf3(session: Session) -> list[Candidate]:
