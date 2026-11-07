@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit.csv_export import csv_text, write_audit_csv
-from app.audit.fixtures import seed_classified_from_fixture
+from app.audit.fixtures import seed_classified_from_fixture, write_fixture_template_csv
 from app.audit.sample import (
     InsufficientClassifiedError,
     create_audit_sheet,
@@ -75,7 +75,7 @@ def test_fixture_seed_has_at_least_20_classified(session: Session) -> None:
     seeded = seed_classified_from_fixture(session)
     assert len(seeded) >= DEFAULT_SAMPLE_SIZE
     states = {c.state for c in seeded}
-    assert states == CLASSIFIED_STATES
+    assert set(states) == set(CLASSIFIED_STATES)
 
 
 def test_stratified_sample_covers_all_three_states(session: Session) -> None:
@@ -89,7 +89,6 @@ def test_stratified_sample_covers_all_three_states(session: Session) -> None:
     assert by_state[CandidateState.verified] >= 1
     assert by_state[CandidateState.needs_review] >= 1
     assert by_state[CandidateState.unsupported] >= 1
-    # 24 fixtures → round-robin yields ~7/7/6 or 7/6/7 etc.; all near equal.
     assert max(by_state.values()) - min(by_state.values()) <= 1
 
 
@@ -117,7 +116,7 @@ def test_create_audit_sheet_leaves_auditor_fields_null(
         assert sample.candidate_id is not None
 
     path = write_audit_csv(tmp_path / "audit.csv", rows)
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     reader = csv.DictReader(StringIO(text))
     assert reader.fieldnames == list(CSV_COLUMNS)
     csv_rows = list(reader)
@@ -128,8 +127,27 @@ def test_create_audit_sheet_leaves_auditor_fields_null(
         assert row["is_correct"] == ""
         assert row["is_useful"] == ""
         assert row["notes"] == ""
-        assert row["evidence_urls"]  # fixtures always include at least one URL
-        assert "verified" not in row["auditor_result"].lower()  # still empty
+        assert row["evidence_urls"]
+
+
+def test_second_sample_skips_already_drawn(session: Session) -> None:
+    seed_classified_from_fixture(session)
+    first, _ = create_audit_sheet(session, size=20)
+    with pytest.raises(InsufficientClassifiedError) as exc:
+        create_audit_sheet(session, size=20)
+    assert exc.value.available == 4  # 24 fixtures − 20 sampled
+    assert len(first) == 20
+    assert session.scalar(select(func.count()).select_from(AuditSample)) == 20
+
+
+def test_fixture_template_csv_has_no_db_side_effects(
+    session: Session, tmp_path: Path
+) -> None:
+    path, counts = write_fixture_template_csv(tmp_path / "template.csv", size=20)
+    assert path.exists()
+    assert sum(counts.values()) == 20
+    assert session.scalar(select(func.count()).select_from(Candidate)) == 0
+    assert session.scalar(select(func.count()).select_from(AuditSample)) == 0
 
 
 def test_csv_text_matches_columns(session: Session) -> None:
@@ -158,6 +176,7 @@ async def test_admin_audit_sample_download(
     assert response.status_code == 200
     assert "text/csv" in response.headers["content-type"]
     assert "step10-audit-sample.csv" in response.headers.get("content-disposition", "")
+    assert "selected=20" in response.headers.get("x-audit-summary", "")
     reader = csv.DictReader(StringIO(response.text))
     assert reader.fieldnames == list(CSV_COLUMNS)
     assert len(list(reader)) == 20

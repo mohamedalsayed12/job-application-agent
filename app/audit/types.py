@@ -8,19 +8,16 @@ from uuid import UUID
 
 from app.models import CandidateState
 
-# Terminal classification outcomes the auditor judges. Never includes rejected
-# (reviewer-only) or registered (post-directory).
-CLASSIFIED_STATES: Final[frozenset[str]] = frozenset(
-    {
-        CandidateState.verified,
-        CandidateState.needs_review,
-        CandidateState.unsupported,
-    }
+# Ordered: round-robin and SQL filters share this sequence.
+CLASSIFIED_STATES: Final[tuple[str, ...]] = (
+    CandidateState.verified,
+    CandidateState.needs_review,
+    CandidateState.unsupported,
 )
 
 DEFAULT_SAMPLE_SIZE: Final[int] = 20
+MAX_SAMPLE_SIZE: Final[int] = 200
 
-# CSV columns the operator fills; system never writes auditor_* / is_* / notes.
 OPERATOR_FILL_COLUMNS: Final[tuple[str, ...]] = (
     "auditor_result",
     "is_correct",
@@ -61,7 +58,7 @@ class AuditSheetRow:
 
 @dataclass(frozen=True, slots=True)
 class SampleSummary:
-    """Counts after sampling. Used by CLI/admin; never judges correctness."""
+    """Counts after sampling. Never judges correctness."""
 
     requested: int
     selected: int

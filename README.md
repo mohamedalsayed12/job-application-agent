@@ -68,14 +68,16 @@ Sample classified companies (`verified` / `needs_review` / `unsupported`) into
 empty — do not auto-judge):
 
 ```bash
-# Live DB after discovery/verification
+# Live DB after discovery/verification (--commit required so CSV ids match rows)
 uv run python -m app.audit --commit --out step10-audit-sample.csv
 
-# Offline when Reed/SerpAPI keys are missing (£0 path; money_cap may stay unset)
-uv run python -m app.audit --seed-fixtures --commit --out step10-audit-sample.csv
+# Offline template when Reed/SerpAPI keys are missing (£0 path; money_cap may stay unset).
+# Writes ephemeral ids only — does not insert fake candidates into the DB.
+uv run python -m app.audit --from-fixtures --out step10-audit-sample.csv
 ```
 
-Admin UI: `GET /admin/audit` (same admin key as applicants). Fixtures live under
+Admin UI: `GET /admin/audit` (same admin key as applicants). Already-sampled
+candidates are skipped. Fixture JSON for offline templates:
 `tests/fixtures/audit/`.
 
 ## Stack (D22)

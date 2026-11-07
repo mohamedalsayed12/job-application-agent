@@ -6,13 +6,14 @@ import html
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Annotated
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.api.admin_auth import require_admin_key
+from app.api.admin_html import action as _action
+from app.api.admin_html import page as _page
 from app.applicants.service import (
     ApplicantConflictError,
     ApplicantNotFoundError,
@@ -52,34 +53,8 @@ class ApplicantForm:
         self.salary_period = salary_period
 
 
-def _page(title: str, body: str) -> HTMLResponse:
-    doc = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8"/>
-  <title>{html.escape(title)}</title>
-  <style>
-    body {{ font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }}
-    label {{ display: block; margin-top: 0.75rem; }}
-    input, textarea, select {{ width: 100%; box-sizing: border-box; }}
-    .error {{ color: #a00; }}
-    table {{ border-collapse: collapse; width: 100%; margin-top: 1rem; }}
-    th, td {{ border-bottom: 1px solid #ccc; text-align: left; padding: 0.35rem; }}
-  </style>
-</head>
-<body>
-{body}
-</body>
-</html>"""
-    return HTMLResponse(doc)
-
-
 def _split_lines(value: str) -> list[str]:
     return [line.strip() for line in value.splitlines() if line.strip()]
-
-
-def _action(path: str, admin_key: str) -> str:
-    return f"{path}?admin_key={quote(admin_key, safe='')}"
 
 
 def _form(

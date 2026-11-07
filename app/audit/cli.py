@@ -2,11 +2,12 @@
 
 Examples::
 
-    uv run python -m app.audit.cli --out /tmp/step10-audit-sample.csv
-    uv run python -m app.audit.cli --seed-fixtures --out docs/step10-audit-sample.csv
+    uv run python -m app.audit --commit --out step10-audit-sample.csv
+    uv run python -m app.audit --from-fixtures --out step10-audit-sample.csv
 
-Does not judge classifications. Live discovery is out of scope for this module;
-seed fixtures when Reed/SerpAPI keys are missing.
+Does not judge classifications. ``--from-fixtures`` writes a template CSV with
+ephemeral ids and never inserts candidates. Live sampling requires ``--commit``
+so CSV ids match persisted ``audit_sample`` rows.
 """
 
 from __future__ import annotations
@@ -16,20 +17,11 @@ import sys
 from pathlib import Path
 
 from app.audit.csv_export import write_audit_csv
-from app.audit.fixtures import seed_classified_from_fixture
+from app.audit.fixtures import write_fixture_template_csv
 from app.audit.sample import InsufficientClassifiedError, create_audit_sheet
-from app.audit.types import DEFAULT_SAMPLE_SIZE
+from app.audit.types import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE
 from app.core.config import get_settings
 from app.core.db import SessionLocal
-
-
-def _provider_status() -> dict[str, bool]:
-    settings = get_settings()
-    return {
-        "reed_api_key": bool(settings.reed_api_key.strip()),
-        "serpapi_api_key": bool(settings.serpapi_api_key.strip()),
-        "openai_api_key": bool(settings.openai_api_key.strip()),
-    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,48 +38,66 @@ def build_parser() -> argparse.ArgumentParser:
         "--size",
         type=int,
         default=DEFAULT_SAMPLE_SIZE,
-        help=f"Sample size (default {DEFAULT_SAMPLE_SIZE}).",
+        help=f"Sample size (default {DEFAULT_SAMPLE_SIZE}, max {MAX_SAMPLE_SIZE}).",
     )
     parser.add_argument(
-        "--seed-fixtures",
+        "--from-fixtures",
         action="store_true",
-        help="Insert offline classified fixtures before sampling (no live keys).",
+        help="Write offline template CSV from fixture JSON (no DB writes).",
     )
     parser.add_argument(
         "--commit",
         action="store_true",
-        help="Commit DB changes (default is dry-run / rollback).",
+        help="Required for live DB sampling so CSV ids match persisted rows.",
     )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    status = _provider_status()
-    missing = [name for name, present in status.items() if not present]
-    if missing:
+    if args.size < 1 or args.size > MAX_SAMPLE_SIZE:
+        print(f"size must be 1–{MAX_SAMPLE_SIZE}", file=sys.stderr)
+        return 2
+
+    if args.from_fixtures:
+        path, counts = write_fixture_template_csv(args.out, size=args.size)
         print(
-            "provider keys missing (presence only): " + ", ".join(missing),
+            f"wrote fixture template {path} size={args.size} by_state={counts} "
+            "(ephemeral ids; not live discovery — re-run with --commit after real classification)",
             file=sys.stderr,
         )
+        return 0
+
+    if not args.commit:
         print(
-            "£0 path: set REED_API_KEY + SERPAPI_API_KEY for live discovery; "
-            "money_cap can stay unset. Use --seed-fixtures for an offline sheet.",
+            "live sampling requires --commit so CSV audit_sample_id values match the DB",
+            file=sys.stderr,
+        )
+        return 2
+
+    settings = get_settings()
+    missing = [
+        name
+        for name, present in {
+            "reed_api_key": bool(settings.reed_api_key.strip()),
+            "serpapi_api_key": bool(settings.serpapi_api_key.strip()),
+        }.items()
+        if not present
+    ]
+    if missing:
+        print(
+            "provider keys missing (presence only): "
+            + ", ".join(missing)
+            + " — £0 path needs REED_API_KEY + SERPAPI_API_KEY for live discovery; "
+            "money_cap can stay unset. Use --from-fixtures for an offline template.",
             file=sys.stderr,
         )
 
     session = SessionLocal()
     try:
-        if args.seed_fixtures:
-            seeded = seed_classified_from_fixture(session)
-            print(f"seeded {len(seeded)} classified fixture companies", file=sys.stderr)
         rows, summary = create_audit_sheet(session, size=args.size)
+        session.commit()
         path = write_audit_csv(args.out, rows)
-        if args.commit:
-            session.commit()
-        else:
-            session.rollback()
-            print("rolled back DB writes (pass --commit to persist)", file=sys.stderr)
     except InsufficientClassifiedError as exc:
         session.rollback()
         print(str(exc), file=sys.stderr)

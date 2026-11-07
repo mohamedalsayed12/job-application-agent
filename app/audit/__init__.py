@@ -2,7 +2,6 @@
 
 from app.audit.csv_export import write_audit_csv
 from app.audit.sample import (
-    AuditSampleError,
     InsufficientClassifiedError,
     create_audit_sheet,
     list_classified_candidates,
@@ -12,6 +11,7 @@ from app.audit.types import (
     CLASSIFIED_STATES,
     CSV_COLUMNS,
     DEFAULT_SAMPLE_SIZE,
+    MAX_SAMPLE_SIZE,
     AuditSheetRow,
     SampleSummary,
 )
@@ -20,7 +20,7 @@ __all__ = [
     "CLASSIFIED_STATES",
     "CSV_COLUMNS",
     "DEFAULT_SAMPLE_SIZE",
-    "AuditSampleError",
+    "MAX_SAMPLE_SIZE",
     "AuditSheetRow",
     "InsufficientClassifiedError",
     "SampleSummary",
