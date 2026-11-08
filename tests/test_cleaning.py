@@ -223,10 +223,38 @@ async def test_t24_mass_vanishing_holds_closures_until_the_next_complete_fetch(s
     assert _job(session, 6).freshness == JobFreshness.open
 
     report = await collector.listing([1, 2])
+    assert report.braked_boards == ["greenhouse/acme"]
+    assert report.closed == 0
+    assert report.held == 4
+    assert {_job(session, i).freshness for i in (3, 4, 5, 6)} == {JobFreshness.open}
+
+    report = await collector.listing([1, 2])
     assert report.braked_boards == []
     assert report.closed == 4
     assert {_job(session, i).freshness for i in (3, 4, 5, 6)} == {JobFreshness.closed}
     assert {_job(session, i).freshness for i in (1, 2)} == {JobFreshness.open}
+    assert len(_job(session, 3).closure_evidence["fetch_runs"]) == 3
+
+
+async def test_t24_a_board_returning_empty_twice_closes_nothing_until_a_third_read(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing(range(1, 7))
+    for _ in range(2):
+        report = await collector.read(200, {"jobs": []})
+        assert report.closed == 0
+    assert {_job(session, i).freshness for i in range(1, 7)} == {JobFreshness.open}
+    report = await collector.read(200, {"jobs": []})
+    assert report.closed == 6
+
+
+async def test_t24_jobs_returning_at_the_extra_fetch_never_close(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing(range(1, 7))
+    await collector.listing([1])
+    await collector.listing([1])
+    report = await collector.listing(range(1, 7))
+    assert report.closed == 0
+    assert {_job(session, i).freshness for i in range(1, 7)} == {JobFreshness.open}
 
 
 async def test_t24_jobs_that_return_after_the_brake_stay_open(session: Session, collector: _Collector) -> None:

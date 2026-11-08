@@ -2,6 +2,9 @@
 
 Reading the evidence each time means a crash or a missed cleaning pass cannot close a
 job: a job closes only when the raw jobs of two complete fetches show it missing.
+
+When over half of a board vanishes in one complete fetch, closures on that board wait
+for that fetch and the next one, so vanished jobs need a third fetch to close (D32).
 """
 
 from __future__ import annotations
@@ -44,17 +47,16 @@ class FreshnessReport:
 class _BoardView:
     latest: FetchRun | None
     previous: FetchRun | None
+    older: FetchRun | None
     latest_ids: set[str]
     previous_ids: set[str]
+    older_ids: set[str]
     unhealthy: bool
     brake_on: bool = field(init=False)
 
     def __post_init__(self) -> None:
-        vanished = self.previous_ids - self.latest_ids
-        self.brake_on = (
-            self.latest is not None
-            and len(self.previous_ids) >= BRAKE_MIN_JOBS
-            and len(vanished) * 2 > len(self.previous_ids)
+        self.brake_on = _mass_vanishing(self.previous_ids, self.latest_ids) or _mass_vanishing(
+            self.older_ids, self.previous_ids
         )
 
     def missed_twice(self, posting: JobPosting) -> bool:
@@ -80,6 +82,10 @@ class _BoardView:
         if self.missed_twice(posting) and not self.brake_on:
             return JobFreshness.closed
         return JobFreshness.unknown if self.unhealthy else JobFreshness.open
+
+
+def _mass_vanishing(before: set[str], after: set[str]) -> bool:
+    return len(before) >= BRAKE_MIN_JOBS and len(before - after) * 2 > len(before)
 
 
 def refresh_board_freshness(session: Session, board: EmployerBoard, *, now: datetime) -> FreshnessReport:
@@ -171,6 +177,8 @@ def _evidence(postings: list[JobPosting], views: dict[uuid.UUID, _BoardView], no
         if view is not None and view.latest is not None and view.previous is not None:
             runs[str(view.latest.id)] = view.latest.finished_at.isoformat()
             runs[str(view.previous.id)] = view.previous.finished_at.isoformat()
+            if view.older is not None and posting.source_job_id not in view.older_ids:
+                runs[str(view.older.id)] = view.older.finished_at.isoformat()
     return {"rule": CLOSING_RULE, "fetch_runs": runs, "closed_at": now.isoformat()}
 
 
@@ -179,10 +187,11 @@ def _view(session: Session, board: EmployerBoard) -> _BoardView:
         select(FetchRun)
         .where(FetchRun.employer_board_id == board.id, FetchRun.outcome.in_(FULL_READS))
         .order_by(FetchRun.finished_at.desc(), FetchRun.id)
-        .limit(2)
+        .limit(3)
     ).all()
     latest = full_reads[0] if full_reads else None
     previous = full_reads[1] if len(full_reads) > 1 else None
+    older = full_reads[2] if len(full_reads) > 2 else None
     since_full_read = select(FetchRun.outcome).where(FetchRun.employer_board_id == board.id)
     if latest is not None:
         since_full_read = since_full_read.where(FetchRun.finished_at > latest.finished_at)
@@ -190,8 +199,10 @@ def _view(session: Session, board: EmployerBoard) -> _BoardView:
     return _BoardView(
         latest=latest,
         previous=previous,
+        older=older,
         latest_ids=_job_ids(session, latest),
         previous_ids=_job_ids(session, previous),
+        older_ids=_job_ids(session, older),
         unhealthy=len(bad_reads) >= FAILURES_BEFORE_UNKNOWN or FetchOutcome.not_found in bad_reads,
     )
 
