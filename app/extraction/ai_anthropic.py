@@ -64,6 +64,16 @@ async def call_anthropic_extraction(
         if max_output_tokens is not None
         else cfg.ai_extraction_max_output_tokens,
     )
+    return await send_anthropic_request(gateway, body, api_key=api_key, fallback_model=model)
+
+
+async def send_anthropic_request(
+    gateway: FetchGateway,
+    body: dict,
+    *,
+    api_key: str,
+    fallback_model: str,
+) -> AiCallResponse | AiCallFailure:
     outcome = await gateway.fetch(
         FetchRequest(
             url=ANTHROPIC_MESSAGES_URL,
@@ -79,7 +89,7 @@ async def call_anthropic_extraction(
     )
     if isinstance(outcome, FetchRefusal):
         return AiCallFailure(reason=f"fetch:{outcome.reason}")
-    return _parse_http(outcome, fallback_model=model)
+    return _parse_http(outcome, fallback_model=fallback_model)
 
 
 def _parse_http(

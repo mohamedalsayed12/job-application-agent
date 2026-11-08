@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable, Iterable, Sequence
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -161,9 +160,6 @@ async def _extract_chunk(
     estimated_total = estimated_in + max_out
     if estimated_total > settings.ai_extraction_per_item_token_cap:
         return AiTokenCapWait(cap="per_item")
-    used_today = _tokens_used_today(session)
-    if used_today + estimated_total > settings.ai_extraction_daily_token_cap:
-        return AiTokenCapWait(cap="per_day")
 
     # Claim the cache slot before any paid call so concurrent workers cannot
     # both hit the AI provider for the same input (§10.6). Survives persist=commit.
@@ -313,26 +309,6 @@ def _chunk_leftovers(
 
 def _is_pending(row: AiExtraction) -> bool:
     return isinstance(row.output, dict) and row.output.get("status") == "pending"
-
-
-def _tokens_used_today(session: Session, *, now: datetime | None = None) -> int:
-    moment = now or datetime.now(UTC)
-    day_start = datetime(moment.year, moment.month, moment.day, tzinfo=UTC)
-    rows = session.scalars(
-        select(AiExtraction).where(AiExtraction.created_at >= day_start)
-    ).all()
-    total = 0
-    for row in rows:
-        usage = row.output.get("usage") if isinstance(row.output, dict) else None
-        if not isinstance(usage, dict):
-            continue
-        prompt = usage.get("prompt_tokens", 0)
-        completion = usage.get("completion_tokens", 0)
-        if isinstance(prompt, int):
-            total += prompt
-        if isinstance(completion, int):
-            total += completion
-    return total
 
 
 def _serialize_output(

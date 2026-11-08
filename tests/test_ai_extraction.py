@@ -66,7 +66,6 @@ def _settings(**overrides: object) -> Settings:
         ai_extraction_unit_price=Decimal("0.0005"),
         ai_extraction_per_item_token_cap=2500,
         ai_extraction_max_output_tokens=500,
-        ai_extraction_daily_token_cap=100_000,
     )
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]

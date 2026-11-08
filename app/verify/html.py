@@ -21,26 +21,36 @@ def page_title(html: str) -> str | None:
 
 
 def extract_hrefs(html: str, *, base_url: str) -> tuple[str, ...]:
-    parser = _HrefParser(base_url)
+    return _extract_urls(html, base_url=base_url, tag="a", attribute="href")
+
+
+def extract_script_srcs(html: str, *, base_url: str) -> tuple[str, ...]:
+    return _extract_urls(html, base_url=base_url, tag="script", attribute="src")
+
+
+def _extract_urls(html: str, *, base_url: str, tag: str, attribute: str) -> tuple[str, ...]:
+    parser = _UrlParser(base_url, tag=tag, attribute=attribute)
     try:
         parser.feed(html)
     except Exception:
-        return tuple(parser.hrefs)
-    return tuple(parser.hrefs)
+        return tuple(parser.urls)
+    return tuple(parser.urls)
 
 
-class _HrefParser(HTMLParser):
-    def __init__(self, base_url: str) -> None:
+class _UrlParser(HTMLParser):
+    def __init__(self, base_url: str, *, tag: str, attribute: str) -> None:
         super().__init__(convert_charrefs=True)
         self._base = base_url
-        self.hrefs: list[str] = []
+        self._tag = tag
+        self._attribute = attribute
+        self.urls: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() != "a":
+        if tag.lower() != self._tag:
             return
         for name, value in attrs:
-            if name.lower() == "href" and value:
-                self.hrefs.append(urljoin(self._base, value.strip()))
+            if name.lower() == self._attribute and value:
+                self.urls.append(urljoin(self._base, value.strip()))
                 return
 
 

@@ -15,6 +15,11 @@ dependencies = [
     "python-multipart>=0.0.33",
 ]
 
+[project.optional-dependencies]
+semantic = [
+    "fastembed>=0.7",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",

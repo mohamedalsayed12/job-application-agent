@@ -121,7 +121,7 @@ Manual redirects (max 3) are required for T19. Auto-follow would skip the privat
 5. `kind=api`: host (or parent) is on the allowlist (search provider, Reed, Adzuna when enabled, Greenhouse, Lever global/EU, AI provider).
 6. `kind=page`: host equals the candidate `official_domain` or is a subdomain of it. Off-domain links are evidence only, never fetched (§12 item 2).
 7. `getaddrinfo` for the host. Refuse if any returned address is in private, loopback, link-local (includes `169.254.169.254`), shared CGNAT (`100.64.0.0/10`), IPv6 ULA, multicast or unspecified.
-8. Enforce 10 s timeout, 2 MB max body, HTML or JSON `Content-Type` only, at most 3 redirects (§12 item 7).
+8. Enforce 10 s timeout, 16 MiB max body, HTML, JSON or JavaScript `Content-Type` only (JavaScript is read as text and never run), at most 3 redirects (§12 item 7).
 
 **Not in scope for the gateway (already decided elsewhere).** No login, cookies, CAPTCHA, proxy rotation, JS or headless browser (D14, §12 items 8–9). Fetched bodies are untrusted input to later stages (§12 item 11). Web page storage stays snippets + hash, not full HTML (D15).
 
