@@ -22,8 +22,15 @@ from app.audit.types import (
     MAX_SAMPLE_SIZE,
     AuditSheetRow,
     SampleSummary,
+    audit_state,
 )
-from app.models import AuditSample, Candidate, CandidateEvidence, VerificationCheck
+from app.models import (
+    AuditSample,
+    Candidate,
+    CandidateEvidence,
+    CandidateState,
+    VerificationCheck,
+)
 
 
 class InsufficientClassifiedError(Exception):
@@ -69,7 +76,7 @@ def list_classified_candidates(session: Session) -> list[Candidate]:
     sampled = _already_sampled_ids(session)
     rows = session.scalars(
         select(Candidate)
-        .where(Candidate.state.in_(CLASSIFIED_STATES))
+        .where(Candidate.state.in_((*CLASSIFIED_STATES, CandidateState.registered)))
         .order_by(Candidate.created_at, Candidate.id)
     ).all()
     return [row for row in rows if row.id not in sampled]
@@ -84,8 +91,9 @@ def stratified_sample(
     _validate_size(size)
     buckets: dict[str, list[Candidate]] = {state: [] for state in CLASSIFIED_STATES}
     for candidate in candidates:
-        if candidate.state in buckets:
-            buckets[candidate.state].append(candidate)
+        state = audit_state(candidate.state)
+        if state in buckets:
+            buckets[state].append(candidate)
 
     available = sum(len(bucket) for bucket in buckets.values())
     if available < size:
@@ -198,7 +206,8 @@ def create_audit_sheet(
     classified = list_classified_candidates(session)
     available_by: dict[str, int] = {state: 0 for state in CLASSIFIED_STATES}
     for candidate in classified:
-        available_by[candidate.state] = available_by.get(candidate.state, 0) + 1
+        state = audit_state(candidate.state)
+        available_by[state] = available_by.get(state, 0) + 1
 
     selected = stratified_sample(classified, size=size)
     stamp = datetime.now(tz=UTC)
@@ -207,7 +216,7 @@ def create_audit_sheet(
         sample = AuditSample(
             candidate_id=candidate.id,
             employer_id=candidate.employer_id,
-            system_result=candidate.state,
+            system_result=audit_state(candidate.state),
             auditor_result=None,
             is_correct=None,
             is_useful=None,

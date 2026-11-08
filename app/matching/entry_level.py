@@ -411,7 +411,7 @@ async def load_board_jobs(
     include_review: bool,
     report: SearchReport,
 ) -> list[BoardJob]:
-    states = [CandidateState.verified]
+    states = [CandidateState.verified, CandidateState.registered]
     if include_review:
         states.append(CandidateState.needs_review)
     candidates = session.scalars(
@@ -525,7 +525,8 @@ def _ordered(rows: list[JudgedJob], location: str) -> list[JudgedJob]:
 def _print_section(heading: str, rows: list[JudgedJob]) -> None:
     print(f"\n{heading}: {len(rows)}")
     for row in rows:
-        board = "" if row.job.board_state == CandidateState.verified else " [board not confirmed]"
+        confirmed = row.job.board_state in (CandidateState.verified, CandidateState.registered)
+        board = "" if confirmed else " [board not confirmed]"
         exact = " [exact title]" if row.exact_title else ""
         print(f"  {row.job.company}: {row.job.title} @ {row.job.location}{exact}{board}")
         print(f"      {row.job.url}")
