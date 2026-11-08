@@ -6,10 +6,11 @@ import re
 
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 from app.models import Candidate, VerificationOutcome
+from app.queue.agencies import homepage_says_agency
 from app.queue.domains import normalize_domain
 from app.queue.names import clean_company_name, same_company
 from app.verify.blocklist import is_aggregator_domain
-from app.verify.html import page_title
+from app.verify.html import meta_description, page_title
 from app.verify.types import CheckRecord, OfficialDomainCheck
 
 _RETRYABLE_REFUSALS = frozenset({"timeout", "http_error"})
@@ -75,6 +76,7 @@ async def confirm_official_domain(
         )
 
     last_fail: OfficialDomainCheck | None = None
+    agency_fail: OfficialDomainCheck | None = None
     for domain in domains:
         result = await _check_one_domain(gateway, candidate, domain)
         if result.confirmed:
@@ -82,8 +84,10 @@ async def confirm_official_domain(
         if result.record.outcome == VerificationOutcome.error:
             return result
         last_fail = result
+        if result.says_agency:
+            agency_fail = result
     assert last_fail is not None
-    return last_fail
+    return agency_fail or last_fail
 
 
 async def _check_one_domain(
@@ -146,6 +150,7 @@ async def _check_one_domain(
 
     html = outcome.body.decode("utf-8", errors="replace")
     title = page_title(html) or ""
+    says_agency = homepage_says_agency(title, meta_description(html))
     if not names_match(candidate.company_name, title):
         return OfficialDomainCheck(
             confirmed=False,
@@ -157,6 +162,7 @@ async def _check_one_domain(
                 evidence_snippet=f"title_mismatch:{title[:180]}",
                 http_status=outcome.status_code,
             ),
+            says_agency=says_agency and _domain_has_company_word(domain, candidate.company_name),
         )
 
     return OfficialDomainCheck(
@@ -171,4 +177,10 @@ async def _check_one_domain(
         ),
         homepage_html=html,
         homepage_url=outcome.url,
+        says_agency=says_agency,
     )
+
+
+def _domain_has_company_word(domain: str, company_name: str) -> bool:
+    """A real employer can carry the domain of an agency that advertised its job."""
+    return any(len(word) >= 3 and word in domain for word in clean_company_name(company_name).split())

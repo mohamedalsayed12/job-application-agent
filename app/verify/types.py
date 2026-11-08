@@ -54,6 +54,7 @@ class OfficialDomainCheck:
     record: CheckRecord
     homepage_html: str | None = None
     homepage_url: str | None = None
+    says_agency: bool = False
 
 
 @dataclass(frozen=True, slots=True)

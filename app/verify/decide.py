@@ -75,6 +75,16 @@ def unsupported(
     )
 
 
+def recruitment_agency(*, checks: tuple[CheckRecord, ...], now: datetime) -> VerifyDecision:
+    """Never claims a domain: an agency must not hold one against a real employer."""
+    return VerifyDecision(
+        state="unsupported",
+        reason="recruitment_agency",
+        checks=checks,
+        revisit_at=now + UNSUPPORTED_REVISIT,
+    )
+
+
 def needs_review(
     *,
     reason: str,

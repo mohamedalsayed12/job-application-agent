@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+_META_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+_DESCRIPTION_NAME_RE = re.compile(r"""(?:name|property)=["'](?:og:)?description["']""", re.IGNORECASE)
+_CONTENT_RE = re.compile(r"""content=(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
 
 
 def page_title(html: str) -> str | None:
@@ -18,6 +22,16 @@ def page_title(html: str) -> str | None:
     text = _TAG_RE.sub(" ", match.group(1))
     text = _WS_RE.sub(" ", text).strip()
     return text or None
+
+
+def meta_description(html: str) -> str:
+    for match in _META_RE.finditer(html):
+        tag = match.group(0)
+        if _DESCRIPTION_NAME_RE.search(tag):
+            content = _CONTENT_RE.search(tag)
+            if content:
+                return unescape(content.group(1) or content.group(2) or "").strip()
+    return ""
 
 
 def extract_hrefs(html: str, *, base_url: str) -> tuple[str, ...]:

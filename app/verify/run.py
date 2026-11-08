@@ -18,6 +18,7 @@ from app.models import (
     VerificationCheck,
     VerificationOutcome,
 )
+from app.queue.agencies import is_recruitment_agency
 from app.queue.retry import schedule_verification_failure
 from app.queue.types import next_retry_schedule
 from app.verify import api as api_mod
@@ -54,6 +55,9 @@ async def _run_checks(
     *,
     now: datetime,
 ) -> VerifyDecision:
+    if is_recruitment_agency(candidate.company_name):
+        return decide.recruitment_agency(checks=(), now=now)
+
     domain = await domain_mod.confirm_official_domain(gateway, candidate)
     if domain.record.outcome == VerificationOutcome.error:
         return _maybe_exhaust_retries(
@@ -63,6 +67,15 @@ async def _run_checks(
                 (domain.record,),
             ),
         )
+    if domain.says_agency:
+        if candidate.board_id:
+            # Agencies do not run their own boards, so a person decides this one.
+            return decide.needs_review(
+                reason="possible_recruitment_agency",
+                checks=(domain.record,),
+                priority=15,
+            )
+        return decide.recruitment_agency(checks=(domain.record,), now=now)
     if not domain.confirmed or domain.domain is None:
         return decide.needs_review(
             reason=domain.record.evidence_snippet or "official_domain_unconfirmed",
