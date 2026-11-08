@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 semantic = [
     "fastembed>=0.7",
+    "pypdf>=5",
 ]
 
 [dependency-groups]

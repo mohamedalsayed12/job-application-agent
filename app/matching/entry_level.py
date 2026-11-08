@@ -22,6 +22,7 @@ import json
 import math
 import re
 import uuid
+import zipfile
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -51,6 +52,7 @@ PROMPT_VERSION = "entry-level-v1"
 DEFAULT_SHORTLIST = 100
 _EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 _EMBED_CHARS = 2000
+_CV_CHUNK_CHARS = 1200
 _ADVERT_CHARS = 6000
 _MAX_OUTPUT_TOKENS = 300
 
@@ -121,9 +123,18 @@ class Verdict:
 
 
 @dataclass(frozen=True, slots=True)
+class SearchProfile:
+    """What this applicant wants. The CV text is only ever embedded locally, never sent to Claude."""
+
+    titles: tuple[str, ...] = ()
+    cv_text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ScoredJob:
     job: BoardJob
     score: float
+    exact_title: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +142,7 @@ class JudgedJob:
     job: BoardJob
     score: float
     verdict: Verdict
+    exact_title: bool = False
 
 
 @dataclass(slots=True)
@@ -145,12 +157,19 @@ class SearchReport:
     stopped_by: str | None = None
     failures: Counter[str] = field(default_factory=Counter)
     boards_failed: list[str] = field(default_factory=list)
+    any_field: bool = False
 
     def matches(self) -> list[JudgedJob]:
-        return [j for j in self.judged if j.verdict.level == "entry_level" and j.verdict.is_software]
+        return self._at_level("entry_level")
 
     def possible(self) -> list[JudgedJob]:
-        return [j for j in self.judged if j.verdict.level == "unclear" and j.verdict.is_software]
+        return self._at_level("unclear")
+
+    def _at_level(self, level: Level) -> list[JudgedJob]:
+        return [
+            j for j in self.judged
+            if j.verdict.level == level and (self.any_field or j.verdict.is_software)
+        ]
 
 
 def clean_html(raw: str | None) -> str:
@@ -188,6 +207,66 @@ def rank_jobs(jobs: Sequence[BoardJob], query: str, embed: Embedder) -> list[Sco
         for job, t, b in zip(jobs, titles, bodies, strict=True)
     ]
     return sorted(scored, key=lambda item: -item.score)
+
+
+def title_matches(title: str, wanted: str) -> bool:
+    """True when the job title contains the wanted title as whole words, in order."""
+    words = r"\s+".join(re.escape(word) for word in wanted.split())
+    return bool(words) and re.search(rf"(?<!\w){words}(?!\w)", title, re.IGNORECASE) is not None
+
+
+def rank_for_profile(jobs: Sequence[BoardJob], profile: SearchProfile, embed: Embedder) -> list[ScoredJob]:
+    """Exact title matches first, then by closeness to the target titles or the CV."""
+    if not jobs:
+        return []
+    titles = embed([job.title for job in jobs])
+    bodies = embed(
+        [f"{job.title}\n{job.location}\n{job.description[:_EMBED_CHARS]}" for job in jobs]
+    )
+    wanted = embed(list(profile.titles)) if profile.titles else []
+    cv = _mean(embed(_chunks(profile.cv_text))) if profile.cv_text.strip() else None
+    scored = []
+    for job, title, body in zip(jobs, titles, bodies, strict=True):
+        scores = [_cosine(vector, title) for vector in wanted]
+        if cv is not None:
+            scores += [_cosine(cv, title), _cosine(cv, body)]
+        exact = any(title_matches(job.title, name) for name in profile.titles)
+        scored.append(ScoredJob(job, max(scores, default=0.0), exact))
+    return sorted(scored, key=lambda item: (not item.exact_title, -item.score))
+
+
+def _shortlist(ranked: list[ScoredJob], size: int) -> list[ScoredJob]:
+    """Every exact title is kept. Similar jobs only fill the room left."""
+    exact = [item for item in ranked if item.exact_title]
+    similar = [item for item in ranked if not item.exact_title]
+    return exact + similar[: max(0, size - len(exact))]
+
+
+def _chunks(text: str) -> list[str]:
+    """The embedding model truncates long input, so a whole CV has to be split."""
+    return [text[i : i + _CV_CHUNK_CHARS] for i in range(0, len(text), _CV_CHUNK_CHARS)]
+
+
+def _mean(vectors: Sequence[Sequence[float]]) -> list[float]:
+    return [sum(float(x) for x in column) / len(vectors) for column in zip(*vectors, strict=True)]
+
+
+def read_cv(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".txt", ".md"}:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    elif suffix == ".docx":
+        with zipfile.ZipFile(path) as archive:
+            text = clean_html(archive.read("word/document.xml").decode("utf-8"))
+    elif suffix == ".pdf":
+        from pypdf import PdfReader
+
+        text = " ".join(page.extract_text() or "" for page in PdfReader(path).pages)
+    else:
+        raise SystemExit(f"CV must be .pdf, .docx, .txt or .md, not {suffix or 'a file with no extension'}")
+    if not text.strip():
+        raise SystemExit("No text could be read from the CV. A scanned PDF needs a text version.")
+    return text
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -390,6 +469,7 @@ async def search_jobs(
     report: SearchReport,
     shortlist: int = DEFAULT_SHORTLIST,
     query: str = QUERY,
+    profile: SearchProfile | None = None,
     persist: Callable[[], None] | None = None,
 ) -> SearchReport:
     persist_fn = persist or session.flush
@@ -402,7 +482,11 @@ async def search_jobs(
         else:
             kept.append(job)
 
-    ranked = rank_jobs(kept, query, embed)[:shortlist]
+    if profile is None:
+        ranked = rank_jobs(kept, query, embed)[:shortlist]
+    else:
+        ranked = _shortlist(rank_for_profile(kept, profile, embed), shortlist)
+        report.any_field = True
     report.shortlisted = len(ranked)
     for index, item in enumerate(ranked):
         try:
@@ -416,7 +500,7 @@ async def search_jobs(
         if verdict is None:
             report.not_judged += 1
         else:
-            report.judged.append(JudgedJob(item.job, item.score, verdict))
+            report.judged.append(JudgedJob(item.job, item.score, verdict, item.exact_title))
     return report
 
 
@@ -442,7 +526,8 @@ def _print_section(heading: str, rows: list[JudgedJob]) -> None:
     print(f"\n{heading}: {len(rows)}")
     for row in rows:
         board = "" if row.job.board_state == CandidateState.verified else " [board not confirmed]"
-        print(f"  {row.job.company}: {row.job.title} @ {row.job.location}{board}")
+        exact = " [exact title]" if row.exact_title else ""
+        print(f"  {row.job.company}: {row.job.title} @ {row.job.location}{exact}{board}")
         print(f"      {row.job.url}")
         if row.verdict.evidence:
             print(f'      "{row.verdict.evidence[:120]}"')
@@ -451,11 +536,14 @@ def _print_section(heading: str, rows: list[JudgedJob]) -> None:
 def _write_csv(path: Path, rows: list[JudgedJob]) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["company", "title", "location", "level", "board_state", "score", "evidence", "url"])
+        writer.writerow(
+            ["company", "title", "location", "level", "match", "board_state", "score", "evidence", "url"]
+        )
         for row in rows:
             job, verdict = row.job, row.verdict
             writer.writerow(
-                [job.company, job.title, job.location, verdict.level, job.board_state,
+                [job.company, job.title, job.location, verdict.level,
+                 "exact" if row.exact_title else "similar", job.board_state,
                  f"{row.score:.3f}", verdict.evidence, job.url]
             )
 
@@ -465,11 +553,17 @@ async def _main(args: argparse.Namespace) -> None:
     session = SessionLocal()
     gateway = FetchGateway()
     report = SearchReport()
+    profile = None
+    if args.title or args.cv:
+        profile = SearchProfile(tuple(args.title), read_cv(args.cv) if args.cv else "")
     try:
         jobs = await load_board_jobs(session, gateway, include_review=args.include_review, report=report)
+        if args.location_only:
+            wanted = args.location.lower()
+            jobs = [job for job in jobs if wanted in job.location.lower()]
         await search_jobs(
             session, gateway, jobs, embed=embed, settings=get_settings(), report=report,
-            shortlist=args.shortlist, persist=session.commit,
+            shortlist=args.shortlist, profile=profile, persist=session.commit,
         )
         session.commit()
     finally:
@@ -485,8 +579,9 @@ async def _main(args: argparse.Namespace) -> None:
         print(f"failures {dict(report.failures)}")
     if report.boards_failed:
         print(f"boards not read {report.boards_failed}")
-    _print_section("Entry-level software jobs", _ordered(report.matches(), args.location))
-    _print_section("Software jobs with no stated level", _ordered(report.possible(), args.location))
+    kind = "" if report.any_field else " software"
+    _print_section(f"Entry-level{kind} jobs", _ordered(report.matches(), args.location))
+    _print_section(f"Jobs{kind and ' in software'} with no stated level", _ordered(report.possible(), args.location))
     if args.csv:
         _write_csv(args.csv, _ordered(report.matches(), args.location) + _ordered(report.possible(), args.location))
 
@@ -494,6 +589,9 @@ async def _main(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m app.matching.entry_level", description=__doc__)
     parser.add_argument("--location", default="Manchester", help="list jobs here first")
+    parser.add_argument("--location-only", action="store_true", help="drop jobs outside --location")
+    parser.add_argument("--title", action="append", default=[], help="target job title, can be repeated")
+    parser.add_argument("--cv", type=Path, help="local CV to rank by; embedded locally, never sent to Claude")
     parser.add_argument("--include-review", action="store_true", help="also read boards awaiting review")
     parser.add_argument("--shortlist", type=int, default=DEFAULT_SHORTLIST)
     parser.add_argument("--csv", type=Path)
