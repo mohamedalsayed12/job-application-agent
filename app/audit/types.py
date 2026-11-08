@@ -15,6 +15,12 @@ CLASSIFIED_STATES: Final[tuple[str, ...]] = (
     CandidateState.unsupported,
 )
 
+
+def audit_state(state: str) -> str:
+    """A registered board has passed verification, so the audit grades it as verified."""
+    return CandidateState.verified if state == CandidateState.registered else state
+
+
 DEFAULT_SAMPLE_SIZE: Final[int] = 20
 MAX_SAMPLE_SIZE: Final[int] = 200
 

@@ -103,6 +103,6 @@ retry_wait.
 
 - **Independent check.** Check the three self-graded rows and any others you doubt.
   Filter the `notes` column for `SELF-GRADED` and `SPOT-CHECKED`.
-- **Does Step 10 pass with a seed list?** Options: accept seeded companies as part of
-  discovery, or require D21 on discovered companies alone (currently 5/8 in this
-  sample, with none verified). This is a product decision.
+- **Does Step 10 pass with a seed list?** Decided 2026-11-08: yes. Seeded companies count
+  as part of discovery, so Step 10 passes at 17/20 with 0 wrongly verified. On discovered
+  companies alone, the result stays at 5/8 in this sample, with none verified.

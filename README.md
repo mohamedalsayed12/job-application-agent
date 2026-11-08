@@ -80,6 +80,18 @@ Admin UI: `GET /admin/audit` (same admin key as applicants). One open sheet:
 a second download re-exports unfilled `audit_sample` rows. Offline fixture JSON:
 `app/audit/data/classified_companies.json`.
 
+## Daily collection
+
+The worker moves verified companies into the shared board directory, then reads each
+Greenhouse and Lever board that is due. It stores every fetch run and every raw job.
+A board is due once a day. A failed read retries after 1, 5 and 30 minutes, then waits
+for the next daily read. The worker catches up after the machine has been off.
+
+```bash
+uv run python -m app.worker          # runs until stopped
+uv run python -m app.worker --once   # one cycle
+```
+
 ## Stack (D22)
 
 | Piece | Choice |
