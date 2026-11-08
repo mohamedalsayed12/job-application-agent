@@ -2,9 +2,9 @@
 
 This reads boards and never applicants, so one board is one fetch however many
 applicants want it (T27). It never reaches the budget gate, because public board
-APIs cost nothing, so it carries on when the budget has run out (T4). Only a run
-is recorded here: a failed read cannot close a job (T22), and closing jobs from
-complete runs belongs to cleaning.
+APIs cost nothing, so it carries on when the budget has run out (T4). Each run is
+cleaned in the same transaction that stores it. If cleaning fails, the raw jobs are
+kept, and ``python -m app.cleaning`` can replay them.
 """
 
 from __future__ import annotations
@@ -22,12 +22,13 @@ from sqlalchemy.orm import Session
 
 from app.boards import BoardFetchResult, fetch_greenhouse_board, fetch_lever_board
 from app.boards.lever import LEVER_URLS
+from app.cleaning import CleanReport, clean_run
+from app.cleaning.freshness import FULL_READS
 from app.fetch.gateway import FetchGateway
 from app.models import BoardStatus, EmployerBoard, FetchOutcome, FetchRun, RawPayload
 
 COLLECT_EVERY = timedelta(days=1)
 RETRY_AFTER = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30))
-FULL_READS = (FetchOutcome.complete, FetchOutcome.empty)
 Clock = Callable[[], datetime]
 
 
@@ -36,6 +37,13 @@ class CollectionReport:
     outcomes: Counter[str] = field(default_factory=Counter)
     jobs: int = 0
     failed_boards: list[str] = field(default_factory=list)
+    postings_new: int = 0
+    closed: int = 0
+    reopened: int = 0
+    unknown: int = 0
+    held: int = 0
+    braked_boards: list[str] = field(default_factory=list)
+    clean_errors: list[str] = field(default_factory=list)
 
 
 def is_due(board: EmployerBoard, now: datetime) -> bool:
@@ -57,7 +65,8 @@ async def collect_due(
     now = clock or (lambda: datetime.now(UTC))
     save = persist or session.flush
     report = CollectionReport()
-    board_ids = session.scalars(select(EmployerBoard.id).where(EmployerBoard.status == BoardStatus.verified)).all()
+    # A flagged board is still read: only a complete read can bring its jobs back from unknown.
+    board_ids = session.scalars(select(EmployerBoard.id).where(EmployerBoard.status != BoardStatus.retired)).all()
     for board_id in board_ids:
         board = session.scalar(
             select(EmployerBoard).where(EmployerBoard.id == board_id).with_for_update(skip_locked=True)
@@ -66,12 +75,36 @@ async def collect_due(
             save()
             continue
         run, detail = await _collect_board(session, gateway, board, now)
+        name = f"{board.system}/{board.board_id}"
+        _clean(session, run, board, name, now, report)
         save()
         report.outcomes[run.outcome] += 1
         report.jobs += run.jobs_returned
         if run.outcome not in FULL_READS:
-            report.failed_boards.append(f"{board.system}/{board.board_id}: {run.outcome} ({detail})")
+            report.failed_boards.append(f"{name}: {run.outcome} ({detail})")
     return report
+
+
+def _clean(
+    session: Session, run: FetchRun, board: EmployerBoard, name: str, now: Clock, report: CollectionReport
+) -> None:
+    try:
+        with session.begin_nested():
+            cleaned = clean_run(session, run, board, now=now())
+    except Exception as exc:  # A cleaning bug must not lose the fetch or stop the other boards.
+        report.clean_errors.append(f"{name}: {type(exc).__name__}: {exc}"[:300])
+        return
+    _add_cleaning(report, name, cleaned)
+
+
+def _add_cleaning(report: CollectionReport, name: str, cleaned: CleanReport) -> None:
+    report.postings_new += cleaned.postings_new
+    report.closed += cleaned.freshness.closed
+    report.reopened += cleaned.freshness.reopened
+    report.unknown += cleaned.freshness.unknown
+    report.held += cleaned.freshness.held
+    if cleaned.freshness.brake_on:
+        report.braked_boards.append(name)
 
 
 async def _collect_board(
@@ -111,6 +144,8 @@ async def _collect_board(
         board.last_job_count = len(jobs)
     else:
         board.consecutive_failures += 1
+    if label == FetchOutcome.not_found:
+        board.status = BoardStatus.needs_reverify
     session.flush()
     return run, detail
 
