@@ -8,7 +8,13 @@ from collections.abc import Callable, Sequence
 import httpx
 import pytest
 
-from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
+from app.fetch.gateway import (
+    MAX_BODY_BYTES,
+    FetchGateway,
+    FetchRefusal,
+    FetchRequest,
+    FetchResponse,
+)
 from app.fetch.rate_limit import HostRateLimiter
 
 
@@ -208,7 +214,7 @@ async def test_oversized_body_refused_without_buffering_all() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content=b"x" * (2 * 1024 * 1024 + 1),
+            content=b"x" * (MAX_BODY_BYTES + 1),
             headers={"content-type": "application/json"},
         )
 
@@ -218,6 +224,22 @@ async def test_oversized_body_refused_without_buffering_all() -> None:
     )
     assert isinstance(result, FetchRefusal)
     assert result.reason == "size"
+    await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_large_real_job_feed_is_read_whole() -> None:
+    feed = b"x" * 2_506_903  # Octopus Energy's Lever feed, measured 2026-11-08
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=feed, headers={"content-type": "application/json"})
+
+    gateway = _gateway(handler)
+    result = await gateway.fetch(
+        FetchRequest(url="https://api.example.com/postings", kind="api"),
+    )
+    assert isinstance(result, FetchResponse)
+    assert len(result.body) == len(feed)
     await gateway.aclose()
 
 
