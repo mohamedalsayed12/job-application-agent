@@ -15,11 +15,15 @@ GREENHOUSE_JOBS_URL = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
 async def fetch_greenhouse_board(
     gateway: FetchGateway,
     board_token: str,
+    *,
+    with_content: bool = False,
 ) -> BoardFetchResult:
     token = normalize_board_id(board_token)
     if token is None:
         return invalid_board_id_result("greenhouse")
     url = GREENHOUSE_JOBS_URL.format(token=quote(token, safe="-_.~"))
+    if with_content:
+        url += "?content=true"
     outcome = await gateway.fetch(FetchRequest(url=url, kind="api"))
     return label_gateway_outcome(
         outcome,
