@@ -32,7 +32,7 @@ RefusalReason = Literal[
 ]
 
 MAX_REDIRECTS = 3
-MAX_BODY_BYTES = 2 * 1024 * 1024
+MAX_BODY_BYTES = 16 * 1024 * 1024
 DEFAULT_TIMEOUT_S = 10.0
 ALLOWED_CONTENT_TYPES = frozenset({"text/html", "application/json", "text/json"})
 
