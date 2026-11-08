@@ -34,11 +34,14 @@ KNOWN_AGENCIES: Final[frozenset[str]] = frozenset(
         "hays",
         "lorien",
         "manpower",
+        "maxwell bond",
+        "miller maxwell",
         "matchtech",
         "michael page",
         "michael page technology",
         "oliver james",
         "oliver james associates",
+        "oscar technology",
         "page group",
         "picture more",
         "randstad",
@@ -47,9 +50,32 @@ KNOWN_AGENCIES: Final[frozenset[str]] = frozenset(
         "robert walters",
         "sthree",
         "tenth revolution group",
+        "turnblock",
+        "turnblock io",
         "viqu",
     }
 )
+
+
+_TITLE_SAYS_AGENCY: Final = re.compile(
+    r"\b(recruitment|recruiters?|staffing|headhunters?|executive search)\b", re.IGNORECASE
+)
+_DESCRIPTION_SAYS_AGENCY: Final = re.compile(
+    r"\b(recruitment (agency|company|consultan\w+|services?|specialists?|firm)|"
+    r"staffing (agency|firm)|executive search firm)\b",
+    re.IGNORECASE,
+)
+# Companies that sell tools to recruiters use the same words.
+_SELLS_TOOLS: Final = re.compile(
+    r"\b(software|recruit\w* (platform|tools?|crm)|ats)\b", re.IGNORECASE
+)
+
+
+def homepage_says_agency(title: str, description: str) -> bool:
+    return any(
+        pattern.search(text) is not None and _SELLS_TOOLS.search(text) is None
+        for pattern, text in ((_TITLE_SAYS_AGENCY, title), (_DESCRIPTION_SAYS_AGENCY, description))
+    )
 
 
 def is_recruitment_agency(company_name: str) -> bool:

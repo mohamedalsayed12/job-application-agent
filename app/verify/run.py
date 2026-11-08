@@ -63,6 +63,8 @@ async def _run_checks(
                 (domain.record,),
             ),
         )
+    if domain.says_agency:
+        return decide.recruitment_agency(domain=domain, now=now)
     if not domain.confirmed or domain.domain is None:
         return decide.needs_review(
             reason=domain.record.evidence_snippet or "official_domain_unconfirmed",
