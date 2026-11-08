@@ -67,13 +67,17 @@ _DESCRIPTION_SAYS_AGENCY: Final = re.compile(
 )
 # Companies that sell tools to recruiters use the same words.
 _SELLS_TOOLS: Final = re.compile(
-    r"\b(software|recruit\w* (platform|tools?|crm)|ats)\b", re.IGNORECASE
+    r"\b(software|recruit\w* (platform|tools?|crm|marketing|automation)|ats)\b", re.IGNORECASE
+)
+# Employers describe their own hiring with the same words.
+_OWN_HIRING: Final = re.compile(
+    r"\b(graduate|campus|student|early careers?|internal|in-house|our) recruit\w*", re.IGNORECASE
 )
 
 
 def homepage_says_agency(title: str, description: str) -> bool:
     return any(
-        pattern.search(text) is not None and _SELLS_TOOLS.search(text) is None
+        pattern.search(_OWN_HIRING.sub("", text)) is not None and _SELLS_TOOLS.search(text) is None
         for pattern, text in ((_TITLE_SAYS_AGENCY, title), (_DESCRIPTION_SAYS_AGENCY, description))
     )
 
