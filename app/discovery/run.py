@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.applicants.discovery import to_discovery_preference
 from app.core.config import Settings, get_settings
+from app.discovery.boards import attach_public_board
 from app.discovery.cf3 import search_official_domain
 from app.extraction import extract_ai_leftovers, extract_and_persist_search_results
 from app.fetch.gateway import FetchGateway
@@ -25,6 +26,7 @@ from app.models import (
     ApplicantPreference,
     Candidate,
     CandidateEvidence,
+    CandidateState,
     SearchResult,
     SearchRun,
     SearchRunStatus,
@@ -45,6 +47,7 @@ class DiscoveryReport:
     searches: Counter[str] = field(default_factory=Counter)
     code_candidates: int = 0
     cf3: Counter[str] = field(default_factory=Counter)
+    boards_attached: int = 0
     verified: Counter[str] = field(default_factory=Counter)
     stopped: str = ""
 
@@ -53,6 +56,7 @@ class DiscoveryReport:
             f"searches: {dict(self.searches)}",
             f"code extraction touched {self.code_candidates} candidates",
             f"cf3: {dict(self.cf3)}",
+            f"boards attached: {self.boards_attached}",
             f"verification: {dict(self.verified)}",
             *([f"stopped early: {self.stopped}"] if self.stopped else []),
         ]
@@ -131,6 +135,13 @@ async def run_discovery(
             report.stopped = f"cf3 money cap: {outcome.detail}"
             break
 
+    for candidate in _without_board(session):
+        found = await attach_public_board(session, gateway, candidate)
+        commit()
+        if found is not None:
+            report.boards_attached += 1
+            log(f"board {candidate.company_name[:40]:40} -> {found.system}:{found.board_id}")
+
     for _ in range(max_verify):
         candidate = claim_next_candidate(session)
         commit()
@@ -160,6 +171,27 @@ def _planned_runs(session: Session, applicant_id: uuid.UUID) -> list[SearchRun]:
                 SearchRun.template_id != "CF3",
             )
             .order_by(SearchRun.created_at)
+        )
+    )
+
+
+def _without_board(session: Session) -> list[Candidate]:
+    """Candidates the board lookup can still help; a claimed row is left alone."""
+    return list(
+        session.scalars(
+            select(Candidate)
+            .where(
+                Candidate.board_id.is_(None),
+                Candidate.state.in_(
+                    (
+                        CandidateState.queued,
+                        CandidateState.retry_wait,
+                        CandidateState.needs_review,
+                        CandidateState.unsupported,
+                    )
+                ),
+            )
+            .order_by(Candidate.created_at)
         )
     )
 
