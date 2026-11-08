@@ -92,6 +92,20 @@ uv run python -m app.worker          # runs until stopped
 uv run python -m app.worker --once   # one cycle
 ```
 
+## Cleaning
+
+The worker cleans each fetch as it stores it. Cleaning turns raw jobs into postings,
+links duplicates to one master job, and sets each job to `open`, `closed` or `unknown`.
+A job closes only after 2 consecutive complete fetches of its board do not list it.
+
+To replay every stored fetch and print job counts and completeness per field, run:
+
+```bash
+uv run python -m app.cleaning
+```
+
+Replaying is safe to repeat. Use it after a cleaning error or a parser change.
+
 ## Stack (D22)
 
 | Piece | Choice |

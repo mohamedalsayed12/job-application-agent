@@ -55,7 +55,10 @@ async def _main(once: bool, poll_seconds: int) -> None:
                 print(
                     f"registered {len(registration.registered)}, skipped {registration.skipped}, "
                     f"fetches {dict(collection.outcomes)}, jobs {collection.jobs}, "
-                    f"not fully read {collection.failed_boards}",
+                    f"not fully read {collection.failed_boards}, new postings {collection.postings_new}, "
+                    f"closed {collection.closed}, reopened {collection.reopened}, unknown {collection.unknown}, "
+                    f"closures held {collection.held} on {collection.braked_boards}, "
+                    f"cleaning errors {collection.clean_errors}",
                     flush=True,
                 )
             if once:
