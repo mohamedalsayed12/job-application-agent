@@ -21,6 +21,8 @@ from app.cleaning import (
     normalize_job,
     reclean_all,
 )
+from app.cleaning import clean as clean_module
+from app.cleaning.clean import link_method_counts
 from app.cleaning.normalize import Location, parse_lever_salary, parse_location
 from app.collection import CollectionReport, collect_due
 from app.fetch.gateway import FetchGateway
@@ -561,6 +563,129 @@ async def test_completeness_is_reported_per_source_and_field(session: Session, c
 )
 def test_location_records_a_city_only_when_one_place_is_named(text: str, expected: Location) -> None:
     assert parse_location(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Hybrid - Manchester", Location(city="Manchester", remote_type="hybrid")),
+        ("Manchester (Hybrid)", Location(city="Manchester", remote_type="hybrid")),
+        ("London, UK (Hybrid)", Location(city="London", country="GB", remote_type="hybrid")),
+        ("Hybrid", Location(remote_type="hybrid")),
+        ("Manchester - UK", Location(city="Manchester", country="GB")),
+        ("UK - Manchester", Location(city="Manchester", country="GB")),
+        ("Manchester - Piccadilly", Location()),
+        ("Berlin, DE", Location(city="Berlin")),
+        ("Sydney, AU", Location(city="Sydney", country="AU")),
+        ("Toronto, ON", Location(city="Toronto", country="CA")),
+        ("Seattle, WA", Location(city="Seattle", country="US")),
+        ("Bengaluru, IN", Location(city="Bengaluru")),
+        ("San Francisco, CA", Location(city="San Francisco")),
+        ("Tbilisi, Georgia", Location()),
+        ("Flexible", Location()),
+        ("Anywhere", Location()),
+        ("Multiple Locations", Location()),
+    ],
+)
+def test_review_location_cases(text: str, expected: Location) -> None:
+    assert parse_location(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "raw"),
+    [
+        ("greenhouse", {"id": 1, "title": "x", "absolute_url": "https://x.example", "location": "Manchester"}),
+        ("lever", {"id": "a", "text": "x", "applyUrl": "https://x.example", "lists": ["oops"]}),
+        ("lever", {"id": "a", "text": "x", "applyUrl": "https://x.example", "country": 826}),
+    ],
+    ids=["location_string", "lists_string", "country_number"],
+)
+def test_wrong_typed_job_is_unusable_not_an_error(source: str, raw: dict) -> None:
+    assert normalize_job(source, raw) is None
+
+
+async def test_one_wrong_typed_job_does_not_stop_the_rest_of_the_board(session: Session, collector: _Collector) -> None:
+    _board(session)
+    bad = _gh_job(1) | {"location": "Manchester"}
+    report = await collector.read(200, {"jobs": [bad, _gh_job(2)]})
+    assert report.clean_errors == []
+    assert session.scalar(select(JobPosting)).source_job_id == "2"
+
+
+async def test_replay_carries_on_past_a_run_that_cannot_be_cleaned(
+    session: Session, collector: _Collector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _board(session)
+    await collector.listing([1])
+    await collector.listing([1])
+    real = clean_module.clean_run
+    calls = {"count": 0}
+
+    def fail_first(*args: object, **kwargs: object) -> object:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ValueError("bad run")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(clean_module, "clean_run", fail_first)
+    report = reclean_all(session, now=collector.at)
+    assert calls["count"] == 2
+    assert len(report.errors) == 1
+    assert report.postings_updated == 1
+
+
+async def test_jobs_stay_unknown_after_not_found_until_a_complete_read(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing([1])
+    await collector.read(404, {"error": "gone"})
+    assert _job(session, 1).freshness == JobFreshness.unknown
+    await collector.read(500, {})
+    assert _job(session, 1).freshness == JobFreshness.unknown
+    await collector.listing([1])
+    assert _job(session, 1).freshness == JobFreshness.open
+
+
+async def test_open_job_moves_to_a_live_listing_when_its_shown_listing_closes(session: Session, collector: _Collector) -> None:
+    _board(session)
+    twin_a = _gh_job(11, title="Backend Developer")
+    twin_b = _gh_job(12, title="Backend Developer")
+    await collector.read(200, {"jobs": [twin_a, twin_b]})
+    job = _job(session, 11)
+    assert job.apply_url.endswith("/11")
+    await collector.read(200, {"jobs": [twin_b]})
+    assert job.apply_url.endswith("/11")
+    await collector.read(200, {"jobs": [twin_b]})
+    assert job.freshness == JobFreshness.open
+    assert job.apply_url.endswith("/12")
+    assert job.field_provenance["apply_url"]["posting_id"] == str(
+        session.scalar(select(JobPosting.id).where(JobPosting.source_job_id == "12"))
+    )
+
+
+async def test_two_listings_with_no_advert_text_stay_separate(session: Session, collector: _Collector) -> None:
+    _board(session)
+    twin_a = _gh_job(11, title="Backend Developer") | {"content": ""}
+    twin_b = _gh_job(12, title="Backend Developer") | {"content": ""}
+    await collector.read(200, {"jobs": [twin_a, twin_b]})
+    assert _job(session, 11).id != _job(session, 12).id
+
+
+async def test_first_postings_are_not_counted_as_exact_matches(session: Session, collector: _Collector) -> None:
+    board = _board(session)
+    await collector.listing([11])
+    link_posting(session, _reed_posting(session, board, apply_url="https://boards.greenhouse.io/acme/jobs/11"))
+    assert link_method_counts(session) == {"first_posting": 1, JobLinkMethod.exact_job_id: 1}
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://boards.greenhouse.io/embed/job_app?for=acme&token=123", ("greenhouse", "123")),
+        ("https://notgreenhouse.io/acme/jobs/123", None),
+    ],
+)
+def test_board_job_key_review_cases(url: str, expected: tuple[str, str] | None) -> None:
+    assert board_job_key(url) == expected
 
 
 def test_workplace_type_and_country_come_from_lever_fields() -> None:

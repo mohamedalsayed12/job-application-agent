@@ -20,7 +20,8 @@ def main() -> None:
         print(
             f"postings new {report.postings_new}, updated {report.postings_updated}, "
             f"unusable {report.unusable}, closed {report.freshness.closed}, "
-            f"reopened {report.freshness.reopened}, unknown {report.freshness.unknown}"
+            f"reopened {report.freshness.reopened}, unknown {report.freshness.unknown}, "
+            f"errors {report.errors}"
         )
         print(f"jobs by freshness: {master_job_counts(session)}")
         print(f"links by method: {link_method_counts(session)}")

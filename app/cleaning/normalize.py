@@ -90,7 +90,7 @@ _COUNTRIES = {
 _US_STATES = frozenset(
     {
         "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware",
-        "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky",
+        "florida", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky",
         "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri",
         "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "new york",
         "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island",
@@ -98,13 +98,24 @@ _US_STATES = frozenset(
         "west virginia", "wisconsin", "wyoming",
     }
 )
-_REGIONS = frozenset({"emea", "apac", "americas", "worldwide", "global", "europe", "nationwide", "n/a", "na"})
+_US_STATE_CODES = frozenset(
+    "AL AK AZ AR CA CO CT DC DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY "
+    "NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split()
+)
+_CANADIAN_PROVINCES = frozenset({"AB", "BC", "MB", "NB", "NL", "NS", "ON", "PE", "QC", "SK"})
+_COUNTRY_CODES = frozenset(_COUNTRIES.values())
+_NOT_PLACES = frozenset(
+    {
+        "emea", "apac", "americas", "worldwide", "global", "europe", "nationwide", "n/a", "na",
+        "flexible", "anywhere", "various", "multiple locations", "tbc", "tbd",
+    }
+)
 _REMOTE = re.compile(r"\b(remote|home[- ]based|work from home)\b", re.IGNORECASE)
+_HYBRID = re.compile(r"\bhybrid\b", re.IGNORECASE)
+_WORK_MODE = re.compile(r"\(?\b(?:hybrid|on-?site|in[- ]office)\b\)?", re.IGNORECASE)
 _OFFICE_PREFIX = re.compile(r"^office[- ]based\s*-\s*", re.IGNORECASE)
 _ISO_SUFFIX = re.compile(r"\s*\(([A-Za-z]{2})\)\s*$")
-_EMPLOYER_SUFFIX = re.compile(r"\s+-\s+.*$")
 _MANY_PLACES = re.compile(r";|/|\s(?:or|and)\s", re.IGNORECASE)
-_US_STATE = re.compile(r"^[A-Z]{2}$")
 
 _REMOTE_TYPES = {"remote": "remote", "hybrid": "hybrid", "onsite": "onsite"}
 _MONTHS_PER_PERIOD = {"year": 1, "month": 12, "week": 52}
@@ -144,8 +155,11 @@ class NormalizedJob:
 
 
 def normalize_job(source: str, raw: dict[str, Any]) -> NormalizedJob | None:
-    """None when the job has no title or apply link, because neither can be invented."""
-    parsed = _greenhouse(raw) if source == "greenhouse" else _lever(raw) if source == "lever" else None
+    """None when a job has no title or apply link, or its fields are not the expected types."""
+    try:
+        parsed = _greenhouse(raw) if source == "greenhouse" else _lever(raw) if source == "lever" else None
+    except (AttributeError, TypeError, ValueError):
+        return None
     return parsed if parsed and parsed.title and parsed.apply_url else None
 
 
@@ -195,12 +209,15 @@ def parse_location(text: str, *, country: str | None = None, workplace: str | No
     remote_type = _REMOTE_TYPES.get((workplace or "").lower())
     if _REMOTE.search(text):
         remote_type = "remote"
+    elif remote_type is None and _HYBRID.search(text):
+        remote_type = "hybrid"
 
-    iso = _ISO_SUFFIX.search(text)
+    place = _WORK_MODE.sub("", text).strip(" -,")
+    iso = _ISO_SUFFIX.search(place)
     if iso:
         country = country or _COUNTRIES.get(iso.group(1).lower(), iso.group(1))
-    place = _ISO_SUFFIX.sub("", _OFFICE_PREFIX.sub("", text)).strip()
-    place = _EMPLOYER_SUFFIX.sub("", place).strip()
+    place = _ISO_SUFFIX.sub("", _OFFICE_PREFIX.sub("", place)).strip()
+    place = _undash(place)
     resolved = country.upper() if country else None
 
     if not place or _REMOTE.search(place) or _MANY_PLACES.search(place):
@@ -212,14 +229,41 @@ def parse_location(text: str, *, country: str | None = None, workplace: str | No
     if len(parts) == 1:
         if named:
             return Location(country=resolved or named, remote_type=remote_type)
-        if last.lower() in _REGIONS:
+        if last.lower() in _NOT_PLACES:
             return Location(country=resolved, remote_type=remote_type)
         return Location(city=last, country=resolved, remote_type=remote_type)
     if named and len(parts) <= 3:
         return Location(city=parts[0], country=resolved or named, remote_type=remote_type)
-    if len(parts) == 2 and (_US_STATE.match(last) or last.lower() in _US_STATES):
+    if len(parts) == 2 and last.lower() in _US_STATES:
         return Location(city=parts[0], country=resolved or "US", remote_type=remote_type)
+    if len(parts) == 2 and _is_region_code(last):
+        return Location(city=parts[0], country=resolved or _country_from_code(last), remote_type=remote_type)
     return Location(country=resolved or _mentioned_country(place), remote_type=remote_type)
+
+
+def _undash(place: str) -> str:
+    """Read 'A - B' only when one side is a country. Otherwise the place is unclear, so no city."""
+    if " - " not in place:
+        return place
+    left, right = (part.strip() for part in place.split(" - ", 1))
+    if right.lower() in _COUNTRIES:
+        return f"{left}, {right}"
+    if left.lower() in _COUNTRIES:
+        return f"{right}, {left}"
+    if left.rsplit(",", 1)[-1].strip().lower() in _COUNTRIES:
+        return left
+    return ""
+
+
+def _is_region_code(text: str) -> bool:
+    return text in _US_STATE_CODES or text in _CANADIAN_PROVINCES or text in _COUNTRY_CODES
+
+
+def _country_from_code(code: str) -> str | None:
+    """IN could be Indiana or India, and CA California or Canada, so those record no country."""
+    if code in _US_STATE_CODES:
+        return None if code in _COUNTRY_CODES else "US"
+    return "CA" if code in _CANADIAN_PROVINCES else code
 
 
 def _mentioned_country(text: str) -> str | None:

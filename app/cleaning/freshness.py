@@ -13,6 +13,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.cleaning.linking import is_primary, mirror_posting
 from app.models import (
     EmployerBoard,
     FetchOutcome,
@@ -119,7 +120,7 @@ def _update_job(
     report: FreshnessReport,
 ) -> None:
     already_closed = job.freshness == JobFreshness.closed
-    states = []
+    states: list[str] = []
     for posting in postings:
         if posting.employer_board_id is None:
             # A search source says nothing by leaving a job out; only an expiry date closes it.
@@ -141,6 +142,7 @@ def _update_job(
     else:
         new_state = JobFreshness.unknown
 
+    _show_a_live_posting(job, postings, states)
     if new_state == job.freshness:
         return
     if new_state == JobFreshness.closed:
@@ -153,6 +155,13 @@ def _update_job(
     if new_state == JobFreshness.unknown:
         report.unknown += 1
     job.freshness = new_state
+
+
+def _show_a_live_posting(job: Job, postings: list[JobPosting], states: list[str]) -> None:
+    """An open job must not keep the apply link of a listing that has closed."""
+    live = [posting for posting, state in zip(postings, states, strict=True) if state == JobFreshness.open]
+    if live and not any(is_primary(job, posting) for posting in live):
+        mirror_posting(job, live[0])
 
 
 def _evidence(postings: list[JobPosting], views: dict[uuid.UUID, _BoardView], now: datetime) -> dict:
@@ -174,20 +183,16 @@ def _view(session: Session, board: EmployerBoard) -> _BoardView:
     ).all()
     latest = full_reads[0] if full_reads else None
     previous = full_reads[1] if len(full_reads) > 1 else None
-    last_outcome = session.scalar(
-        select(FetchRun.outcome)
-        .where(FetchRun.employer_board_id == board.id)
-        .order_by(FetchRun.finished_at.desc(), FetchRun.id)
-        .limit(1)
-    )
+    since_full_read = select(FetchRun.outcome).where(FetchRun.employer_board_id == board.id)
+    if latest is not None:
+        since_full_read = since_full_read.where(FetchRun.finished_at > latest.finished_at)
+    bad_reads = session.scalars(since_full_read).all()
     return _BoardView(
         latest=latest,
         previous=previous,
         latest_ids=_job_ids(session, latest),
         previous_ids=_job_ids(session, previous),
-        unhealthy=(
-            board.consecutive_failures >= FAILURES_BEFORE_UNKNOWN or last_outcome == FetchOutcome.not_found
-        ),
+        unhealthy=len(bad_reads) >= FAILURES_BEFORE_UNKNOWN or FetchOutcome.not_found in bad_reads,
     )
 
 

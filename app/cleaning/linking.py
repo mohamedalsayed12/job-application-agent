@@ -15,6 +15,7 @@ from app.models import Employer, Job, JobFreshness, JobLink, JobLinkMethod, JobP
 
 BOARD_SOURCES = frozenset({"greenhouse", "lever"})
 NEARBY_DATES = timedelta(days=14)
+FIRST_POSTING_REASON = "first posting of this job"
 
 _GREENHOUSE_PATH = re.compile(r"^/[^/]+/jobs/(\d+)")
 _LEVER_PATH = re.compile(r"^/[^/]+/([0-9a-fA-F-]{36})(?:/|$)")
@@ -44,11 +45,16 @@ def board_job_key(url: str | None) -> tuple[str, str] | None:
     if host in _LEVER_HOSTS:
         found = _LEVER_PATH.match(parts.path)
         return ("lever", found.group(1).lower()) if found else None
-    if host.endswith("greenhouse.io"):
+    query = parse_qs(parts.query)
+    if host == "greenhouse.io" or host.endswith(".greenhouse.io"):
         found = _GREENHOUSE_PATH.match(parts.path)
         if found:
             return "greenhouse", found.group(1)
-    job_ids = parse_qs(parts.query).get("gh_jid", [])
+        if parts.path.startswith("/embed/job_app"):
+            tokens = query.get("token", [])
+            if tokens and tokens[0].isdigit():
+                return "greenhouse", tokens[0]
+    job_ids = query.get("gh_jid", [])
     return ("greenhouse", job_ids[0]) if job_ids and job_ids[0].isdigit() else None
 
 
@@ -86,7 +92,7 @@ def link_posting(session: Session, posting: JobPosting) -> JobLink:
     session.add(job)
     mirror_posting(job, posting)
     session.flush()
-    return _link(session, posting, job.id, JobLinkMethod.exact_job_id, Decimal("1"), "first posting of this job")
+    return _link(session, posting, job.id, JobLinkMethod.exact_job_id, Decimal("1"), FIRST_POSTING_REASON)
 
 
 def mirror_posting(job: Job, posting: JobPosting) -> None:
@@ -160,7 +166,7 @@ def _strong_match(session: Session, posting: JobPosting) -> uuid.UUID | None:
         for title, posted_at, source, description, job_id in rows
         if title_key(title) == key
         and abs(posted_at - posting.posted_at) <= NEARBY_DATES
-        and (source != posting.source or description == posting.description)
+        and (source != posting.source or (description is not None and description == posting.description))
     }
     return jobs.pop() if len(jobs) == 1 else None
 
