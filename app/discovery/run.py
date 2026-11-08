@@ -135,6 +135,20 @@ async def run_discovery(
             report.stopped = f"cf3 money cap: {outcome.detail}"
             break
 
+    await lookup_and_verify(session, gateway, report=report, max_verify=max_verify, commit=commit, log=log)
+    return report
+
+
+async def lookup_and_verify(
+    session: Session,
+    gateway: FetchGateway,
+    *,
+    report: DiscoveryReport,
+    max_verify: int,
+    commit: Callable[[], None],
+    log: Callable[[str], None],
+) -> None:
+    """Free steps of a pass: board lookup, then verify the queue. No search spend."""
     for candidate in _without_board(session):
         found = await attach_public_board(session, gateway, candidate)
         commit()
@@ -157,7 +171,6 @@ async def run_discovery(
         commit()
         report.verified[decision.state] += 1
         log(f"verify {candidate.company_name[:40]:40} -> {decision.state} ({decision.reason})")
-    return report
 
 
 def _planned_runs(session: Session, applicant_id: uuid.UUID) -> list[SearchRun]:

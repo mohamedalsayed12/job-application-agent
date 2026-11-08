@@ -608,3 +608,42 @@ async def test_found_board_verifies_only_when_the_site_links_to_it(
     finally:
         await gateway.aclose()
     assert decision.state == state
+
+
+# --- Seed list ----------------------------------------------------------------------
+
+from app.discovery.seed import (  # noqa: E402
+    SeedRow,
+    ingest_seed,
+    load_seed,
+    seeded_candidate_ids,
+)
+
+
+def test_seed_file_is_well_formed() -> None:
+    rows = load_seed()
+    assert len(rows) >= 50
+    assert len({r.company_name for r in rows}) == len(rows)
+    assert len({r.domain for r in rows}) == len(rows)
+    for row in rows:
+        assert row.domain and "/" not in row.domain
+        assert not is_recruitment_agency(row.company_name)
+        assert bool(row.board_system) == bool(row.board_id)
+        assert row.board_system in (None, "greenhouse", "lever")
+
+
+def test_seed_rows_are_leads_not_verdicts(session: Session) -> None:
+    rows = [
+        SeedRow("Acme Widgets", "acme.test"),
+        SeedRow("Beta Works", "beta.test", "lever", "betaworks"),
+        SeedRow("Gamma Recruitment", "gamma.test"),
+    ]
+    first = ingest_seed(session, rows)
+    assert [c.company_name for c in first] == ["Acme Widgets", "Beta Works"]
+    assert all(c.state == CandidateState.queued for c in first)
+    assert first[1].board_instance == "lever_global"
+    assert seeded_candidate_ids(session) == {c.id for c in first}
+
+    second = ingest_seed(session, rows)  # a rerun adds nothing
+    assert {c.id for c in second} == {c.id for c in first}
+    assert session.scalar(select(func.count()).select_from(Candidate)) == 2
