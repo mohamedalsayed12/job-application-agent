@@ -1,7 +1,9 @@
 """Three-state freshness, worked out from stored fetch runs rather than running counters.
 
 Reading the evidence each time means a crash or a missed cleaning pass cannot close a
-job: a job closes only when the raw jobs of two complete fetches show it missing.
+job: a job closes only when the raw jobs of two complete fetches show it missing and
+the board then confirms that its listing has gone. Without that confirmation nothing
+closes, so replaying stored runs can never close a job.
 
 When over half of a board vanishes in one complete fetch, closures on that board wait
 for that fetch and the next one, so vanished jobs need a third fetch to close (D32).
@@ -10,8 +12,10 @@ for that fetch and the next one, so vanished jobs need a third fetch to close (D
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,7 +35,8 @@ from app.models import (
 FULL_READS = (FetchOutcome.complete, FetchOutcome.empty)
 FAILURES_BEFORE_UNKNOWN = 3
 BRAKE_MIN_JOBS = 5
-CLOSING_RULE = "missing_from_2_consecutive_complete_fetches"
+CLOSING_RULE = "missing_from_2_consecutive_complete_fetches_and_listing_gone"
+ListingKey = tuple[str, str]
 
 
 @dataclass(slots=True)
@@ -41,6 +46,7 @@ class FreshnessReport:
     unknown: int = 0
     held: int = 0
     brake_on: bool = False
+    to_check: list[JobPosting] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -88,8 +94,15 @@ def _mass_vanishing(before: set[str], after: set[str]) -> bool:
     return len(before) >= BRAKE_MIN_JOBS and len(before - after) * 2 > len(before)
 
 
-def refresh_board_freshness(session: Session, board: EmployerBoard, *, now: datetime) -> FreshnessReport:
-    """Safe to repeat: the same fetch runs always give the same states."""
+def refresh_board_freshness(
+    session: Session,
+    board: EmployerBoard,
+    *,
+    now: datetime,
+    gone: Mapping[ListingKey, dict[str, Any]] | None = None,
+) -> FreshnessReport:
+    """``gone`` holds the listings a board has confirmed closed. Others that look closed go in ``to_check``."""
+    confirmed = gone or {}
     report = FreshnessReport()
     views: dict[uuid.UUID, _BoardView] = {board.id: _view(session, board)}
     report.brake_on = views[board.id].brake_on
@@ -112,7 +125,7 @@ def refresh_board_freshness(session: Session, board: EmployerBoard, *, now: date
         postings_by_job.setdefault(job_id, []).append(posting)
 
     for job in session.scalars(select(Job).where(Job.id.in_(job_ids))).all():
-        _update_job(session, job, postings_by_job[job.id], views, now, report)
+        _update_job(session, job, postings_by_job[job.id], views, now, report, confirmed)
     session.flush()
     return report
 
@@ -124,6 +137,7 @@ def _update_job(
     views: dict[uuid.UUID, _BoardView],
     now: datetime,
     report: FreshnessReport,
+    gone: Mapping[ListingKey, dict[str, Any]],
 ) -> None:
     already_closed = job.freshness == JobFreshness.closed
     states: list[str] = []
@@ -149,10 +163,19 @@ def _update_job(
         new_state = JobFreshness.unknown
 
     _show_a_live_posting(job, postings, states)
+    if new_state == JobFreshness.closed and not already_closed:
+        unconfirmed = [
+            posting
+            for posting in postings
+            if posting.employer_board_id is not None and (posting.source, posting.source_job_id) not in gone
+        ]
+        if unconfirmed:
+            report.to_check.extend(unconfirmed)
+            return
     if new_state == job.freshness:
         return
     if new_state == JobFreshness.closed:
-        job.closure_evidence = _evidence(postings, views, now)
+        job.closure_evidence = _evidence(postings, views, now, gone)
         report.closed += 1
     else:
         job.closure_evidence = None
@@ -170,7 +193,17 @@ def _show_a_live_posting(job: Job, postings: list[JobPosting], states: list[str]
         mirror_posting(job, live[0])
 
 
-def _evidence(postings: list[JobPosting], views: dict[uuid.UUID, _BoardView], now: datetime) -> dict:
+def _evidence(
+    postings: list[JobPosting],
+    views: dict[uuid.UUID, _BoardView],
+    now: datetime,
+    gone: Mapping[ListingKey, dict[str, Any]],
+) -> dict:
+    checks = {
+        f"{posting.source}:{posting.source_job_id}": gone[(posting.source, posting.source_job_id)]
+        for posting in postings
+        if (posting.source, posting.source_job_id) in gone
+    }
     runs: dict[str, str] = {}
     for posting in postings:
         view = views.get(posting.employer_board_id) if posting.employer_board_id else None
@@ -179,7 +212,7 @@ def _evidence(postings: list[JobPosting], views: dict[uuid.UUID, _BoardView], no
             runs[str(view.previous.id)] = view.previous.finished_at.isoformat()
             if view.older is not None and posting.source_job_id not in view.older_ids:
                 runs[str(view.older.id)] = view.older.finished_at.isoformat()
-    return {"rule": CLOSING_RULE, "fetch_runs": runs, "closed_at": now.isoformat()}
+    return {"rule": CLOSING_RULE, "fetch_runs": runs, "listing_checks": checks, "closed_at": now.isoformat()}
 
 
 def _view(session: Session, board: EmployerBoard) -> _BoardView:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -43,6 +44,7 @@ from app.models import (
 
 DAY_1 = datetime(2026, 11, 9, 9, 0, tzinfo=UTC)
 LEVER_ID = "324f1be5-ab7c-4c13-8314-3466217ccc75"
+LISTING_PATH = re.compile(r"/jobs/[^/]+$|/postings/[^/]+/[^/]+$")
 
 
 def _board(session: Session, *, system: str = "greenhouse") -> EmployerBoard:
@@ -80,11 +82,25 @@ class _Collector:
         self.session = session
         self.at = DAY_1
         self.report = CollectionReport()
+        self.listing_status = 404
+        self.listing_body: object = {"error": "Job not found"}
+        self.listing_timeout = False
+        self.listing_requests: list[str] = []
+
+    def _listing_answer(self, request: httpx.Request) -> httpx.Response:
+        self.listing_requests.append(str(request.url))
+        if self.listing_timeout:
+            raise httpx.ReadTimeout("slow", request=request)
+        body = self.listing_body
+        content = body if isinstance(body, bytes) else json.dumps(body).encode()
+        return httpx.Response(self.listing_status, content=content, headers={"content-type": "application/json"})
 
     async def read(self, status: int, body: object, *, on_next_day: bool = True) -> CollectionReport:
         content = body if isinstance(body, bytes) else json.dumps(body).encode()
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if LISTING_PATH.search(request.url.path):
+                return self._listing_answer(request)
             return httpx.Response(status, content=content, headers={"content-type": "application/json"})
 
         gateway = FetchGateway(
@@ -130,8 +146,121 @@ async def test_t23_a_job_closes_after_two_complete_fetches_without_it(session: S
     assert _job(session, 1).freshness == JobFreshness.open
 
     last_two = session.scalars(select(FetchRun).order_by(FetchRun.finished_at.desc()).limit(2)).all()
-    assert job.closure_evidence["rule"] == "missing_from_2_consecutive_complete_fetches"
+    assert job.closure_evidence["rule"] == "missing_from_2_consecutive_complete_fetches_and_listing_gone"
     assert set(job.closure_evidence["fetch_runs"]) == {str(run.id) for run in last_two}
+    listing_url = "https://boards-api.greenhouse.io/v1/boards/acme/jobs/2"
+    assert collector.listing_requests == [listing_url]
+    check = job.closure_evidence["listing_checks"]["greenhouse:2"]
+    assert (check["url"], check["status"]) == (listing_url, 404)
+
+
+async def test_a_job_missing_from_the_list_but_still_listed_stays_open(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing([1, 2])
+    await collector.listing([1])
+    collector.listing_status = 200
+    collector.listing_body = _gh_job(2)
+    report = await collector.listing([1])
+    assert (report.closed, report.still_listed, report.checks_unclear) == (0, 1, 0)
+    assert _job(session, 2).freshness == JobFreshness.open
+    assert _job(session, 2).closure_evidence is None
+
+    collector.listing_status = 404
+    collector.listing_body = {"error": "Job not found"}
+    report = await collector.listing([1])
+    assert report.closed == 1
+    assert _job(session, 2).freshness == JobFreshness.closed
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (500, {"error": "server"}),
+        (429, {"error": "slow down"}),
+        (403, {"error": "forbidden"}),
+        (200, {"id": 999}),
+        (200, b"<html>not json</html>"),
+        (200, []),
+    ],
+    ids=["server_error", "rate_limited", "forbidden", "another_job", "not_json", "wrong_shape"],
+)
+async def test_an_unclear_listing_check_closes_nothing(
+    session: Session, collector: _Collector, status: int, body: object
+) -> None:
+    _board(session)
+    await collector.listing([1, 2])
+    await collector.listing([1])
+    collector.listing_status = status
+    collector.listing_body = body
+    report = await collector.listing([1])
+    assert (report.closed, report.still_listed, report.checks_unclear) == (0, 0, 1)
+    assert _job(session, 2).freshness == JobFreshness.open
+
+
+async def test_a_timed_out_listing_check_closes_nothing(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing([1, 2])
+    await collector.listing([1])
+    collector.listing_timeout = True
+    report = await collector.listing([1])
+    assert (report.closed, report.checks_unclear) == (0, 1)
+    assert _job(session, 2).freshness == JobFreshness.open
+
+
+async def test_a_job_missed_once_is_not_checked(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing([1, 2])
+    await collector.listing([1])
+    assert collector.listing_requests == []
+
+
+async def test_listings_are_not_checked_while_the_brake_is_on(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing(range(1, 7))
+    await collector.listing([1])
+    await collector.listing([1])
+    assert collector.listing_requests == []
+    report = await collector.listing([1])
+    assert report.closed == 5
+    assert len(collector.listing_requests) == 5
+
+
+async def test_a_bad_board_read_never_triggers_a_listing_check(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing([1, 2])
+    await collector.listing([1])
+    collector.listing_status = 500
+    await collector.listing([1])
+    assert len(collector.listing_requests) == 1
+    collector.listing_status = 404
+    for _ in range(4):
+        await collector.read(500, {})
+    assert len(collector.listing_requests) == 1
+    assert _job(session, 2).freshness != JobFreshness.closed
+
+
+async def test_lever_listing_is_checked_on_the_board_host(session: Session, collector: _Collector) -> None:
+    board = _board(session, system="lever")
+    board.instance = "lever_eu"
+    session.flush()
+    job = {"id": LEVER_ID, "text": "Platform Engineer", "applyUrl": "https://jobs.eu.lever.co/acme/x/apply"}
+    other = {"id": "other", "text": "Data Engineer", "applyUrl": "https://jobs.eu.lever.co/acme/y/apply"}
+    await collector.read(200, [job, other])
+    await collector.read(200, [other])
+    report = await collector.read(200, [other])
+    assert report.closed == 1
+    assert collector.listing_requests == [f"https://api.eu.lever.co/v0/postings/acme/{LEVER_ID}?mode=json"]
+
+
+async def test_replaying_stored_runs_never_closes_a_job(session: Session, collector: _Collector) -> None:
+    _board(session)
+    await collector.listing([1, 2])
+    await collector.listing([1])
+    collector.listing_status = 500
+    await collector.listing([1])
+    report = reclean_all(session, now=collector.at)
+    assert report.freshness.closed == 0
+    assert _job(session, 2).freshness == JobFreshness.open
 
 
 async def test_a_closed_job_that_returns_is_open_again_and_keeps_its_first_seen(session: Session, collector: _Collector) -> None:
