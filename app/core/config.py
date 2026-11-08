@@ -55,7 +55,6 @@ class Settings(BaseSettings):
     # The per-call cap covers input + output, so it rises with the output limit.
     ai_extraction_per_item_token_cap: int = 4000
     ai_extraction_max_output_tokens: int = 1500
-    ai_extraction_daily_token_cap: int = 100_000
 
     # Paid Mojeek Business fallback £3/1k ⇒ £0.003; SerpAPI free tier is £0 via FREE_MONEY.
     search_request_unit_price: Decimal = Decimal("0.003")
