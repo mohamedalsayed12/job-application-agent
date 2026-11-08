@@ -18,10 +18,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.boards import BoardFetchResult, fetch_greenhouse_board, fetch_lever_board
+from app.boards.lever import LEVER_URLS
 from app.fetch.gateway import FetchGateway
 from app.models import BoardStatus, EmployerBoard, FetchOutcome, FetchRun, RawPayload
 
@@ -65,20 +65,23 @@ async def collect_due(
         if board is None or not is_due(board, now()):
             save()
             continue
-        run = await _collect_board(session, gateway, board, now)
+        run, detail = await _collect_board(session, gateway, board, now)
         save()
         report.outcomes[run.outcome] += 1
         report.jobs += run.jobs_returned
         if run.outcome not in FULL_READS:
-            report.failed_boards.append(f"{board.system}/{board.board_id}: {run.outcome}")
+            report.failed_boards.append(f"{board.system}/{board.board_id}: {run.outcome} ({detail})")
     return report
 
 
-async def _collect_board(session: Session, gateway: FetchGateway, board: EmployerBoard, now: Clock) -> FetchRun:
+async def _collect_board(
+    session: Session, gateway: FetchGateway, board: EmployerBoard, now: Clock
+) -> tuple[FetchRun, str | None]:
     started = now()
     result = await _fetch(gateway, board)
     finished = now()
     label = result.label
+    detail = result.detail
     jobs = result.jobs
     run = FetchRun(
         source=board.system,
@@ -97,8 +100,9 @@ async def _collect_board(session: Session, gateway: FetchGateway, board: Employe
             for job in jobs:
                 session.add(_raw_payload(run, board.system, job, finished))
             session.flush()
-    except SQLAlchemyError:
+    except Exception as exc:  # One unstorable advert must not stop the other boards being read.
         label = FetchOutcome.failed
+        detail = f"storing jobs: {type(exc).__name__}"
         run.outcome = label
         run.jobs_returned = 0
     board.last_checked_at = finished
@@ -108,16 +112,19 @@ async def _collect_board(session: Session, gateway: FetchGateway, board: Employe
     else:
         board.consecutive_failures += 1
     session.flush()
-    return run
+    return run, detail
 
 
 async def _fetch(gateway: FetchGateway, board: EmployerBoard) -> BoardFetchResult:
     try:
         if board.system == "greenhouse":
             return await fetch_greenhouse_board(gateway, board.board_id, with_content=True)
-        return await fetch_lever_board(gateway, board.board_id)
+        if board.system == "lever" and board.instance in LEVER_URLS:
+            return await fetch_lever_board(gateway, board.board_id, instance=board.instance)
+        detail = f"unsupported board: {board.system}/{board.instance}"
     except Exception as exc:  # A bug on one board must not stop the others being read.
-        return BoardFetchResult(label=FetchOutcome.failed, system=board.system, instance=None, detail=repr(exc))
+        detail = repr(exc)
+    return BoardFetchResult(label=FetchOutcome.failed, system=board.system, instance=None, detail=detail)
 
 
 def _raw_payload(run: FetchRun, source: str, job: dict[str, Any], fetched_at: datetime) -> RawPayload:

@@ -22,7 +22,8 @@ from app.collection import (
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
 
-DEFAULT_POLL_SECONDS = 300
+# Short enough for the first retry, one minute after a failed read, to happen on time.
+DEFAULT_POLL_SECONDS = 60
 
 
 async def run_cycle(

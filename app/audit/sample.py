@@ -152,7 +152,7 @@ def _sheet_rows_for(
     rows: list[AuditSheetRow] = []
     by_state: dict[str, int] = defaultdict(int)
     for sample, candidate in pairs:
-        by_state[candidate.state] += 1
+        by_state[audit_state(candidate.state)] += 1
         rows.append(
             AuditSheetRow(
                 audit_sample_id=sample.id,

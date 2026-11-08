@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -36,20 +37,26 @@ def register_verified_boards(session: Session, *, now: datetime | None = None) -
         select(Candidate).where(Candidate.state == CandidateState.verified).order_by(Candidate.company_name)
     ).all()
     for candidate in candidates:
+        name = candidate.company_name
         if not (
             candidate.primary_domain
             and candidate.board_system
             and candidate.board_instance
             and candidate.board_id
         ):
-            report.skipped.append(candidate.company_name)
+            report.skipped.append(name)
             continue
-        employer = _employer_for(session, candidate)
-        _board_for(session, candidate, employer, stamp)
-        candidate.employer_id = employer.id
-        candidate.state = CandidateState.registered
-        report.registered.append(candidate.company_name)
-    session.flush()
+        try:
+            with session.begin_nested():
+                employer = _employer_for(session, candidate)
+                _board_for(session, candidate, employer, stamp)
+                candidate.employer_id = employer.id
+                candidate.state = CandidateState.registered
+                session.flush()
+        except SQLAlchemyError as exc:  # It stays verified, so the next cycle tries again.
+            report.skipped.append(f"{name}: {type(exc).__name__}")
+            continue
+        report.registered.append(name)
     return report
 
 

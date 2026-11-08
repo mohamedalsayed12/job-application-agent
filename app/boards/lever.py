@@ -13,15 +13,27 @@ from app.models import FetchOutcome
 
 LEVER_GLOBAL_URL = "https://api.lever.co/v0/postings/{site}?mode=json"
 LEVER_EU_URL = "https://api.eu.lever.co/v0/postings/{site}?mode=json"
+LEVER_URLS: dict[BoardInstance, str] = {"lever_global": LEVER_GLOBAL_URL, "lever_eu": LEVER_EU_URL}
 
 
 async def fetch_lever_board(
     gateway: FetchGateway,
     site: str,
+    *,
+    instance: BoardInstance | None = None,
 ) -> BoardFetchResult:
+    """With ``instance``, read only that host: the same name on the other host may be another company."""
     site_id = normalize_board_id(site)
     if site_id is None:
         return invalid_board_id_result("lever")
+
+    if instance is not None:
+        return await _fetch_instance(
+            gateway,
+            site_id=site_id,
+            instance=instance,
+            url_template=LEVER_URLS[instance],
+        )
 
     global_result = await _fetch_instance(
         gateway,

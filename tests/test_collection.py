@@ -11,6 +11,7 @@ from decimal import Decimal
 import httpx
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit.sample import (
@@ -18,7 +19,7 @@ from app.audit.sample import (
     list_classified_candidates,
     stratified_sample,
 )
-from app.collection import collect_due, is_due, register_verified_boards
+from app.collection import collect_due, directory, is_due, register_verified_boards
 from app.fetch.gateway import FetchGateway
 from app.matching.entry_level import SearchReport, load_board_jobs
 from app.models import (
@@ -283,10 +284,81 @@ async def test_advert_the_database_refuses_is_a_failed_read_and_the_next_board_s
     report = await collect_due(session, gateway, clock=lambda: NOW)
     await gateway.aclose()
     assert report.outcomes == {FetchOutcome.failed: 1, FetchOutcome.complete: 1}
-    assert report.failed_boards == ["greenhouse/acme: failed"]
+    assert report.failed_boards == ["greenhouse/acme: failed (storing jobs: DataError)"]
     assert (bad.last_job_count, bad.consecutive_failures) == (7, 1)
     assert good.last_job_count == 1
     assert len(session.scalars(select(RawPayload)).all()) == 1
+
+
+async def test_advert_too_deep_to_process_is_a_failed_read_not_a_crash(session: Session) -> None:
+    board = _board(session)
+    deep = "[" * 3000 + "]" * 3000
+    body = '{"jobs": [{"id": 1, "title": ' + deep + "}]}"
+    gateway = _gateway(_answer(200, body.encode()))
+    report = await collect_due(session, gateway, clock=lambda: NOW)
+    await gateway.aclose()
+    assert report.outcomes == {FetchOutcome.failed: 1}
+    assert board.consecutive_failures == 1
+    assert session.scalar(select(RawPayload)) is None
+
+
+async def test_lever_board_is_read_only_on_its_own_host(session: Session) -> None:
+    board = _board(session, system="lever")
+    board.instance = "lever_eu"
+    session.flush()
+    requests: list[str] = []
+    gateway = _gateway(_answer(200, [{"id": "abc", "text": "Backend Developer"}], requests))
+    await collect_due(session, gateway, clock=lambda: NOW)
+    await gateway.aclose()
+    assert requests == ["https://api.eu.lever.co/v0/postings/acme?mode=json"]
+
+
+async def test_lever_board_gone_from_its_host_does_not_fall_back_to_the_other(session: Session) -> None:
+    board = _board(session, system="lever")
+    requests: list[str] = []
+    gateway = _gateway(_answer(404, {"error": "gone"}, requests))
+    await collect_due(session, gateway, clock=lambda: NOW)
+    await gateway.aclose()
+    assert requests == ["https://api.lever.co/v0/postings/acme?mode=json"]
+    assert board.consecutive_failures == 1
+
+
+async def test_unsupported_system_is_refused_and_not_read_as_lever(session: Session) -> None:
+    board = _board(session, system="ashby")
+    requests: list[str] = []
+    gateway = _gateway(_answer(200, [{"id": "abc"}], requests))
+    report = await collect_due(session, gateway, clock=lambda: NOW)
+    await gateway.aclose()
+    assert requests == []
+    assert session.scalar(select(RawPayload)) is None
+    assert board.consecutive_failures == 1
+    assert "unsupported board: ashby" in report.failed_boards[0]
+
+
+def test_one_company_failing_to_register_does_not_block_the_others(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = _candidate(session, "Bad", board_id="bad", domain="bad.example")
+    good = _candidate(session, "Good", board_id="good", domain="good.example")
+    real = directory._employer_for
+
+    def employer_for(session_: Session, candidate: Candidate) -> Employer:
+        if candidate.company_name == "Bad":
+            raise IntegrityError("insert", {}, Exception("taken"))
+        return real(session_, candidate)
+
+    monkeypatch.setattr(directory, "_employer_for", employer_for)
+    report = register_verified_boards(session, now=NOW)
+    assert report.registered == ["Good"]
+    assert report.skipped == ["Bad: IntegrityError"]
+    assert bad.state == CandidateState.verified
+    assert good.state == CandidateState.registered
+
+
+def test_audit_summary_counts_registered_as_verified(session: Session) -> None:
+    _candidate(session, state=CandidateState.registered)
+    _, summary = create_audit_sheet(session, size=1)
+    assert summary.by_state == {CandidateState.verified: 1}
 
 
 async def test_unexpected_fetch_error_is_a_failed_read_and_the_next_board_still_runs(
