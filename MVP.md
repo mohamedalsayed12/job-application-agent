@@ -338,7 +338,6 @@ stateDiagram-v2
 | Limit | Default | Notes |
 |---|---|---|
 | Monthly budget (search + AI) | **Not set (B1)** | Must be set before paid calls run |
-| Daily budget | Monthly ÷ 30 | Unused budget doesn't roll over |
 | Per search run | Max 10 search requests | |
 | Per applicant per day | Max 20 search requests | Stops one applicant using the whole budget |
 | Exploration share | 20% of the discovery budget | Reserved up front |
@@ -510,7 +509,7 @@ Written as behaviours to prove. Each becomes one or more automated tests, plus t
 **Preferences and budget**
 - **T1:** Expected salary is saved as a preference and never appears in search queries, AI inputs or budget calculations.
 - **T2:** With no salary given, no job is excluded for salary.
-- **T3:** No paid call runs if it would exceed the per-run, per-applicant, daily or monthly cap. Refused work waits and isn't marked failed.
+- **T3:** No paid call runs if it would exceed the per-run, per-applicant or monthly cap. Refused work waits and isn't marked failed.
 - **T4:** When the budget runs out, discovery stops and collection from verified boards continues.
 
 **Planning and feedback**
