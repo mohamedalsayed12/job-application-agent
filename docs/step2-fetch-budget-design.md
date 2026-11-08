@@ -33,7 +33,7 @@ Name these before Build. Callers pass them in. The gateway and gate own the rule
 | `FetchRefusal` | `reason` (`blocked_host` \| `robots` \| `private_address` \| `allowlist` \| `size` \| `redirect_limit` \| `timeout` \| `scheme` \| …) | Soft failure for callers. Not a budget wait. |
 | `SpendEstimate` | `provider`, `kind` (`search` \| `ai_extraction` \| `ai_summary`), `units`, `unit_label`, `estimated_cost`, optional `related_run_id` / `related_item_id`, optional `applicant_id` | Input to the gate before a paid call |
 | `SpendReservation` | `ledger_id`, `estimated_cost` | Hold created before the call |
-| `BudgetWait` | which cap tripped (`monthly` \| `daily` \| `per_run` \| `per_applicant`) | Caller leaves work queued. Never marks it failed (T3). |
+| `BudgetWait` | which cap tripped (`monthly` \| `per_run` \| `per_applicant`) | Caller leaves work queued. Never marks it failed (T3). |
 
 `budget_policy` and `spend_ledger` stay as Step 1 defined them. No schema change in this step unless Build finds a missing index while writing T3.
 
@@ -142,12 +142,12 @@ Manual redirects (max 3) are required for T19. Auto-follow would skip the privat
 
 - Treat missing policy, `money_cap IS NULL`, or `money_cap <= 0` as "no paid calls" (§11, B1).
 - Step 2 Build may seed one `budget_policy` row for `provider='*'`, `period='month'`, `money_cap=0`, so the admin can raise it later without code changes. Behaviour is identical to "no row".
-- Daily cap = monthly ÷ 30 for the current UTC day. Unused daily budget does not roll over (§11).
+- There is no daily money cap (removed by operator decision, 2026-11-08). The monthly cap is the only money limit.
 
 **Algorithm (paid call).**
 
 1. Build `SpendEstimate` from `pricing.py` (conservative unit price × units). Never read `applicant_preference` salary fields (D3, T1).
-2. In one short DB transaction, sum `spend_ledger` rows that count toward each cap (use `coalesce(actual_cost, estimated_cost)` so open holds count). Compare against monthly, daily, per-run (max 10 search requests) and per-applicant-per-day (max 50 search requests).
+2. In one short DB transaction, sum `spend_ledger` rows that count toward each cap (use `coalesce(actual_cost, estimated_cost)` so open holds count). Compare against monthly, per-run (max 10 search requests) and per-applicant-per-day (max 50 search requests).
 3. If any cap would be exceeded, raise `BudgetWait`. Caller leaves the work queued / planned. Do not mark failed (T3, §11).
 4. Else insert `spend_ledger` with `estimated_cost`, `actual_cost=NULL`, `units`, `occurred_at=now()`, and return `SpendReservation`.
 5. Perform the call through the fetch gateway (or AI client later).
@@ -186,7 +186,7 @@ No real network. Use `httpx.MockTransport` (or a test double for the transport h
 
 | Test | Behaviour |
 |---|---|
-| T3 | Paid reserve refused when monthly / daily / per-run / per-applicant would exceed. Work stays non-failed. Cap 0 blocks paid calls. |
+| T3 | Paid reserve refused when monthly / per-run / per-applicant would exceed. Work stays non-failed. Cap 0 blocks paid calls. |
 | T19 | `http://…`, IP-literal hosts, and names that resolve to private / loopback addresses are refused. A redirect `Location` to a private address is refused and the private hop is never requested. |
 | T20 | robots.txt `Disallow` prevents the page fetch. LinkedIn / Indeed / Glassdoor hosts are refused before connect. |
 | T21 | Two fetches to the same host are at least 1.0 s apart (fake clock or measured monotonic time under the rate limiter). |

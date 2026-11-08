@@ -21,7 +21,7 @@ from app.models import BudgetPolicy, SearchRun, SpendKind, SpendLedger
 
 logger = logging.getLogger(__name__)
 
-CapName = Literal["monthly", "daily", "per_run", "per_applicant"]
+CapName = Literal["monthly", "per_run", "per_applicant"]
 PER_RUN_SEARCH_CAP = 10
 PER_APPLICANT_DAY_SEARCH_CAP = 50
 WARN_RATIO = Decimal("0.8")
@@ -176,17 +176,10 @@ class BudgetGate:
             raise BudgetWait("monthly")
 
         if requires_money and money_cap is not None:
-            month_start = _month_start(now)
-            day_start = _day_start(now)
-            monthly_spent = _sum_spend(self._session, since=month_start)
-            daily_spent = _sum_spend(self._session, since=day_start)
-            daily_cap = (money_cap / Decimal(30)).quantize(Decimal("0.0001"))
+            monthly_spent = _sum_spend(self._session, since=_month_start(now))
             if monthly_spent + cost > money_cap:
                 raise BudgetWait("monthly")
-            if daily_spent + cost > daily_cap:
-                raise BudgetWait("daily")
             _warn_if_needed(monthly_spent + cost, money_cap, "monthly")
-            _warn_if_needed(daily_spent + cost, daily_cap, "daily")
 
         related_run_id = estimate.related_run_id
         if estimate.kind == SpendKind.search:

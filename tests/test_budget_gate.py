@@ -162,14 +162,15 @@ def test_t3_monthly_cap_refuses_and_leaves_no_ledger(session: Session) -> None:
     assert rows[0].actual_cost == Decimal("9.50")
 
 
-def test_t3_daily_cap_refuses(session: Session) -> None:
+def test_the_whole_monthly_cap_can_be_spent_in_one_day(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("30.00"), now)
     gate = _gate(session, now)
-    gate.reserve(_paid(cost=Decimal("0.80")))
+    gate.reserve(_paid(cost=Decimal("29.00")))
+    gate.reserve(_paid(cost=Decimal("1.00")))
     with pytest.raises(BudgetWait) as exc:
-        gate.reserve(_paid(cost=Decimal("0.30")))
-    assert exc.value.cap == "daily"
+        gate.reserve(_paid(cost=Decimal("0.01")))
+    assert exc.value.cap == "monthly"
 
 
 def test_t3_per_run_cap_refuses(session: Session) -> None:

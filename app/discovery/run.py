@@ -106,7 +106,7 @@ async def run_discovery(
             report.searches[str(run.status)] += 1
             log(f"search {run.template_id:4} {run.query[:50]!r} -> {run.status}")
             new_runs.append(run)
-        if report.searches.get("wait:monthly") or report.searches.get("wait:daily"):
+        if report.searches.get("wait:monthly"):
             report.stopped = "search money cap"
             break
 
@@ -131,7 +131,7 @@ async def run_discovery(
         commit()
         report.cf3[outcome.status] += 1
         log(f"cf3  {candidate.company_name[:40]:40} -> {outcome.status} {outcome.domains}")
-        if outcome.status == "budget_wait" and outcome.detail in ("monthly", "daily"):
+        if outcome.status == "budget_wait" and outcome.detail == "monthly":
             report.stopped = f"cf3 money cap: {outcome.detail}"
             break
 

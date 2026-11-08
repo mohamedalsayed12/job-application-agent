@@ -38,7 +38,6 @@ from app.search.types import (
 _RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30))
 _BUDGET_BACKOFF = {
     "monthly": timedelta(hours=1),
-    "daily": timedelta(hours=1),
     "per_run": timedelta(minutes=15),
     "per_applicant": timedelta(hours=1),
 }
