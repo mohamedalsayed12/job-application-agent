@@ -472,3 +472,139 @@ def test_bd1_keeps_new_greenhouse_board_hosts() -> None:
     hits = tuple(SearchHit(url=u, title="t", snippet="s") for u in urls)
     kept = [h.url for h in _filter_hits(hits, site=GREENHOUSE_SITE)]
     assert kept == urls[:3]
+
+
+# --- Direct board lookup ------------------------------------------------------------
+
+from app.discovery.boards import attach_public_board, board_slugs  # noqa: E402
+from app.models import ReviewItem  # noqa: E402
+
+
+def _board_api(boards, lever=None, site=None) -> FetchGateway:
+    def handler(request: httpx.Request) -> httpx.Response:
+        host, path = request.url.host, request.url.path
+        if path == "/robots.txt":
+            return httpx.Response(404)
+        if host == "boards-api.greenhouse.io":
+            slug = path.split("/")[3]
+            if slug not in boards:
+                return httpx.Response(404, json={"status": 404})
+            if path.endswith("/jobs"):
+                return httpx.Response(200, json={"jobs": [{"id": 1, "title": "Engineer", "company_name": boards[slug]}]})
+            return httpx.Response(200, json={"name": boards[slug], "content": ""})
+        if host == "api.lever.co" and path.split("/")[3] in (lever or {}):
+            return httpx.Response(200, json=[])
+        if host == "jobs.lever.co" and path.strip("/") in (lever or {}):
+            return httpx.Response(200, content=_html(lever[path.strip("/")]), headers={"content-type": "text/html"})
+        body = (site or {}).get(path.rstrip("/") or "/")
+        if host == "acme.test" and body is not None:
+            return httpx.Response(200, content=body, headers={"content-type": "text/html"})
+        return httpx.Response(404, headers={"content-type": "text/html"})
+
+    return FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset({"boards-api.greenhouse.io", "api.lever.co", "api.eu.lever.co", "jobs.lever.co", "jobs.eu.lever.co"}),
+        resolve=lambda host: [ipaddress.IPv4Address("93.184.216.34")],
+        transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+    )
+
+
+def _needs_review(session: Session, name: str = "Acme Widgets", domain: str = "acme.test") -> Candidate:
+    row = ingest_candidate(session, company_name=name, extracted_by=ExtractedBy.code, primary_domain=domain,
+                           evidence=_evidence(), now=_NOW).survivor
+    row.state = CandidateState.needs_review
+    row.next_attempt_at = None
+    session.add(ReviewItem(candidate_id=row.id, reason="no_supported_public_board", priority=45))
+    session.flush()
+    return row
+
+
+def _reviews(session: Session, row: Candidate) -> int:
+    return session.scalar(select(func.count()).select_from(ReviewItem).where(ReviewItem.candidate_id == row.id)) or 0
+
+
+def test_board_slugs_use_name_and_domain(session: Session) -> None:
+    row = _needs_review(session, "Octopus Energy Group", "octopus.energy")
+    assert board_slugs(row)[:2] == ["octopusenergy", "octopus-energy"]
+    assert "octopus" in board_slugs(row)
+
+
+@pytest.mark.asyncio
+async def test_lookup_attaches_board_and_requeues(session: Session) -> None:
+    row = _needs_review(session)
+    gateway = _board_api({"acmewidgets": "Acme Widgets"})
+    try:
+        found = await attach_public_board(session, gateway, row)
+    finally:
+        await gateway.aclose()
+    assert found is not None
+    assert (row.board_system, row.board_instance, row.board_id) == ("greenhouse", "greenhouse", "acmewidgets")
+    assert row.state == CandidateState.queued
+    assert _reviews(session, row) == 0
+    assert claim_next_candidate(session) is not None
+
+
+@pytest.mark.asyncio
+async def test_lookup_rejects_a_board_with_another_companys_name(session: Session) -> None:
+    row = _needs_review(session, "Oscar Technology", "acme.test")
+    gateway = _board_api({"acme": "Oscar Health", "oscartechnology": "Oscar Health"})
+    try:
+        found = await attach_public_board(session, gateway, row)
+    finally:
+        await gateway.aclose()
+    assert found is None
+    assert row.board_id is None
+    assert row.state == CandidateState.needs_review
+    assert _reviews(session, row) == 1
+
+
+@pytest.mark.asyncio
+async def test_lookup_reads_lever_name_from_board_page(session: Session) -> None:
+    row = _needs_review(session)
+    gateway = _board_api({}, lever={"acmewidgets": "Acme Widgets"})
+    try:
+        await attach_public_board(session, gateway, row)
+    finally:
+        await gateway.aclose()
+    assert (row.board_system, row.board_instance) == ("lever", "lever_global")
+
+
+@pytest.mark.asyncio
+async def test_lookup_skips_a_board_another_candidate_holds(session: Session) -> None:
+    holder = ingest_candidate(session, company_name="acmewidgets", extracted_by=ExtractedBy.code,
+                              board_system="greenhouse", board_instance="greenhouse",
+                              board_id="acmewidgets", now=_NOW).survivor
+    row = _needs_review(session)
+    gateway = _board_api({"acmewidgets": "Acme Widgets"})
+    try:
+        found = await attach_public_board(session, gateway, row)
+    finally:
+        await gateway.aclose()
+    assert found is None
+    assert row.board_id is None
+    assert holder.board_id == "acmewidgets"
+
+
+@pytest.mark.parametrize(
+    ("homepage", "state"),
+    [
+        ('<a href="https://job-boards.greenhouse.io/acmewidgets">Jobs</a>', "verified"),
+        ("<p>No link to any board here.</p>", "needs_review"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_found_board_verifies_only_when_the_site_links_to_it(
+    session: Session, homepage: str, state: str
+) -> None:
+    row = _needs_review(session)
+    gateway = _board_api({"acmewidgets": "Acme Widgets"}, site={"/": _html("Acme Widgets", homepage)})
+    try:
+        await attach_public_board(session, gateway, row)
+        session.flush()
+        claimed = claim_next_candidate(session)
+        assert claimed is not None
+        assert claimed.id == row.id
+        decision = await verify_candidate(session, claimed, gateway)
+    finally:
+        await gateway.aclose()
+    assert decision.state == state
