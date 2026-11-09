@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -22,6 +23,7 @@ _COUNTRIES = {
     "us": "US",
     "usa": "US",
     "united states": "US",
+    "united states of america": "US",
     "canada": "CA",
     "india": "IN",
     "singapore": "SG",
@@ -116,6 +118,26 @@ _WORK_MODE = re.compile(r"\(?\b(?:hybrid|on-?site|in[- ]office)\b\)?", re.IGNORE
 _OFFICE_PREFIX = re.compile(r"^office[- ]based\s*-\s*", re.IGNORECASE)
 _ISO_SUFFIX = re.compile(r"\s*\(([A-Za-z]{2})\)\s*$")
 _MANY_PLACES = re.compile(r";|/|\s(?:or|and)\s", re.IGNORECASE)
+_PLACE_SEPARATOR = re.compile(r";|/|\||&|\s(?:or|and)\s", re.IGNORECASE)
+_NOT_APPLICABLE = re.compile(r"\bn/a\b", re.IGNORECASE)
+_CITY_SHORT_NAMES = {
+    "sf": ("San Francisco", "US"),
+    "nyc": ("New York", "US"),
+    "ny": ("New York", "US"),
+    "new-york": ("New York", "US"),
+    "new york city": ("New York", "US"),
+    "chi": ("Chicago", "US"),
+    "atl": ("Atlanta", "US"),
+    "sea": ("Seattle", "US"),
+    "tor": ("Toronto", "CA"),
+    "toro": ("Toronto", "CA"),
+    "dc": ("Washington", "US"),
+}
+# Also the names of cities, so on their own in a list they are places, not regions.
+_CITY_AND_STATE = frozenset({"new york", "washington"})
+_COUNTRY_PREFIX = re.compile(r"^([A-Za-z ]+?)\s*[-:(]\s*(.+)$")
+_CITY_SUFFIX = re.compile(r"[- ]+(?:HQ|Privy)\b", re.IGNORECASE)
+_NOT_CITIES = frozenset({"rem", "remote", "in-person", "deliveroo"})
 
 _REMOTE_TYPES = {"remote": "remote", "hybrid": "hybrid", "onsite": "onsite"}
 _MONTHS_PER_PERIOD = {"year": 1, "month": 12, "week": 52}
@@ -142,10 +164,17 @@ class Location:
 
 
 @dataclass(frozen=True, slots=True)
+class Place:
+    city: str | None = None
+    country: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedJob:
     title: str
     apply_url: str
     location: Location
+    places: tuple[Place, ...]
     salary: Salary
     description: str | None
     hours: str | None
@@ -169,6 +198,7 @@ def _greenhouse(raw: dict[str, Any]) -> NormalizedJob:
         title=clean_html(raw.get("title")),
         apply_url=raw.get("absolute_url") or "",
         location=parse_location(name),
+        places=parse_places(name),
         salary=Salary(),
         description=clean_html(raw.get("content")) or None,
         hours=None,
@@ -195,6 +225,7 @@ def _lever(raw: dict[str, Any]) -> NormalizedJob:
             country=raw.get("country"),
             workplace=raw.get("workplaceType"),
         ),
+        places=_lever_places(raw, categories),
         salary=parse_lever_salary(raw.get("salaryRange")),
         description=" ".join(part for part in sections if part) or None,
         hours=_hours(commitment),
@@ -239,6 +270,104 @@ def parse_location(text: str, *, country: str | None = None, workplace: str | No
     if len(parts) == 2 and _is_region_code(last):
         return Location(city=parts[0], country=resolved or _country_from_code(last), remote_type=remote_type)
     return Location(country=resolved or _mentioned_country(place), remote_type=remote_type)
+
+
+def parse_places(text: str, *, country: str | None = None) -> tuple[Place, ...]:
+    """Every place the location text names, in order. Regions and remote work name no place."""
+    segments = [segment for segment in _PLACE_SEPARATOR.split(_NOT_APPLICABLE.sub("", text)) if segment.strip()]
+    if len(segments) == 1:
+        found = _segment_places(segments[0], country)
+    else:
+        found = [place for segment in segments for place in _segment_places(segment, None)]
+    return _distinct(found)
+
+
+def _lever_places(raw: dict[str, Any], categories: dict[str, Any]) -> tuple[Place, ...]:
+    """Lever's raw country belongs to the main location only, so a list of locations does not use it."""
+    listed = categories.get("allLocations")
+    if isinstance(listed, list) and len(listed) > 1:
+        return _distinct(place for text in listed for place in parse_places(clean_html(text)))
+    return parse_places(clean_html(categories.get("location")), country=raw.get("country"))
+
+
+def _segment_places(segment: str, country: str | None) -> list[Place]:
+    parts = [part.strip() for part in _WORK_MODE.sub("", segment).split(",") if part.strip()]
+    if len(parts) > 1 and (parts[0].lower() in _COUNTRIES or parts[-1].lower() in _CITY_AND_STATE):
+        return _comma_places(parts)
+    location = parse_location(segment, country=country)
+    if location.city:
+        return [Place(location.city, location.country)]
+    if len(parts) > 1:
+        return _comma_places(parts)
+    return [Place(country=location.country)] if location.country else []
+
+
+def _comma_places(parts: list[str]) -> list[Place]:
+    """'Seattle, WA, New York, NY' is two places: a region belongs to the city just before it."""
+    places: list[Place] = []
+    for part in parts:
+        lowered = part.lower()
+        named = _COUNTRIES.get(lowered)
+        code = _is_region_code(part)
+        if named or code or (lowered in _US_STATES and lowered not in _CITY_AND_STATE):
+            previous = places[-1] if places else None
+            if (
+                previous
+                and previous.city
+                and previous.country is None
+                and previous.city.lower() not in _CITY_SHORT_NAMES
+            ):
+                region = named or ("US" if not code else _country_from_code(part))
+                places[-1] = Place(previous.city, region)
+                continue
+            if code and not named and lowered not in _CITY_SHORT_NAMES:
+                continue
+        location = parse_location(part)
+        if location.city or location.country:
+            places.append(Place(location.city, location.country))
+    return places
+
+
+def _distinct(places: Iterable[Place]) -> tuple[Place, ...]:
+    """One entry per place. The same city with and without a country is one place."""
+    found: list[Place] = []
+    for place in map(_tidy, places):
+        if not (place.city or place.country):
+            continue
+        for index, seen in enumerate(found):
+            if _same_place(seen, place):
+                found[index] = seen if seen.country else place
+                break
+        else:
+            found.append(place)
+    return tuple(found)
+
+
+def _same_place(first: Place, second: Place) -> bool:
+    if (first.city or "").lower() != (second.city or "").lower():
+        return False
+    return first.country == second.country or (
+        first.city is not None and (first.country is None or second.country is None)
+    )
+
+
+def _tidy(place: Place) -> Place:
+    """Turn board shorthand such as 'US-SF-HQ' or 'CA-Toronto' into the city and country it means."""
+    if place.city is None:
+        return place
+    city, country = _CITY_SUFFIX.sub("", place.city).strip(" ()"), place.country
+    prefix = _COUNTRY_PREFIX.match(city)
+    if prefix:
+        label = prefix.group(1)
+        region = _COUNTRIES.get(label.lower()) or (label if label in _COUNTRY_CODES else None)
+        if region:
+            city, country = prefix.group(2).strip(" ()"), region
+    short = _CITY_SHORT_NAMES.get(city.lower())
+    if short:
+        return Place(*short)
+    if city.lower() in _NOT_CITIES or _is_region_code(city):
+        return Place(country=country)
+    return Place(city, country)
 
 
 def _undash(place: str) -> str:

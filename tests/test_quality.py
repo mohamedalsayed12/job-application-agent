@@ -26,7 +26,7 @@ from app.quality.checks import (
     check_job,
     check_real,
     check_recent,
-    find_duplicates,
+    find_same_adverts,
 )
 from tests.test_budget_gate import _applicant_and_run
 from tests.test_cleaning import DAY_1, _board, _Collector, _job
@@ -45,8 +45,7 @@ def _facts(**changes: object) -> JobFacts:
         title="Backend Developer",
         description=ADVERT,
         apply_url="https://job-boards.greenhouse.io/acme/jobs/1",
-        location_city="Manchester",
-        location_country="GB",
+        places=[{"city": "Manchester", "country": "GB"}],
         remote_type=None,
         freshness=JobFreshness.open,
         last_seen_at=NOW - timedelta(hours=1),
@@ -123,8 +122,9 @@ def test_payment_company_wording_is_not_a_scam_sign() -> None:
     ("changes", "missing"),
     [
         ({}, ()),
-        ({"location_city": None, "location_country": None}, ("location",)),
-        ({"location_city": None, "location_country": None, "remote_type": "remote"}, ()),
+        ({"places": []}, ("location",)),
+        ({"places": [], "remote_type": "remote"}, ()),
+        ({"places": [{"city": None, "country": "GB"}]}, ()),
         ({"apply_url": None}, ("apply_url",)),
         ({"description": None}, ("full_description",)),
         ({"description": "A short snippet of the advert..."}, ("full_description",)),
@@ -138,15 +138,33 @@ def test_salary_and_employer_are_not_needed_for_complete() -> None:
     assert check_job(_facts(employer_id=None, company_name=""), NOW).complete
 
 
-def test_the_same_advert_within_30_days_is_a_duplicate_even_in_another_city() -> None:
+LONDON = [{"city": "London", "country": "GB"}]
+
+
+def test_the_same_advert_in_the_same_city_is_a_duplicate_and_in_another_city_is_not() -> None:
     first = _facts(posted_at=NOW - timedelta(days=30))
     same_city = _facts(posted_at=NOW - timedelta(days=20))
-    other_city = _facts(posted_at=NOW - timedelta(days=10), location_city="London")
-    found = find_duplicates([other_city, first, same_city])
+    other_city = _facts(posted_at=NOW - timedelta(days=10), places=LONDON)
+    found = find_same_adverts([other_city, first, same_city])
     assert set(found) == {same_city.job_id, other_city.job_id}
     assert found[same_city.job_id].of_job == first.job_id
-    assert found[same_city.job_id].same_city
-    assert not found[other_city.job_id].same_city
+    assert not check_job(same_city, NOW, found[same_city.job_id]).unique
+    assert check_job(other_city, NOW, found[other_city.job_id]).unique
+
+
+def test_a_job_in_several_places_duplicates_a_job_in_any_one_of_them() -> None:
+    several = _facts(posted_at=NOW - timedelta(days=5), places=[*LONDON, {"city": "Manchester", "country": None}])
+    one = _facts()
+    assert find_same_adverts([several, one])[one.job_id].shares_a_place
+
+
+def test_a_later_job_is_matched_to_any_earlier_job_in_its_place_not_just_the_last() -> None:
+    manchester = _facts(posted_at=NOW - timedelta(days=9))
+    london = _facts(posted_at=NOW - timedelta(days=8), places=LONDON)
+    manchester_again = _facts(posted_at=NOW - timedelta(days=7))
+    found = find_same_adverts([manchester, london, manchester_again])
+    assert found[manchester_again.job_id].of_job == manchester.job_id
+    assert found[manchester_again.job_id].shares_a_place
 
 
 @pytest.mark.parametrize(
@@ -159,17 +177,17 @@ def test_the_same_advert_within_30_days_is_a_duplicate_even_in_another_city() ->
     ],
 )
 def test_jobs_that_differ_are_not_duplicates(other: dict) -> None:
-    assert find_duplicates([_facts(), _facts(**other)]) == {}
+    assert find_same_adverts([_facts(), _facts(**other)]) == {}
 
 
 def test_spacing_and_title_case_do_not_hide_a_duplicate() -> None:
     copy = _facts(title="BACKEND  developer", description=ADVERT.replace(" ", "\n"))
-    assert copy.job_id in find_duplicates([_facts(posted_at=NOW - timedelta(days=9)), copy])
+    assert copy.job_id in find_same_adverts([_facts(posted_at=NOW - timedelta(days=9)), copy])
 
 
 def test_jobs_with_no_description_or_employer_are_not_called_duplicates() -> None:
-    assert find_duplicates([_facts(description=None), _facts(description=None)]) == {}
-    assert find_duplicates([_facts(employer_id=None), _facts(employer_id=None)]) == {}
+    assert find_same_adverts([_facts(description=None), _facts(description=None)]) == {}
+    assert find_same_adverts([_facts(employer_id=None), _facts(employer_id=None)]) == {}
 
 
 @pytest.fixture
@@ -180,19 +198,30 @@ def collector(session: Session) -> _Collector:
 async def test_the_report_measures_real_collected_jobs_against_the_targets(session: Session, collector: _Collector) -> None:
     _board(session)
     jobs = [_gh(i, title=f"Backend Developer {i}") for i in range(1, 19)]
-    await collector.read(200, {"jobs": [*jobs, _gh(19, city=""), _gh(20, title="Same", city="Leeds"), _gh(21, title="Same", city="York")]})
+    await collector.read(
+        200,
+        {
+            "jobs": [
+                *jobs,
+                _gh(19, city=""),
+                _gh(20, title="Same", city="Leeds, UK; York, UK"),
+                _gh(21, title="Same", city="York, UK"),
+                _gh(22, title="Same", city="Hull, UK"),
+            ]
+        },
+    )
 
     report = build_report(session, now=DAY_1 + timedelta(hours=1))
     targets = {target.name: target for target in report.jobs.targets}
-    assert report.jobs.total.jobs == 21
-    assert targets["Complete"].value == "95.2%"
+    assert report.jobs.total.jobs == 22
+    assert targets["Complete"].value == "95.5%"
     assert targets["Complete"].met
     assert targets["Expired jobs shown"].met
-    assert targets["Duplicates"].value == "4.8%"
+    assert targets["Duplicates"].value == "4.5%"
     assert not targets["Duplicates"].met
-    assert report.jobs.same_city_duplicates == 0
+    assert report.jobs.same_advert_elsewhere == 1
     assert report.jobs.missing_counts == {"location": 1}
-    assert report.jobs.real_levels == {"high": 21}
+    assert report.jobs.real_levels == {"high": 22}
     assert [row.label for row in report.jobs.by_source] == ["greenhouse"]
     assert report.jobs.by_source[0].last_success == report.jobs.total.last_success is not None
     assert [row.label for row in report.jobs.by_sector] == ["tech"]
@@ -208,7 +237,7 @@ async def test_open_jobs_not_seen_for_48_hours_count_as_expired_jobs_shown(sessi
 
 async def test_a_closed_job_is_not_shown_or_counted_as_a_duplicate(session: Session, collector: _Collector) -> None:
     _board(session)
-    await collector.read(200, {"jobs": [_gh(1, city="Leeds"), _gh(2, city="York")]})
+    await collector.read(200, {"jobs": [_gh(1, city="Leeds, UK; York, UK"), _gh(2, city="York, UK")]})
     _job(session, 1).freshness = JobFreshness.closed
     session.flush()
     report = build_report(session, now=DAY_1 + timedelta(hours=1))
@@ -220,7 +249,7 @@ async def test_a_closed_job_is_not_shown_or_counted_as_a_duplicate(session: Sess
 
 async def test_results_are_stored_on_each_job_and_can_be_run_again(session: Session, collector: _Collector) -> None:
     _board(session)
-    await collector.read(200, {"jobs": [_gh(1, city="Leeds"), _gh(2, city="York")]})
+    await collector.read(200, {"jobs": [_gh(1, city="Leeds, UK; York, UK"), _gh(2, city="York, UK")]})
     assert store_results(session, now=DAY_1) == 2
     assert store_results(session, now=DAY_1 + timedelta(days=3)) == 2
     first, second = _job(session, 1), _job(session, 2)

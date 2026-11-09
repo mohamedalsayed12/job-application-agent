@@ -601,6 +601,9 @@ class JobPosting(_UuidPk, Base):
     location_city: Mapped[str | None] = mapped_column(Text())
     location_country: Mapped[str | None] = mapped_column(Text())
     remote_type: Mapped[str | None] = mapped_column(Text())
+    places: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB(), default=list, server_default=text("'[]'::jsonb")
+    )
     salary_min: Mapped[Decimal | None] = mapped_column(Numeric())
     salary_max: Mapped[Decimal | None] = mapped_column(Numeric())
     salary_currency: Mapped[str | None] = mapped_column(Text())
@@ -635,6 +638,9 @@ class Job(_UuidPk, Base):
     location_city: Mapped[str | None] = mapped_column(Text())
     location_country: Mapped[str | None] = mapped_column(Text())
     remote_type: Mapped[str | None] = mapped_column(Text())
+    places: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB(), default=list, server_default=text("'[]'::jsonb")
+    )
     salary_min: Mapped[Decimal | None] = mapped_column(Numeric())
     salary_max: Mapped[Decimal | None] = mapped_column(Numeric())
     salary_currency: Mapped[str | None] = mapped_column(Text())

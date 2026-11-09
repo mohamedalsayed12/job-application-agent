@@ -85,7 +85,7 @@ def _render(report: QualityReport) -> str:
 {_job_rows(jobs.by_source)}
 <h3>By sector</h3>
 {_job_rows(jobs.by_sector)}
-<p>Duplicates in the same city: {jobs.same_city_duplicates}. Older than 60 days, flagged and kept: {jobs.older_than_60_days}.</p>
+<p>Same advert in other places, kept as separate jobs: {jobs.same_advert_elsewhere}. Older than 60 days, flagged and kept: {jobs.older_than_60_days}.</p>
 <h3>Real confidence</h3>
 {_counts(jobs.real_levels)}
 <h3>Missing for Complete</h3>

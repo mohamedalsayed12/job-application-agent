@@ -36,7 +36,7 @@ from app.quality.checks import (
     JobQuality,
     NotRecent,
     check_job,
-    find_duplicates,
+    find_same_adverts,
 )
 
 COMPLETE_TARGET = 95.0
@@ -80,7 +80,7 @@ class JobsSection:
     total: JobRow
     by_source: list[JobRow]
     by_sector: list[JobRow]
-    same_city_duplicates: int
+    same_advert_elsewhere: int
     older_than_60_days: int
     real_levels: dict[str, int]
     missing_counts: dict[str, int]
@@ -154,8 +154,7 @@ def load_job_facts(session: Session) -> list[JobFacts]:
                 title=job.title,
                 description=job.description,
                 apply_url=job.apply_url,
-                location_city=job.location_city,
-                location_country=job.location_country,
+                places=job.places,
                 remote_type=job.remote_type,
                 freshness=job.freshness,
                 last_seen_at=job.last_seen_at,
@@ -174,8 +173,8 @@ def load_job_facts(session: Session) -> list[JobFacts]:
 def check_all(session: Session, now: datetime) -> list[tuple[JobFacts, JobQuality]]:
     """Closed jobs are checked but never counted as duplicates of the jobs still listed."""
     facts = load_job_facts(session)
-    duplicates = find_duplicates(job for job in facts if job.freshness != JobFreshness.closed)
-    return [(job, check_job(job, now, duplicates.get(job.job_id))) for job in facts]
+    same_adverts = find_same_adverts(job for job in facts if job.freshness != JobFreshness.closed)
+    return [(job, check_job(job, now, same_adverts.get(job.job_id))) for job in facts]
 
 
 def store_results(session: Session, *, now: datetime) -> int:
@@ -280,7 +279,7 @@ def _jobs_section(session: Session, results: list[tuple[JobFacts, JobQuality]]) 
         total=total,
         by_source=_rows_by(results, "source", success_by_source),
         by_sector=_rows_by(results, "sector", success_by_sector),
-        same_city_duplicates=sum(1 for _, q in live if q.duplicate and q.duplicate.same_city),
+        same_advert_elsewhere=sum(1 for _, q in live if q.same_advert and q.unique),
         older_than_60_days=sum(1 for _, q in live if q.older_than_60_days),
         real_levels=dict(Counter(str(q.confidence) for _, q in live)),
         missing_counts=dict(Counter(name for _, q in live for name in q.missing)),
@@ -292,10 +291,10 @@ def _jobs_section(session: Session, results: list[tuple[JobFacts, JobQuality]]) 
             Example(
                 job.company_name,
                 job.title,
-                f"{job.location_city or 'no city'}, same advert as {titles[q.duplicate.of_job].location_city or 'no city'}",
+                f"{_place_names(job)}, same advert as {_place_names(titles[q.same_advert.of_job])}",
             )
             for job, q in live
-            if q.duplicate
+            if not q.unique
         ][:EXAMPLES],
         lower_confidence_examples=[
             Example(job.company_name, job.title, f"{q.confidence}: {'; '.join(q.reasons)}")
@@ -303,6 +302,10 @@ def _jobs_section(session: Session, results: list[tuple[JobFacts, JobQuality]]) 
             if q.confidence != Confidence.high
         ][:EXAMPLES],
     )
+
+
+def _place_names(job: JobFacts) -> str:
+    return ", ".join(place["city"] or place["country"] or "" for place in job.places) or "no place"
 
 
 def _discovery_section(session: Session, now: datetime) -> DiscoverySection:
