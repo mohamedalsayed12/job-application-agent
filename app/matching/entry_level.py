@@ -62,21 +62,21 @@ QUERY = (
     "someone starting their career in Python or backend development."
 )
 
-_UK = re.compile(
+UK_PLACE = re.compile(
     r"\b(united kingdom|uk|gb|great britain|england|scotland|wales|northern ireland|"
     r"london|manchester|salford|birmingham|leeds|sheffield|liverpool|bristol|cambridge|"
     r"oxford|edinburgh|glasgow|cardiff|belfast|newcastle|nottingham|reading|hatfield)\b",
     re.IGNORECASE,
 )
 _NOT_UK = re.compile(r"cambridge,?\s*(ma\b|massachusetts)|london,?\s*(on\b|ontario)", re.IGNORECASE)
-_NOT_ENTRY_TITLE = re.compile(
+NOT_ENTRY_TITLE = re.compile(
     r"\b(senior|snr|sr\.?|staff|principal|lead|manager|head|director|architect|vp|"
     r"intermediate|mid|experienced|ii|iii|iv|"
     r"intern|interns|internship|placement|apprentice|apprenticeship)\b",
     re.IGNORECASE,
 )
-_ENTRY_TITLE = re.compile(r"\b(graduate|grad|junior|jr\.?|entry.level)\b", re.IGNORECASE)
-_YEARS_REQUIRED = re.compile(
+ENTRY_TITLE = re.compile(r"\b(graduate|grad|junior|jr\.?|entry.level)\b", re.IGNORECASE)
+YEARS_REQUIRED = re.compile(
     r"\b([3-9]|1\d)\s*\+?\s*(?:(?:-|–|to)\s*\d+\s*)?(?:years?|yrs?)\b[^.]{0,60}\bexperience",
     re.IGNORECASE,
 )
@@ -180,11 +180,11 @@ def clean_html(raw: str | None) -> str:
 
 def rule_out(job: BoardJob) -> str | None:
     """Return why code can reject this job without spending anything, or None."""
-    if _NOT_UK.search(job.location) or not _UK.search(job.location):
+    if _NOT_UK.search(job.location) or not UK_PLACE.search(job.location):
         return "not_uk"
-    if _NOT_ENTRY_TITLE.search(job.title):
+    if NOT_ENTRY_TITLE.search(job.title):
         return "title"
-    if not _ENTRY_TITLE.search(job.title) and _YEARS_REQUIRED.search(job.description):
+    if not ENTRY_TITLE.search(job.title) and YEARS_REQUIRED.search(job.description):
         return "experience"
     return None
 

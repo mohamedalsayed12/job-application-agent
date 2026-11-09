@@ -83,7 +83,7 @@ class JobFacts:
 
     @property
     def place_keys(self) -> frozenset[str]:
-        return frozenset((place["city"] or place["country"] or "").lower() for place in self.places)
+        return frozenset((place["city"] or place["country"] or place.get("region") or "").lower() for place in self.places)
 
 
 @dataclass(frozen=True, slots=True)

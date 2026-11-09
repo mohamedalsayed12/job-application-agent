@@ -49,8 +49,11 @@ P = Place
         ("Remote", ()),
         ("N/A", ()),
         ("na", ()),
-        ("Global", ()),
-        ("EMEA", ()),
+        ("Global", (P(region="worldwide"),)),
+        ("EMEA", (P(region="emea"),)),
+        ("Home based - Worldwide", (P(region="worldwide"),)),
+        ("Home Based - Americas; Home Based - APAC; Home based - EMEA", (P(region="americas"), P(region="apac"), P(region="emea"))),
+        ("Home Based - APAC", (P(region="apac"),)),
         ("Deliveroo", ()),
         ("In-person", ()),
         ("", ()),
@@ -106,6 +109,9 @@ async def test_places_reach_the_posting_and_the_job_and_the_single_city_stays_as
         },
     )
     job = _job(session, 1)
-    assert job.places == [{"city": "London", "country": "GB"}, {"city": "Manchester", "country": "GB"}]
+    assert job.places == [
+        {"city": "London", "country": "GB", "region": None},
+        {"city": "Manchester", "country": "GB", "region": None},
+    ]
     assert job.location_city is None
     assert job.location_country == "GB"
