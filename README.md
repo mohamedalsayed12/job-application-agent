@@ -96,7 +96,8 @@ uv run python -m app.worker --once   # one cycle
 
 The worker cleans each fetch as it stores it. Cleaning turns raw jobs into postings,
 links duplicates to one master job, and sets each job to `open`, `closed` or `unknown`.
-A job closes only after 2 consecutive complete fetches of its board do not list it.
+A job closes only after 2 consecutive complete fetches of its board do not list it and
+the board then confirms that the listing has gone.
 
 To replay every stored fetch and print job counts and completeness per field, run:
 

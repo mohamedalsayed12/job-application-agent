@@ -63,6 +63,7 @@ async def _main(once: bool, poll_seconds: int) -> None:
                     f"not fully read {collection.failed_boards}, new postings {collection.postings_new}, "
                     f"closed {collection.closed}, reopened {collection.reopened}, unknown {collection.unknown}, "
                     f"closures held {collection.held} on {collection.braked_boards}, "
+                    f"still listed {collection.still_listed}, listing checks unclear {collection.checks_unclear}, "
                     f"cleaning errors {collection.clean_errors}",
                     flush=True,
                 )

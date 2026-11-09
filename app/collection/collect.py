@@ -22,10 +22,18 @@ from sqlalchemy.orm import Session
 
 from app.boards import BoardFetchResult, fetch_greenhouse_board, fetch_lever_board
 from app.boards.lever import LEVER_URLS
-from app.cleaning import CleanReport, clean_run
+from app.boards.listing import ListingState, check_listing
+from app.cleaning import CleanReport, clean_run, refresh_board_freshness
 from app.cleaning.freshness import FULL_READS
 from app.fetch.gateway import FetchGateway
-from app.models import BoardStatus, EmployerBoard, FetchOutcome, FetchRun, RawPayload
+from app.models import (
+    BoardStatus,
+    EmployerBoard,
+    FetchOutcome,
+    FetchRun,
+    JobPosting,
+    RawPayload,
+)
 
 COLLECT_EVERY = timedelta(days=1)
 RETRY_AFTER = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30))
@@ -42,6 +50,8 @@ class CollectionReport:
     reopened: int = 0
     unknown: int = 0
     held: int = 0
+    still_listed: int = 0
+    checks_unclear: int = 0
     braked_boards: list[str] = field(default_factory=list)
     clean_errors: list[str] = field(default_factory=list)
 
@@ -76,7 +86,7 @@ async def collect_due(
             continue
         run, detail = await _collect_board(session, gateway, board, now)
         name = f"{board.system}/{board.board_id}"
-        _clean(session, run, board, name, now, report)
+        await _clean(session, gateway, run, board, name, now, report)
         save()
         report.outcomes[run.outcome] += 1
         report.jobs += run.jobs_returned
@@ -85,16 +95,61 @@ async def collect_due(
     return report
 
 
-def _clean(
-    session: Session, run: FetchRun, board: EmployerBoard, name: str, now: Clock, report: CollectionReport
+async def _clean(
+    session: Session,
+    gateway: FetchGateway,
+    run: FetchRun,
+    board: EmployerBoard,
+    name: str,
+    now: Clock,
+    report: CollectionReport,
 ) -> None:
     try:
         with session.begin_nested():
             cleaned = clean_run(session, run, board, now=now())
+            # A 404 only means the listing has gone once this read shows the board itself is fine.
+            if run.outcome in FULL_READS and cleaned.freshness.to_check:
+                gone = await _confirm_listings_gone(session, gateway, cleaned.freshness.to_check, now, report)
+                if gone:
+                    confirmed = refresh_board_freshness(session, board, now=now(), gone=gone)
+                    cleaned.freshness.closed += confirmed.closed
     except Exception as exc:  # A cleaning bug must not lose the fetch or stop the other boards.
         report.clean_errors.append(f"{name}: {type(exc).__name__}: {exc}"[:300])
         return
     _add_cleaning(report, name, cleaned)
+
+
+async def _confirm_listings_gone(
+    session: Session,
+    gateway: FetchGateway,
+    postings: list[JobPosting],
+    now: Clock,
+    report: CollectionReport,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    gone: dict[tuple[str, str], dict[str, Any]] = {}
+    for posting in {(p.source, p.source_job_id): p for p in postings}.values():
+        board = session.get(EmployerBoard, posting.employer_board_id)
+        if board.consecutive_failures:
+            report.checks_unclear += 1
+            continue
+        check = await check_listing(
+            gateway,
+            system=board.system,
+            instance=board.instance,
+            board_id=board.board_id,
+            job_id=posting.source_job_id,
+        )
+        if check.state == ListingState.gone:
+            gone[(posting.source, posting.source_job_id)] = {
+                "url": check.url,
+                "status": check.status_code,
+                "checked_at": now().isoformat(),
+            }
+        elif check.state == ListingState.listed:
+            report.still_listed += 1
+        else:
+            report.checks_unclear += 1
+    return gone
 
 
 def _add_cleaning(report: CollectionReport, name: str, cleaned: CleanReport) -> None:
