@@ -1,6 +1,6 @@
 """Stage 2 search templates, cold-start planner, and runner (D29)."""
 
-from app.search.planner import PlannedSearch, SearchPlan, plan_cold_start
+from app.search.planner import PlannedSearch, SearchPlan, plan_searches
 from app.search.runner import RunOutcome, SearchBudgetWait, run_search
 from app.search.schedule import create_runs_from_plan
 from app.search.templates import (
@@ -18,6 +18,6 @@ __all__ = [
     "create_runs_from_plan",
     "ensure_search_templates",
     "is_template_enabled",
-    "plan_cold_start",
+    "plan_searches",
     "run_search",
 ]

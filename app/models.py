@@ -303,6 +303,12 @@ class SearchRun(_UuidPk, Base):
     last_error: Mapped[str | None] = mapped_column(Text())
     started_at: Mapped[datetime | None] = mapped_column(TZ)
     finished_at: Mapped[datetime | None] = mapped_column(TZ)
+    # Null until measured. A board or job shared between runs is split, so these can be fractions.
+    new_candidates: Mapped[Decimal | None] = mapped_column(Numeric())
+    new_verified_boards: Mapped[Decimal | None] = mapped_column(Numeric())
+    relevant_jobs: Mapped[Decimal | None] = mapped_column(Numeric())
+    freshness_share: Mapped[Decimal | None] = mapped_column(Numeric())
+    outcomes_at: Mapped[datetime | None] = mapped_column(TZ)
     created_at: Mapped[datetime] = _created()
 
 
@@ -344,9 +350,9 @@ class TemplateStats(Base):
     )
     run_count: Mapped[int] = mapped_column(Integer())
     total_cost: Mapped[Decimal] = mapped_column(Numeric())
-    new_candidates: Mapped[int] = mapped_column(Integer())
-    new_verified_boards: Mapped[int] = mapped_column(Integer())
-    relevant_jobs: Mapped[int] = mapped_column(Integer())
+    new_candidates: Mapped[Decimal] = mapped_column(Numeric())
+    new_verified_boards: Mapped[Decimal] = mapped_column(Numeric())
+    relevant_jobs: Mapped[Decimal] = mapped_column(Numeric())
     freshness_share: Mapped[Decimal] = mapped_column(Numeric())
     updated_at: Mapped[datetime] = _updated()
 

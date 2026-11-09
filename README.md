@@ -132,6 +132,14 @@ uv run python -m app.matching
 
 Running it again is safe. Afterwards the table holds only the current matches.
 
+## Search feedback
+
+After matching, and before each discovery pass plans its searches, the worker measures
+what every finished search run led to: new candidates, new verified boards, relevant jobs,
+freshness and cost. Each run keeps its own figures, and `template_stats` holds the totals.
+The planner gives templates with 5 or more runs a share of the searches by score, and keeps
+20% for exploration. The rules are in `MVP.md` section 8 and decision D36.
+
 ## Stack (D22)
 
 | Piece | Choice |

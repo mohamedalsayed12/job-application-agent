@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product
 
 from app.applicants.types import DiscoveryPreference
 from app.search.templates import TemplateSpec, get_template_spec
@@ -21,10 +22,23 @@ def build_query(
     *,
     employer_name: str | None = None,
 ) -> BuiltQuery:
+    return build_queries(template_id, pref, employer_name=employer_name, limit=1)[0]
+
+
+def build_queries(
+    template_id: str,
+    pref: DiscoveryPreference,
+    *,
+    employer_name: str | None = None,
+    limit: int,
+) -> tuple[BuiltQuery, ...]:
+    """Up to ``limit`` different queries, one for each role and location pair."""
     spec = get_template_spec(template_id)
-    role = pref.target_roles[0].strip()
-    location = pref.locations[0].strip()
-    return _build_for_spec(spec, role=role, location=location, employer_name=employer_name)
+    built = (
+        _build_for_spec(spec, role=role.strip(), location=location.strip(), employer_name=employer_name)
+        for role, location in product(pref.target_roles, pref.locations)
+    )
+    return tuple(dict.fromkeys(built))[:limit]
 
 
 def _build_for_spec(

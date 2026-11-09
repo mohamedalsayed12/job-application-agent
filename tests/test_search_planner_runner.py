@@ -27,7 +27,7 @@ from app.models import (
     SpendLedger,
     TemplateStats,
 )
-from app.search.planner import EXPLORATION_SHARE, PlannedSearch, SearchPlan, plan_cold_start
+from app.search.planner import EXPLORATION_SHARE, PlannedSearch, SearchPlan, plan_searches
 from app.search.runner import SearchBudgetWait, run_search
 from app.search.schedule import create_runs_from_plan
 from app.search.templates import (
@@ -131,7 +131,7 @@ def test_templates_seeded_cf1b_disabled(session: Session) -> None:
 def test_t5_empty_stats_equal_share_broad_queries(session: Session) -> None:
     cfg = _settings()
     ensure_search_templates(session, cfg)
-    plan = plan_cold_start(
+    plan = plan_searches(
         session,
         _pref(),
         total_slots=5,
@@ -184,7 +184,7 @@ def test_t6_unproven_below_five_runs_not_zero(session: Session) -> None:
         )
     )
     session.flush()
-    plan = plan_cold_start(
+    plan = plan_searches(
         session,
         _pref(),
         total_slots=10,
