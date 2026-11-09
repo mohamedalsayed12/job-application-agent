@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ from app.collection import (
 )
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
+from app.quality import store_results
 
 # Short enough for the first retry, one minute after a failed read, to happen on time.
 DEFAULT_POLL_SECONDS = 60
@@ -36,6 +38,9 @@ async def run_cycle(
     registration = register_verified_boards(session)
     save()
     collection = await collect_due(session, gateway, persist=save)
+    if collection.outcomes:
+        store_results(session, now=datetime.now(UTC))
+        save()
     return registration, collection
 
 
