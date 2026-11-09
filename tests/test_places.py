@@ -115,3 +115,34 @@ async def test_places_reach_the_posting_and_the_job_and_the_single_city_stays_as
     ]
     assert job.location_city is None
     assert job.location_country == "GB"
+
+
+def _greenhouse(location: str, offices: list[str]) -> dict:
+    return {
+        "title": "Engineer",
+        "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/1",
+        "location": {"name": location},
+        "offices": [{"name": name} for name in offices],
+        "content": "Text.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("location", "offices", "places", "city"),
+    [
+        # Real Stripe and Deliveroo jobs put a placeholder in the location and the place in the offices.
+        ("N/A", ["US"], (P(country="US"),), None),
+        ("In-person", ["Canada Locations"], (P(country="CA"),), None),
+        ("Deliveroo", ["Manchester, United Kingdom"], (P("Manchester", "GB"),), "Manchester"),
+        ("N/A", ["US", "Canada Locations"], (P(country="US"), P(country="CA")), None),
+        # A real location wins over the offices.
+        ("London, UK", ["Dublin"], (P("London", "GB"),), "London"),
+        ("N/A", [], (), None),
+    ],
+)
+def test_a_greenhouse_placeholder_location_falls_back_to_the_offices(
+    location: str, offices: list[str], places: tuple[Place, ...], city: str | None
+) -> None:
+    job = normalize_job("greenhouse", _greenhouse(location, offices))
+    assert job.places == places
+    assert job.location.city == city

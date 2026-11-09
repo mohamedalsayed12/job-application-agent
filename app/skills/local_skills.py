@@ -1,0 +1,58 @@
+"""Skills UK tech adverts ask for that ESCO has no entry for (D39). Kept apart and marked `local`.
+
+Each was checked against ESCO by exact name on 2026-11-09. Add to this list only after the same check.
+"""
+
+from __future__ import annotations
+
+LOCAL_SKILLS: dict[str, tuple[str, ...]] = {
+    ".NET": (".NET Core", "dotnet"),
+    "Amazon Web Services": ("AWS",),
+    "Angular": ("AngularJS",),
+    "Apache Airflow": ("Airflow",),
+    "Apache Kafka": ("Kafka",),
+    "Apache Spark": ("Spark", "PySpark"),
+    "Bash": ("Bash scripting", "shell scripting"),
+    "CI/CD": ("continuous integration", "continuous delivery", "continuous deployment"),
+    "dbt": (),
+    "Django": (),
+    "Docker": (),
+    "Elasticsearch": (),
+    "Express": ("Express.js", "ExpressJS"),
+    "FastAPI": (),
+    "Flask": (),
+    "Git": (),
+    "GitHub": ("GitHub Actions",),
+    "GitLab": (),
+    "Go": ("Golang",),
+    "Google Cloud": ("GCP", "Google Cloud Platform"),
+    "GraphQL": (),
+    "gRPC": (),
+    "HTML": ("HTML5",),
+    "Jira": (),
+    "Kotlin": (),
+    "Kubernetes": ("K8s",),
+    "Linux": (),
+    # ESCO's "ML" is a programming language. In adverts it means this.
+    "Machine Learning": ("ML",),
+    "Microservices": ("microservice", "microservice architecture"),
+    "Microsoft Azure": ("Azure",),
+    "Microsoft Excel": ("Excel",),
+    "MongoDB": ("Mongo",),
+    "Next.js": ("NextJS",),
+    "Node.js": ("NodeJS",),
+    "pandas": (),
+    "Power BI": ("PowerBI",),
+    "PyTorch": (),
+    "React": ("React.js", "ReactJS"),
+    "Redis": (),
+    "REST APIs": ("REST API", "RESTful", "RESTful API", "RESTful APIs"),
+    "Ruby on Rails": ("Rails",),
+    "Rust": (),
+    "Snowflake": (),
+    "Spring Boot": (),
+    "Tableau": (),
+    "TensorFlow": (),
+    "Terraform": (),
+    "Vue.js": ("Vue", "VueJS"),
+}

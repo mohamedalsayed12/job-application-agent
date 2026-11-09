@@ -33,6 +33,10 @@ def main() -> None:
             for match, job in fitting[:TOP]:
                 role = match.reasons["role"]
                 print(f"  {match.score} {job.company_name}: {job.title} [{role['kind']}, {match.reasons['location']}]")
+                print(f"      salary {match.salary_status}; skills held {', '.join(match.matched_skills) or 'none'}")
+                print(f"      skills missing {', '.join(match.missing_skills) or 'none'}")
+                if match.missing_licences:
+                    print(f"      licences missing {', '.join(match.missing_licences)}")
                 print(f"      {job.apply_url}")
 
 

@@ -30,6 +30,15 @@ def main() -> None:
         print(_line(row))
     print(f"same advert in other places {jobs.same_advert_elsewhere}, older than 60 days {jobs.older_than_60_days}")
     print(f"real {jobs.real_levels}, missing {jobs.missing_counts}, not recent {jobs.not_recent_counts}")
+    summaries = report.summaries
+    print(f"summaries written {summaries.accepted}, rejected {summaries.rejected}, being written {summaries.in_progress}, cost £{summaries.cost:.4f}")
+    relevance = report.relevance
+    print(
+        f"relevance, not a quality measure: {relevance.applicants_with_matches} of {relevance.applicants} applicants "
+        f"matched, {relevance.matches} matches, {relevance.fitting_location} in a wanted location, "
+        f"{relevance.naming_skills} name skills and applicants hold {relevance.skill_share_pct}% of those skills, "
+        f"{relevance.missing_licences} missing a licence"
+    )
     for gap in report.gaps:
         print(f"note: {gap}")
 

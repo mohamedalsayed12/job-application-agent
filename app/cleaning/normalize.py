@@ -202,13 +202,34 @@ def normalize_job(source: str, raw: dict[str, Any]) -> NormalizedJob | None:
     return parsed if parsed and parsed.title and parsed.apply_url else None
 
 
-def _greenhouse(raw: dict[str, Any]) -> NormalizedJob:
+_OFFICE_SUFFIX = re.compile(r"\s+locations?$", re.IGNORECASE)
+
+
+def _greenhouse_where(raw: dict[str, Any]) -> tuple[Location, tuple[Place, ...]]:
+    """The location field, or the offices when it holds no place: "N/A", "In-person", the company's name."""
     name = clean_html((raw.get("location") or {}).get("name"))
+    places = parse_places(name)
+    if places:
+        return parse_location(name), places
+    offices = [
+        _OFFICE_SUFFIX.sub("", clean_html(office.get("name")))
+        for office in raw.get("offices") or []
+        if isinstance(office, dict) and office.get("name")
+    ]
+    from_offices = tuple(dict.fromkeys(place for office in offices for place in parse_places(office)))
+    if not from_offices:
+        return parse_location(name), ()
+    first = from_offices[0]
+    return Location(city=first.city, country=first.country, remote_type=parse_location(name).remote_type), from_offices
+
+
+def _greenhouse(raw: dict[str, Any]) -> NormalizedJob:
+    location, places = _greenhouse_where(raw)
     return NormalizedJob(
         title=clean_html(raw.get("title")),
         apply_url=raw.get("absolute_url") or "",
-        location=parse_location(name),
-        places=parse_places(name),
+        location=location,
+        places=places,
         salary=Salary(),
         description=clean_html(raw.get("content")) or None,
         hours=None,

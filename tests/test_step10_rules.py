@@ -384,6 +384,18 @@ async def test_discovery_pass_with_no_applicants_does_nothing(session: Session) 
     assert not report.searches and not report.cf3 and not report.verified
 
 
+@pytest.mark.asyncio
+async def test_a_company_still_waiting_when_the_last_account_is_deleted_stops_nothing(session: Session) -> None:
+    ingest_candidate(session, company_name="Acme Widgets", extracted_by=ExtractedBy.code, now=_NOW)
+    session.flush()
+    gateway = _gateway(lambda request: httpx.Response(500))
+    try:
+        report = await run_discovery(session, gateway, settings=Settings(_env_file=None))  # type: ignore[call-arg]
+    finally:
+        await gateway.aclose()
+    assert not report.cf3
+
+
 def test_rerun_resumes_planned_cold_start_runs(session: Session) -> None:
     from app.discovery.run import _planned_runs
 
