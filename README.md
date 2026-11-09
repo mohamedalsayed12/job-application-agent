@@ -171,6 +171,15 @@ freshness and cost. Each run keeps its own figures, and `template_stats` holds t
 The planner gives templates with 5 or more runs a share of the searches by score, and keeps
 20% for exploration. The rules are in `MVP.md` section 8 and decision D36.
 
+## Job summaries
+
+The first time a logged-in person opens a job at `/jobs/{id}`, the app asks Claude for a short
+summary of the posting. Code rejects it if it contains a number, date or name the posting doesn't,
+and saves one per job for everyone. Summaries spend from the AI budget, so nothing is called until
+a monthly `money_cap` is set in `budget_policy` and `ANTHROPIC_API_KEY` is in `.env`. Until then,
+and whenever a summary is rejected, the page shows the description. The rules are in `MVP.md`
+decision D41.
+
 ## Skills
 
 Profile skills and job skills map to the same entries, so "Postgres" and "PostgreSQL" match. The list

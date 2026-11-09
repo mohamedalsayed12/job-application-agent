@@ -27,6 +27,7 @@ from app.models import (
     JobFreshness,
     JobLink,
     JobPosting,
+    JobSummary,
     RawPayload,
     ReviewItem,
     SearchRun,
@@ -140,6 +141,14 @@ class RelevanceSection:
 
 
 @dataclass(slots=True)
+class SummariesSection:
+    accepted: int
+    rejected: int
+    in_progress: int
+    cost: Decimal
+
+
+@dataclass(slots=True)
 class QualityReport:
     generated_at: datetime
     jobs: JobsSection
@@ -147,6 +156,7 @@ class QualityReport:
     collection: CollectionSection
     audit: AuditSection
     relevance: RelevanceSection
+    summaries: SummariesSection
     gaps: list[str] = field(default_factory=list)
 
 
@@ -212,8 +222,8 @@ def build_report(session: Session, *, now: datetime | None = None) -> QualityRep
         collection=_collection_section(session),
         audit=_audit_section(session),
         relevance=_relevance_section(session),
+        summaries=_summaries_section(session),
         gaps=[
-            "Summaries: not built yet, so nothing has been generated, rejected or charged.",
             "Real: Companies House is not connected, so it is not one of the signals.",
             "Unique: no employer is on two sources yet, so every duplicate found is within one source.",
             "Expired jobs shown: job search does not read stored jobs yet, so this counts jobs it would show.",
@@ -449,6 +459,16 @@ def _relevance_section(session: Session) -> RelevanceSection:
         naming_skills=len(named),
         skill_share_pct=_pct(sum(m for m, _ in named), sum(m + n for m, n in named)) if named else None,
         missing_licences=sum(1 for row in rows if row[4]),
+    )
+
+
+def _summaries_section(session: Session) -> SummariesSection:
+    counts = dict(session.execute(select(JobSummary.status, func.count()).group_by(JobSummary.status)).all())
+    return SummariesSection(
+        accepted=counts.get("accepted", 0),
+        rejected=counts.get("rejected", 0),
+        in_progress=counts.get("pending", 0),
+        cost=Decimal(session.scalar(select(func.coalesce(func.sum(JobSummary.cost_amount), 0)))),
     )
 
 
