@@ -107,6 +107,19 @@ uv run python -m app.cleaning
 
 Replaying is safe to repeat. Use it after a cleaning error or a parser change.
 
+## Quality report
+
+The worker checks every job for Recent, Real, Complete and Unique after each cycle that
+reads a board, and stores the results on the job. To run the check now and print where
+things stand against the targets, run:
+
+```bash
+uv run python -m app.quality
+```
+
+The full report is at `/admin/quality?admin_key=<ADMIN_KEY>`. Opening it changes nothing.
+The latest results and their causes are in `docs/step13-quality-round1.md`.
+
 ## Stack (D22)
 
 | Piece | Choice |
