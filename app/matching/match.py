@@ -350,14 +350,20 @@ def internship_seekers(session: Session) -> set[uuid.UUID]:
     )
 
 
-def match_all(session: Session, *, now: datetime) -> MatchReport:
-    """Safe to repeat. Afterwards the table holds exactly the current matches."""
+def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] | None = None) -> MatchReport:
+    """Safe to repeat. Afterwards the table holds exactly the current matches.
+
+    `applicant_ids` limits the run to those people, as when someone saves their profile.
+    """
     report = MatchReport()
     shown = [facts for facts, quality in check_all(session, now) if _can_be_shown(facts, quality)]
     seekers = internship_seekers(session)
     skills = load_skills(session, now=now)
     required = {facts.job_id: required_in_advert(facts.description) for facts in shown}
-    for preference in session.scalars(select(ApplicantPreference)).all():
+    preferences = select(ApplicantPreference)
+    if applicant_ids is not None:
+        preferences = preferences.where(ApplicantPreference.applicant_id.in_(applicant_ids))
+    for preference in session.scalars(preferences).all():
         report.applicants += 1
         _match_applicant(
             session, preference, shown, report, skills, required, internship=preference.applicant_id in seekers

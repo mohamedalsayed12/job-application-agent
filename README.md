@@ -171,6 +171,12 @@ freshness and cost. Each run keeps its own figures, and `template_stats` holds t
 The planner gives templates with 5 or more runs a share of the searches by score, and keeps
 20% for exploration. The rules are in `MVP.md` section 8 and decision D36.
 
+## Listings
+
+Logged-in people see their matched jobs at `/listings`, best match first, with the reasons for each
+score, the source and the apply link. Saving a profile matches that person straight away. The rules
+are in `MVP.md` decision D42.
+
 ## Job summaries
 
 The first time a logged-in person opens a job at `/jobs/{id}`, the app asks Claude for a short

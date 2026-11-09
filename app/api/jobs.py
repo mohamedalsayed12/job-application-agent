@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
 from app.api.admin_html import page
+from app.api.listings import place_names
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
@@ -29,11 +30,6 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         await gateway.aclose()
 
 
-def _places(job: Job) -> str:
-    names = [place.get("city") or place.get("country") or place.get("region") or "" for place in job.places or []]
-    return ", ".join(name for name in names if name) or "Not stated"
-
-
 def _body(job: Job, shown: Shown) -> str:
     if shown.summary:
         about = (
@@ -46,7 +42,7 @@ def _body(job: Job, shown: Shown) -> str:
     last_seen = job.last_seen_at.strftime("%d %b %Y %H:%M UTC") if job.last_seen_at else "not recorded"
     return f"""
 <h1>{html.escape(job.title)}</h1>
-<p>{html.escape(job.company_name)}. {html.escape(_places(job))}.</p>
+<p>{html.escape(job.company_name)}. {html.escape(place_names(job))}.</p>
 {about}
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
 {_apply_link(job.apply_url)}
