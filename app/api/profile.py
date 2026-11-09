@@ -14,6 +14,7 @@ from starlette.datastructures import UploadFile
 from app.accounts import throttle
 from app.api.accounts import require_login
 from app.api.admin_html import page
+from app.api.chrome import applicant_bar
 from app.api.forms import FormRefused, csrf_field, require_csrf
 from app.applicants.cv import (
     MAX_CV_BYTES,
@@ -148,27 +149,45 @@ def _cv_section(request: Request, cv: CvFile | None, error: str | None) -> str:
     message = f'<p class="error">{html.escape(error)}</p>' if error else ""
     current = (
         f"""
-<p>Your CV: <a href="/profile/cv">cv.{html.escape(cv.file_type)}</a>, {_size_text(cv.size_bytes)},
-uploaded {cv.uploaded_at:%d %B %Y}.</p>
-<form method="post" action="/profile/cv/delete">{csrf_field(request)}<button type="submit">Delete CV</button></form>
+<div class="cv-current">
+  <span>Your CV: <a href="/profile/cv">cv.{html.escape(cv.file_type)}</a>, {_size_text(cv.size_bytes)},
+  uploaded {cv.uploaded_at:%d %B %Y}.</span>
+  <form method="post" action="/profile/cv/delete">{csrf_field(request)}<button type="submit" class="danger">Delete CV</button></form>
+</div>
 """
         if cv
-        else "<p>You haven't uploaded a CV.</p>"
+        else ""
     )
     return f"""
-<h2>CV</h2>
-<p>PDF or Word (.docx), up to {MAX_CV_BYTES // (1024 * 1024)} MB. It's private to you, and nothing reads its contents.</p>
+<section class="card">
+<h2>4. Your CV</h2>
 {message}
 {current}
-<form method="post" action="/profile/cv" enctype="multipart/form-data">
+<form method="post" action="/profile/cv" enctype="multipart/form-data" class="dropzone">
   {csrf_field(request)}
-  <label>{"Replace your CV" if cv else "Upload your CV"}
-    <input name="cv" type="file" required
-      accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"/>
-  </label>
+  <p><b>{"Replace your CV" if cv else "Upload your CV"}</b></p>
+  <p class="hint">PDF or Word (.docx), up to {MAX_CV_BYTES // (1024 * 1024)} MB. It's private to you, and nothing reads its contents.</p>
+  <input name="cv" type="file" required aria-label="CV file"
+    accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"/>
   <p><button type="submit">Upload</button></p>
 </form>
+</section>
 """
+
+
+_PROFILE_STYLE = """<style>
+.card h2 { font-size: 1rem; }
+.dropzone { border: 1.5px dashed #c7ccd4; border-radius: 8px; padding: 1rem; text-align: center; }
+.dropzone input { max-width: 22rem; margin: 0.5rem auto; }
+.cv-current { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
+  font-size: 0.9rem; margin-bottom: 0.75rem; }
+.cv-current form { margin: 0; }
+.skill-find { display: flex; gap: 0.5rem; align-items: end; }
+.skill-find label { flex: 1; }
+.certs td { padding: 0.3rem; }
+.certs input, .certs select { margin: 0; }
+.form-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.25rem; }
+</style>"""
 
 
 def _profile_page(
@@ -186,54 +205,80 @@ def _profile_page(
         [("", "Choose one"), *((level.value, label) for level, label in EXPERIENCE_LABELS.items())],
         fields.experience_level,
     )
-    periods = _options([(period, period) for period in _SALARY_PERIODS], fields.salary_period)
+    periods = _options([(period, f"a {period}") for period in _SALARY_PERIODS], fields.salary_period)
     rows = [*fields.certifications, *[("", "", "certification", "")] * _SPARE_CERTIFICATION_ROWS]
     return page(
         "Your profile",
-        f"""
-<h1>Your profile</h1>
-<p><a href="/account">Your account</a></p>
+        f"""{_PROFILE_STYLE}
+<div class="page-head"><div>
+  <h1>Your profile</h1>
+  <p class="muted">Tell us what you're looking for. We use this only to find and match jobs, and you can delete it at any time.</p>
+</div></div>
 {message}
-<form method="post" action="/profile">
+<form method="post" action="/profile" id="profile-form">
   {csrf_field(request)}
-  <label>Target roles (one per line)
-    <textarea name="target_roles" rows="3" required>{html.escape(fields.target_roles)}</textarea>
-  </label>
-  <label>Locations (one per line)
-    <textarea name="locations" rows="3" required>{html.escape(fields.locations)}</textarea>
-  </label>
-  <label>Experience level
-    <select name="experience_level" required>{levels}</select>
-  </label>
-  <label>How far you'll travel, in miles (optional)
-    <input name="travel_distance" inputmode="numeric" value="{html.escape(fields.travel_distance)}"/>
-  </label>
-  <h2>Expected salary (optional)</h2>
-  <label>Amount <input name="salary_amount" inputmode="decimal" value="{html.escape(fields.salary_amount)}"/></label>
-  <label>Currency <input name="salary_currency" value="{html.escape(fields.salary_currency)}"/></label>
-  <label>Period <select name="salary_period">{periods}</select></label>
-  <h2>Skills</h2>
-  <label>Find a skill
-    <input id="skill-search" list="skill-suggestions" autocomplete="off"/>
-  </label>
-  <datalist id="skill-suggestions"></datalist>
-  <p><button type="button" id="skill-add">Add to my skills</button></p>
-  <label>Your skills (one per line)
-    <textarea id="skills" name="skills" rows="5">{html.escape(fields.skills)}</textarea>
-  </label>
-  <p>This service uses the ESCO classification of the European Commission. We've added some technology
-  skills ESCO doesn't list, so our skills list is an adapted version of it.</p>
-  <h2>Certifications and licences</h2>
-  <table>
-    <thead><tr><th>Name</th><th>Issuer</th><th>Type</th><th>Expiry date</th></tr></thead>
-    <tbody>{"".join(_certification_row(row) for row in rows)}</tbody>
-  </table>
-  <p><button type="submit">Save profile</button></p>
+  <section class="card">
+    <h2>1. Account</h2>
+    <label>Email <input value="{html.escape(applicant.email)}" disabled/></label>
+    <p class="hint">Change your password or delete your account on <a href="/account">your account page</a>.</p>
+  </section>
+
+  <section class="card">
+    <h2>2. What you're looking for</h2>
+    <label>Target roles <span class="hint">one per line</span>
+      <textarea name="target_roles" rows="3" required placeholder="Junior Software Engineer">{html.escape(fields.target_roles)}</textarea>
+    </label>
+    <label>Locations <span class="hint">one per line</span>
+      <textarea name="locations" rows="2" required placeholder="Manchester">{html.escape(fields.locations)}</textarea>
+    </label>
+    <div class="row">
+      <label>Experience level
+        <select name="experience_level" required>{levels}</select>
+      </label>
+      <label>How far you'll travel <span class="hint">miles, optional</span>
+        <input name="travel_distance" inputmode="numeric" value="{html.escape(fields.travel_distance)}"/>
+      </label>
+    </div>
+    <div class="row">
+      <label>Minimum salary <span class="hint">optional</span>
+        <input name="salary_amount" inputmode="decimal" value="{html.escape(fields.salary_amount)}" placeholder="30000"/>
+      </label>
+      <label>Currency <input name="salary_currency" value="{html.escape(fields.salary_currency)}"/></label>
+      <label>Per <select name="salary_period">{periods}</select></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3. Skills and certifications</h2>
+    <div class="skill-find">
+      <label>Find a skill
+        <input id="skill-search" list="skill-suggestions" autocomplete="off" placeholder="Start typing, for example Python"/>
+      </label>
+      <button type="button" id="skill-add">Add</button>
+    </div>
+    <datalist id="skill-suggestions"></datalist>
+    <label>Your skills <span class="hint">one per line</span>
+      <textarea id="skills" name="skills" rows="5">{html.escape(fields.skills)}</textarea>
+    </label>
+    <p class="hint">This service uses the ESCO classification of the European Commission. We've added some technology
+    skills ESCO doesn't list, so our skills list is an adapted version of it.</p>
+    <label>Certifications and licences</label>
+    <div class="table-wrap certs"><table>
+      <thead><tr><th>Name</th><th>Issuer</th><th>Type</th><th>Expiry date</th></tr></thead>
+      <tbody>{"".join(_certification_row(row) for row in rows)}</tbody>
+    </table></div>
+  </section>
 </form>
 {_cv_section(request, cv_for(db, applicant.id), cv_error)}
+<div class="form-foot">
+  <a class="button danger" href="/account#delete">Delete my account and data</a>
+  <button type="submit" class="primary" form="profile-form">Save and find my matches</button>
+</div>
 {_SKILL_SEARCH_SCRIPT}
 """,
         status_code=status_code,
+        header=applicant_bar(request, "profile"),
+        narrow=True,
     )
 
 
@@ -283,7 +328,7 @@ def profile_save(
     except PreferenceValidationError as exc:
         db.rollback()
         return _profile_page(request, db, applicant, fields, error=str(exc), status_code=400)
-    return RedirectResponse("/profile", status_code=_SEE_OTHER)
+    return RedirectResponse("/listings", status_code=_SEE_OTHER)
 
 
 def limit_cv_upload(request: Request, applicant: Applicant = Depends(require_login)) -> None:

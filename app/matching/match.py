@@ -91,6 +91,7 @@ _ENTRY_SCORE = Decimal("0.1")
 _LOCATION_SCORE = Decimal("0.3")
 _SALARY_MEETS_SCORE = Decimal("0.1")
 _SKILLS_SCORE = Decimal("0.3")
+MAX_SCORE = _ROLE_SCORE["exact"] + _ENTRY_SCORE + _LOCATION_SCORE + _SALARY_MEETS_SCORE + _SKILLS_SCORE
 _MISSING_LICENCE_COST = Decimal("0.2")
 _SCORE_PLACES = Decimal("0.001")
 
@@ -288,7 +289,7 @@ def _same_city(want: Wanted, place: dict[str, Any]) -> bool:
 
 
 def score(fit: Fit) -> Decimal:
-    """Up to 1.3. Skills add up to 0.3 by the share of the advert's skills the applicant has."""
+    """Up to MAX_SCORE, 1.3. Skills add up to 0.3 by the share of the advert's skills the applicant has."""
     total = _ROLE_SCORE[fit.role.kind]
     if fit.role.level in ("entry level in the title", _INTERNSHIP_LEVEL):
         total += _ENTRY_SCORE

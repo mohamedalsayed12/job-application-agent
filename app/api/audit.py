@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.api.admin_auth import require_admin
 from app.api.admin_html import page
+from app.api.chrome import admin_bar
 from app.api.forms import csrf_field, require_csrf
 from app.audit.csv_export import csv_text
 from app.audit.sample import InsufficientClassifiedError, create_audit_sheet
@@ -33,16 +34,16 @@ def audit_index(
 <code>unsupported</code>) that are not already on an audit sheet, writes
 <code>audit_sample</code> rows, and downloads a CSV for you to judge.
 The system does not fill auditor columns.</p>
-<form method="post" action="/admin/audit/sample">
+<form class="card" method="post" action="/admin/audit/sample">
   {csrf_field(request)}
   <label>Sample size
     <input type="number" name="size" min="1" max="{MAX_SAMPLE_SIZE}"
       value="{DEFAULT_SAMPLE_SIZE}" required/>
   </label>
-  <button type="submit">Create sample and download CSV</button>
+  <p><button type="submit" class="primary">Create sample and download CSV</button></p>
 </form>
 """
-    return page("Classification audit", body)
+    return page("Classification audit", body, header=admin_bar(request, "audit"))
 
 
 @router.post("/sample", response_model=None, dependencies=[Depends(require_csrf)])

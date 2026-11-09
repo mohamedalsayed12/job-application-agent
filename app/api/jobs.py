@@ -6,12 +6,13 @@ import html
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
 from app.api.admin_html import page
+from app.api.chrome import applicant_bar
 from app.api.listings import place_names
 from app.core.config import get_settings
 from app.core.db import get_db
@@ -41,11 +42,14 @@ def _body(job: Job, shown: Shown) -> str:
         about = f'<div style="white-space: pre-line">{html.escape(job.description or "No description was given.")}</div>'
     last_seen = job.last_seen_at.strftime("%d %b %Y %H:%M UTC") if job.last_seen_at else "not recorded"
     return f"""
+<p><a href="/listings">← Back to your matches</a></p>
+<div class="card">
 <h1>{html.escape(job.title)}</h1>
 <p>{html.escape(job.company_name)}. {html.escape(place_names(job))}.</p>
 {about}
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
 {_apply_link(job.apply_url)}
+</div>
 """
 
 
@@ -53,11 +57,12 @@ def _apply_link(url: str) -> str:
     """Only web links: an apply URL comes from outside data."""
     if not url.lower().startswith(("https://", "http://")):
         return "<p>No usable apply link was given.</p>"
-    return f'<p><a href="{html.escape(url, quote=True)}" rel="noopener noreferrer">Apply on the employer&#39;s site</a></p>'
+    return f'<p><a class="button primary" href="{html.escape(url, quote=True)}" rel="noopener noreferrer">Apply on the employer&#39;s site</a></p>'
 
 
 @router.get("/{job_id}", response_class=HTMLResponse)
 async def job_page(
+    request: Request,
     job_id: uuid.UUID,
     _applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
@@ -68,4 +73,4 @@ async def job_page(
     if job is None or job.freshness != JobFreshness.open:
         raise HTTPException(status_code=404)
     shown = await summary_for_view(db, job, gateway=gateway, settings=get_settings(), persist=db.commit)
-    return page(job.title, _body(job, shown))
+    return page(job.title, _body(job, shown), header=applicant_bar(request, "matches"), narrow=True)
