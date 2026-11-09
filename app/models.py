@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -7,10 +7,12 @@ from typing import Any
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     Text,
     UniqueConstraint,
@@ -116,6 +118,28 @@ class SalaryStatus(StrEnum):
     unknown = "unknown"
 
 
+class ExperienceLevel(StrEnum):
+    internship = "internship"
+    entry = "entry"
+    mid = "mid"
+    senior = "senior"
+
+
+class CvFileType(StrEnum):
+    pdf = "pdf"
+    docx = "docx"
+
+
+class SkillSource(StrEnum):
+    esco = "esco"
+    local = "local"
+
+
+class SkillMatchMethod(StrEnum):
+    exact = "exact"
+    alternative_label = "alternative_label"
+
+
 class SpendKind(StrEnum):
     search = "search"
     ai_extraction = "ai_extraction"
@@ -188,6 +212,10 @@ class Applicant(_UuidPk, Base):
     email: Mapped[str] = mapped_column(CITEXT(), unique=True)
     display_name: Mapped[str | None] = mapped_column(Text())
     is_active: Mapped[bool] = mapped_column(Boolean(), server_default=text("true"))
+    # Null means no one can log in yet: an admin-created applicant, or a test profile.
+    password_hash: Mapped[str | None] = mapped_column(Text())
+    # Stored in the login cookie. Raising it ends every session for this applicant.
+    session_version: Mapped[int] = mapped_column(Integer(), default=0, server_default=text("0"))
     created_at: Mapped[datetime] = _created()
 
 
@@ -266,7 +294,7 @@ class ApplicantPreference(_UuidPk, Base):
 
     applicant_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(),
-        ForeignKey("applicant.id"),
+        ForeignKey("applicant.id", ondelete="CASCADE"),
         unique=True,
     )
     target_roles: Mapped[list[str]] = mapped_column(ARRAY(Text()))
@@ -276,6 +304,129 @@ class ApplicantPreference(_UuidPk, Base):
     salary_currency: Mapped[str | None] = mapped_column(Text())
     salary_period: Mapped[str | None] = mapped_column(Text())
     updated_at: Mapped[datetime] = _updated()
+
+
+class Skill(_UuidPk, Base):
+    """One taxonomy entry. `local` entries are ours, added where ESCO has no entry (D39)."""
+
+    __tablename__ = "skill"
+    __table_args__ = (
+        UniqueConstraint("taxonomy_id", name="uq_skill_taxonomy_id"),
+        _text_in("source", SkillSource),
+    )
+
+    taxonomy_id: Mapped[str] = mapped_column(Text())
+    source: Mapped[str] = mapped_column(Text())
+    preferred_label: Mapped[str] = mapped_column(Text())
+    alternative_labels: Mapped[list[str]] = mapped_column(
+        ARRAY(Text()), default=list, server_default=text("'{}'")
+    )
+    # Only technical skills are looked for in job adverts. Everyday labels would match ordinary words.
+    is_technical: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
+    taxonomy_version: Mapped[str] = mapped_column(Text())
+    updated_at: Mapped[datetime] = _updated()
+
+
+class SkillLabel(_UuidPk, Base):
+    """Every name a skill goes by, in one searchable form."""
+
+    __tablename__ = "skill_label"
+    __table_args__ = (
+        UniqueConstraint("skill_id", "normalized", name="uq_skill_label_skill_id_normalized"),
+        Index("ix_skill_label_normalized", "normalized", postgresql_ops={"normalized": "text_pattern_ops"}),
+    )
+
+    skill_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("skill.id", ondelete="CASCADE"))
+    label: Mapped[str] = mapped_column(Text())
+    normalized: Mapped[str] = mapped_column(Text())
+    is_preferred: Mapped[bool] = mapped_column(Boolean())
+
+
+class JobSkill(_UuidPk, Base):
+    __tablename__ = "job_skill"
+    __table_args__ = (
+        UniqueConstraint("job_id", "skill_id", name="uq_job_skill_job_id_skill_id"),
+        _text_in("how_matched", SkillMatchMethod),
+        Index("ix_job_skill_skill_id", "skill_id"),
+    )
+
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    skill_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("skill.id", ondelete="CASCADE"))
+    matched_text: Mapped[str] = mapped_column(Text())
+    how_matched: Mapped[str] = mapped_column(Text())
+    created_at: Mapped[datetime] = _created()
+
+
+class ApplicantProfile(_UuidPk, Base):
+    __tablename__ = "applicant_profile"
+    __table_args__ = (
+        _text_in("experience_level", ExperienceLevel),
+        CheckConstraint(
+            "travel_distance_miles IS NULL OR travel_distance_miles BETWEEN 1 AND 500",
+            name="travel_distance_miles",
+        ),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(),
+        ForeignKey("applicant.id", ondelete="CASCADE"),
+        unique=True,
+    )
+    experience_level: Mapped[str] = mapped_column(Text())
+    travel_distance_miles: Mapped[int | None] = mapped_column(Integer())
+    updated_at: Mapped[datetime] = _updated()
+
+
+class ApplicantSkill(_UuidPk, Base):
+    __tablename__ = "applicant_skill"
+    __table_args__ = (
+        UniqueConstraint(
+            "applicant_id",
+            "text_as_typed",
+            name="uq_applicant_skill_applicant_id_text_as_typed",
+        ),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    text_as_typed: Mapped[str] = mapped_column(CITEXT())
+    # Null when what they typed is not in the taxonomy. It stays saved as typed.
+    skill_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("skill.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = _created()
+
+
+class ApplicantCertification(_UuidPk, Base):
+    __tablename__ = "applicant_certification"
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(),
+        ForeignKey("applicant.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(Text())
+    issuer: Mapped[str | None] = mapped_column(Text())
+    is_licence: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
+    expires_on: Mapped[date | None] = mapped_column(Date())
+    created_at: Mapped[datetime] = _created()
+
+
+class CvFile(_UuidPk, Base):
+    """D38: the file itself lives here, loaded only when its owner downloads it."""
+
+    __tablename__ = "cv_file"
+    __table_args__ = (
+        _text_in("file_type", CvFileType),
+        CheckConstraint("size_bytes BETWEEN 1 AND 5242880", name="size_bytes"),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(),
+        ForeignKey("applicant.id", ondelete="CASCADE"),
+        unique=True,
+    )
+    content: Mapped[bytes] = mapped_column(LargeBinary(), deferred=True)
+    file_type: Mapped[str] = mapped_column(Text())
+    size_bytes: Mapped[int] = mapped_column(Integer())
+    uploaded_at: Mapped[datetime] = mapped_column(TZ)
 
 
 class SearchRun(_UuidPk, Base):
@@ -291,7 +442,8 @@ class SearchRun(_UuidPk, Base):
     )
 
     template_id: Mapped[str] = mapped_column(Text(), ForeignKey("search_template.id"))
-    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id"))
+    # Cleared when the account is deleted, so the search record and its spend stay.
+    applicant_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="SET NULL"))
     query: Mapped[str] = mapped_column(Text())
     provider: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(Text())
@@ -692,7 +844,7 @@ class ApplicantJobMatch(_UuidPk, Base):
         _text_in("salary_status", SalaryStatus),
     )
 
-    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id"))
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
     job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id"))
     score: Mapped[Decimal] = mapped_column(Numeric())
     reasons: Mapped[dict[str, Any]] = mapped_column(JSONB())

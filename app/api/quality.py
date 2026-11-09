@@ -9,7 +9,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.admin_auth import require_admin_key
+from app.api.admin_auth import require_admin
 from app.api.admin_html import page
 from app.core.db import get_db
 from app.quality.report import Example, JobRow, QualityReport, build_report
@@ -123,7 +123,7 @@ Correct: {audit.correct} of {audit.judged} judged. Useful: {audit.useful} of {au
 
 @router.get("")
 def quality_report(
-    _admin_key: str = Depends(require_admin_key),
+    _admin: None = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     return page("Quality report", _render(build_report(db)))

@@ -124,7 +124,8 @@ async def run_discovery(
         commit()
         log(f"ai   {run.template_id:4} -> {type(outcome).__name__}")
 
-    for candidate in _waiting_for_cf3(session)[:max_cf3]:
+    # With no applicants left there is no one to search for yet.
+    for candidate in _waiting_for_cf3(session)[:max_cf3] if prefs else []:
         applicant_id = _applicant_for(session, candidate) or next(iter(prefs))
         outcome = await search_official_domain(
             session, gateway, candidate, applicant_id=applicant_id, pref=prefs[applicant_id],

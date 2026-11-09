@@ -7,13 +7,13 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.api.admin_auth import require_admin_key
-from app.api.admin_html import action as _action
+from app.api.admin_auth import require_admin
 from app.api.admin_html import page as _page
+from app.api.forms import csrf_field, require_csrf
 from app.applicants.service import (
     ApplicantConflictError,
     ApplicantNotFoundError,
@@ -26,7 +26,7 @@ from app.applicants.service import (
 )
 from app.core.db import get_db
 
-router = APIRouter(prefix="/admin/applicants", tags=["admin-applicants"])
+router = APIRouter(prefix="/admin/applicants", tags=["admin-applicants"], dependencies=[Depends(require_admin)])
 
 
 class ApplicantForm:
@@ -58,9 +58,9 @@ def _split_lines(value: str) -> list[str]:
 
 
 def _form(
+    request: Request,
     *,
     action: str,
-    admin_key: str,
     email: str = "",
     display_name: str = "",
     target_roles: str = "",
@@ -76,6 +76,7 @@ def _form(
 <h1>Applicant</h1>
 {err}
 <form method="post" action="{html.escape(action)}">
+  {csrf_field(request)}
   <label>Email
     <input name="email" type="email" required value="{html.escape(email)}"/>
   </label>
@@ -108,29 +109,27 @@ def _form(
   </label>
   <p style="margin-top:1rem"><button type="submit">{html.escape(submit_label)}</button></p>
 </form>
-<p><a href="{html.escape(_action('/admin/applicants', admin_key))}">Back to list</a></p>
+<p><a href="/admin/applicants">Back to list</a></p>
 """
 
 
 def _save(
+    request: Request,
     db: Session,
     form: ApplicantForm,
     *,
-    admin_key: str,
     applicant_id: uuid.UUID | None,
 ) -> HTMLResponse:
     is_create = applicant_id is None
     title = "New applicant" if is_create else "Edit applicant"
-    path = (
+    action = (
         "/admin/applicants/new"
         if is_create
         else f"/admin/applicants/{applicant_id}/edit"
     )
-    action = _action(path, admin_key)
     submit_label = "Create" if is_create else "Update"
     form_kwargs = dict(
         action=action,
-        admin_key=admin_key,
         email=form.email,
         display_name=form.display_name,
         target_roles=form.target_roles,
@@ -171,23 +170,22 @@ def _save(
             )
         db.commit()
     except InvalidOperation:
-        return _page(title, _form(**form_kwargs, error="salary amount must be a number"))
+        return _page(title, _form(request, **form_kwargs, error="salary amount must be a number"))
     except ApplicantNotFoundError:
         db.rollback()
         return _page("Not found", "<p class='error'>applicant not found</p>")
     except (PreferenceValidationError, ApplicantConflictError) as exc:
         db.rollback()
-        return _page(title, _form(**form_kwargs, error=str(exc)))
+        return _page(title, _form(request, **form_kwargs, error=str(exc)))
 
     return RedirectResponse(
-        url=_action("/admin/applicants", admin_key),
+        url="/admin/applicants",
         status_code=303,
     )
 
 
 @router.get("", response_class=HTMLResponse)
 def applicants_index(
-    admin_key: str = Depends(require_admin_key),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     rows = list_applicants(db)
@@ -200,19 +198,18 @@ def applicants_index(
             if pref.salary_amount is not None
             else "(none)"
         )
-        edit = _action(f"/admin/applicants/{applicant.id}/edit", admin_key)
         items.append(
             "<tr>"
             f"<td>{html.escape(applicant.email)}</td>"
             f"<td>{html.escape(roles)}</td>"
             f"<td>{html.escape(locs)}</td>"
             f"<td>{html.escape(salary)}</td>"
-            f'<td><a href="{html.escape(edit)}">Edit</a></td>'
+            f'<td><a href="/admin/applicants/{applicant.id}/edit">Edit</a></td>'
             "</tr>"
         )
     body = f"""
 <h1>Applicants</h1>
-<p><a href="{html.escape(_action('/admin/applicants/new', admin_key))}">Create applicant</a></p>
+<p><a href="/admin/applicants/new">Create applicant</a></p>
 <table>
   <thead><tr><th>Email</th><th>Roles</th><th>Locations</th><th>Salary</th><th></th></tr></thead>
   <tbody>
@@ -224,30 +221,30 @@ def applicants_index(
 
 
 @router.get("/new", response_class=HTMLResponse)
-def applicants_new_form(admin_key: str = Depends(require_admin_key)) -> HTMLResponse:
+def applicants_new_form(request: Request) -> HTMLResponse:
     return _page(
         "New applicant",
         _form(
-            action=_action("/admin/applicants/new", admin_key),
-            admin_key=admin_key,
+            request,
+            action="/admin/applicants/new",
             submit_label="Create",
         ),
     )
 
 
-@router.post("/new", response_class=HTMLResponse)
+@router.post("/new", response_class=HTMLResponse, dependencies=[Depends(require_csrf)])
 def applicants_create(
+    request: Request,
     form: Annotated[ApplicantForm, Depends()],
-    admin_key: str = Depends(require_admin_key),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    return _save(db, form, admin_key=admin_key, applicant_id=None)
+    return _save(request, db, form, applicant_id=None)
 
 
 @router.get("/{applicant_id}/edit", response_class=HTMLResponse)
 def applicants_edit_form(
+    request: Request,
     applicant_id: uuid.UUID,
-    admin_key: str = Depends(require_admin_key),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     row = get_applicant_with_preference(db, applicant_id)
@@ -257,8 +254,8 @@ def applicants_edit_form(
     return _page(
         "Edit applicant",
         _form(
-            action=_action(f"/admin/applicants/{applicant_id}/edit", admin_key),
-            admin_key=admin_key,
+            request,
+            action=f"/admin/applicants/{applicant_id}/edit",
             email=applicant.email,
             display_name=applicant.display_name or "",
             target_roles="\n".join(pref.target_roles),
@@ -271,11 +268,11 @@ def applicants_edit_form(
     )
 
 
-@router.post("/{applicant_id}/edit", response_class=HTMLResponse)
+@router.post("/{applicant_id}/edit", response_class=HTMLResponse, dependencies=[Depends(require_csrf)])
 def applicants_update(
+    request: Request,
     applicant_id: uuid.UUID,
     form: Annotated[ApplicantForm, Depends()],
-    admin_key: str = Depends(require_admin_key),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    return _save(db, form, admin_key=admin_key, applicant_id=applicant_id)
+    return _save(request, db, form, applicant_id=applicant_id)

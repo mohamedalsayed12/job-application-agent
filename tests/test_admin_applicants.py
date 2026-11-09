@@ -62,7 +62,8 @@ async def test_create_without_salary_keeps_nulls(
     client: httpx.AsyncClient, session: Session
 ) -> None:
     response = await client.post(
-        f"/admin/applicants/new?admin_key={ADMIN}",
+        "/admin/applicants/new",
+        headers={"X-Admin-Key": ADMIN},
         data={
             "email": "nosalary@example.com",
             "display_name": "",
@@ -90,7 +91,8 @@ async def test_create_without_salary_keeps_nulls(
 @pytest.mark.asyncio
 async def test_create_and_edit_applicant(client: httpx.AsyncClient, session: Session) -> None:
     create = await client.post(
-        f"/admin/applicants/new?admin_key={ADMIN}",
+        "/admin/applicants/new",
+        headers={"X-Admin-Key": ADMIN},
         data={
             "email": "tester@example.com",
             "display_name": "Tester",
@@ -116,7 +118,8 @@ async def test_create_and_edit_applicant(client: httpx.AsyncClient, session: Ses
     assert pref.salary_period == "year"
 
     edit = await client.post(
-        f"/admin/applicants/{applicant.id}/edit?admin_key={ADMIN}",
+        f"/admin/applicants/{applicant.id}/edit",
+        headers={"X-Admin-Key": ADMIN},
         data={
             "email": "tester@example.com",
             "display_name": "Tester",
@@ -241,7 +244,8 @@ async def test_duplicate_email_create_is_form_error(
     client: httpx.AsyncClient, session: Session
 ) -> None:
     first = await client.post(
-        f"/admin/applicants/new?admin_key={ADMIN}",
+        "/admin/applicants/new",
+        headers={"X-Admin-Key": ADMIN},
         data={
             "email": "dup@example.com",
             "target_roles": "Dev",
@@ -259,7 +263,8 @@ async def test_duplicate_email_create_is_form_error(
     assert pair[1].locations == ["London, UK"]
 
     second = await client.post(
-        f"/admin/applicants/new?admin_key={ADMIN}",
+        "/admin/applicants/new",
+        headers={"X-Admin-Key": ADMIN},
         data={
             "email": "DUP@example.com",
             "target_roles": "Dev",

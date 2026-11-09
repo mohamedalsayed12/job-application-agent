@@ -1,14 +1,13 @@
-"""Shared tiny HTML helpers for admin form pages."""
+"""The shared page shell for server-rendered pages."""
 
 from __future__ import annotations
 
 import html
-from urllib.parse import quote
 
 from fastapi.responses import HTMLResponse
 
 
-def page(title: str, body: str) -> HTMLResponse:
+def page(title: str, body: str, *, status_code: int = 200) -> HTMLResponse:
     doc = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -29,8 +28,5 @@ def page(title: str, body: str) -> HTMLResponse:
 {body}
 </body>
 </html>"""
-    return HTMLResponse(doc)
-
-
-def action(path: str, admin_key: str) -> str:
-    return f"{path}?admin_key={quote(admin_key, safe='')}"
+    # Pages hold personal data and form tokens, so no browser or proxy should keep a copy.
+    return HTMLResponse(doc, status_code=status_code, headers={"Cache-Control": "no-store"})
