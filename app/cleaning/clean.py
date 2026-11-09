@@ -125,7 +125,7 @@ def _copy_fields(
     posting.location_city = job.location.city
     posting.location_country = job.location.country
     posting.remote_type = job.location.remote_type
-    posting.places = [{"city": place.city, "country": place.country} for place in job.places]
+    posting.places = [{"city": place.city, "country": place.country, "region": place.region} for place in job.places]
     posting.salary_min = job.salary.minimum
     posting.salary_max = job.salary.maximum
     posting.salary_currency = job.salary.currency

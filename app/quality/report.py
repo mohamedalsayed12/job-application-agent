@@ -305,7 +305,7 @@ def _jobs_section(session: Session, results: list[tuple[JobFacts, JobQuality]]) 
 
 
 def _place_names(job: JobFacts) -> str:
-    return ", ".join(place["city"] or place["country"] or "" for place in job.places) or "no place"
+    return ", ".join(place["city"] or place["country"] or place.get("region") or "" for place in job.places) or "no place"
 
 
 def _discovery_section(session: Session, now: datetime) -> DiscoverySection:

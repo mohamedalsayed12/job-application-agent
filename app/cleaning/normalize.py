@@ -138,6 +138,15 @@ _CITY_AND_STATE = frozenset({"new york", "washington"})
 _COUNTRY_PREFIX = re.compile(r"^([A-Za-z ]+?)\s*[-:(]\s*(.+)$")
 _CITY_SUFFIX = re.compile(r"[- ]+(?:HQ|Privy)\b", re.IGNORECASE)
 _NOT_CITIES = frozenset({"rem", "remote", "in-person", "deliveroo"})
+_REGIONS = {
+    "emea": "emea",
+    "europe": "europe",
+    "apac": "apac",
+    "americas": "americas",
+    "worldwide": "worldwide",
+    "global": "worldwide",
+}
+_REGION = re.compile(rf"\b({'|'.join(_REGIONS)})\b", re.IGNORECASE)
 
 _REMOTE_TYPES = {"remote": "remote", "hybrid": "hybrid", "onsite": "onsite"}
 _MONTHS_PER_PERIOD = {"year": 1, "month": 12, "week": 52}
@@ -167,6 +176,7 @@ class Location:
 class Place:
     city: str | None = None
     country: str | None = None
+    region: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,7 +309,10 @@ def _segment_places(segment: str, country: str | None) -> list[Place]:
         return [Place(location.city, location.country)]
     if len(parts) > 1:
         return _comma_places(parts)
-    return [Place(country=location.country)] if location.country else []
+    if location.country:
+        return [Place(country=location.country)]
+    region = _REGION.search(segment)
+    return [Place(region=_REGIONS[region.group(1).lower()])] if region else []
 
 
 def _comma_places(parts: list[str]) -> list[Place]:
@@ -332,7 +345,7 @@ def _distinct(places: Iterable[Place]) -> tuple[Place, ...]:
     """One entry per place. The same city with and without a country is one place."""
     found: list[Place] = []
     for place in map(_tidy, places):
-        if not (place.city or place.country):
+        if not (place.city or place.country or place.region):
             continue
         for index, seen in enumerate(found):
             if _same_place(seen, place):
@@ -344,7 +357,7 @@ def _distinct(places: Iterable[Place]) -> tuple[Place, ...]:
 
 
 def _same_place(first: Place, second: Place) -> bool:
-    if (first.city or "").lower() != (second.city or "").lower():
+    if (first.city or "").lower() != (second.city or "").lower() or first.region != second.region:
         return False
     return first.country == second.country or (
         first.city is not None and (first.country is None or second.country is None)

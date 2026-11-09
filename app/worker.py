@@ -22,6 +22,7 @@ from app.collection import (
 )
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
+from app.matching.match import match_all
 from app.quality import store_results
 
 # Short enough for the first retry, one minute after a failed read, to happen on time.
@@ -39,7 +40,9 @@ async def run_cycle(
     save()
     collection = await collect_due(session, gateway, persist=save)
     if collection.outcomes:
-        store_results(session, now=datetime.now(UTC))
+        now = datetime.now(UTC)
+        store_results(session, now=now)
+        match_all(session, now=now)
         save()
     return registration, collection
 

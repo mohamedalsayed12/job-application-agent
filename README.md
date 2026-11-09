@@ -118,7 +118,19 @@ uv run python -m app.quality
 ```
 
 The full report is at `/admin/quality?admin_key=<ADMIN_KEY>`. Opening it changes nothing.
-The latest results and their causes are in `docs/step13-quality-round1.md`.
+The latest results and their causes are in `docs/step13-quality-round2.md`.
+
+## Matching
+
+After each cycle that reads a board, the worker matches stored jobs to every applicant
+on role, location and salary status. This uses rules only, so it costs nothing and makes
+no requests. To run it now and print the best matches for each applicant, run:
+
+```bash
+uv run python -m app.matching
+```
+
+Running it again is safe. Afterwards the table holds only the current matches.
 
 ## Stack (D22)
 
