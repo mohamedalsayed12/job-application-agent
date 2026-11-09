@@ -29,6 +29,8 @@ from app.matching.entry_level import (
 from app.models import (
     ApplicantJobMatch,
     ApplicantPreference,
+    ApplicantProfile,
+    ExperienceLevel,
     Job,
     JobFreshness,
     SalaryStatus,
@@ -37,6 +39,8 @@ from app.quality.checks import Confidence, JobFacts, JobQuality
 from app.quality.report import check_all
 
 _TRAINING_TITLE = re.compile(r"\b(intern|interns|internship|placement|apprentice|apprenticeship)\b", re.IGNORECASE)
+_INTERNSHIP_TITLE = re.compile(r"\b(intern|interns|internship|internships|placement|placements)\b", re.IGNORECASE)
+_APPRENTICE_TITLE = re.compile(r"\b(apprentice|apprentices|apprenticeship|apprenticeships)\b", re.IGNORECASE)
 _SPELLINGS = (
     (re.compile(r"\bback[- ]end\b"), "backend"),
     (re.compile(r"\bfront[- ]end\b"), "frontend"),
@@ -47,6 +51,8 @@ _SPELLINGS = (
 _LEVEL_WORDS = frozenset(
     "graduate grad new junior jr entry level early career senior snr sr staff principal lead".split()
 )
+_INTERNSHIP_WORDS = frozenset("intern interns internship internships placement placements".split())
+_INTERNSHIP_LEVEL = "internship in the title"
 _ENGINEER = "engineer"
 # Titles that share a skill with the target. Milestone 2 replaces this table with skill overlap.
 _SIMILAR_TITLES = {
@@ -115,11 +121,23 @@ def _title_words(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9+#]+", lowered))
 
 
-def match_role(title: str, description: str | None, target_roles: list[str]) -> RoleMatch | None:
-    """The best way this job fits any target role. An exact fit beats a similar one."""
+def match_role(
+    title: str, description: str | None, target_roles: list[str], *, internship: bool = False
+) -> RoleMatch | None:
+    """The best way this job fits any target role. An exact fit beats a similar one.
+
+    `internship` is for someone whose profile says they want one: they see only internships.
+    """
     words = _title_words(title)
-    found = [fit for role in target_roles if (fit := _fit_role(title, words, description, role))]
+    fit_one = _fit_internship if internship else _fit_role
+    found = [fit for role in target_roles if (fit := fit_one(title, words, description, role))]
     return min(found, key=lambda fit: fit.kind != RoleKind.exact) if found else None
+
+
+def _fit_internship(title: str, words: set[str], _description: str | None, role: str) -> RoleMatch | None:
+    if not _INTERNSHIP_TITLE.search(title) or _APPRENTICE_TITLE.search(title):
+        return None
+    return _fit_title(words, _title_words(role) - _LEVEL_WORDS - _INTERNSHIP_WORDS, role, _INTERNSHIP_LEVEL)
 
 
 def _fit_role(title: str, words: set[str], description: str | None, role: str) -> RoleMatch | None:
@@ -132,12 +150,15 @@ def _fit_role(title: str, words: set[str], description: str | None, role: str) -
     if wants_entry and not says_entry and YEARS_REQUIRED.search(description or ""):
         return None
 
-    core = _title_words(role) - _LEVEL_WORDS
-    if not core or words & (_DIFFERENT_JOB_WORDS - core):
-        return None
     level = None
     if wants_entry:
         level = "entry level in the title" if says_entry else "level not stated"
+    return _fit_title(words, _title_words(role) - _LEVEL_WORDS, role, level)
+
+
+def _fit_title(words: set[str], core: set[str], role: str, level: str | None) -> RoleMatch | None:
+    if not core or words & (_DIFFERENT_JOB_WORDS - core):
+        return None
     if core <= words:
         return RoleMatch(role, RoleKind.exact, level)
     if _ENGINEER in core and _ENGINEER in words:
@@ -199,7 +220,7 @@ def _same_city(want: Wanted, place: dict[str, Any]) -> bool:
 
 def _score(role: RoleMatch, fits: bool, salary: SalaryStatus) -> Decimal:
     score = _ROLE_SCORE[role.kind]
-    if role.level == "entry level in the title":
+    if role.level in ("entry level in the title", _INTERNSHIP_LEVEL):
         score += _ENTRY_SCORE
     if fits:
         score += _LOCATION_SCORE
@@ -242,19 +263,29 @@ def _can_be_shown(facts: JobFacts, quality: JobQuality) -> bool:
     )
 
 
+def internship_seekers(session: Session) -> set[uuid.UUID]:
+    """Applicants whose profile asks for internships. Everyone else never sees one."""
+    return set(
+        session.scalars(
+            select(ApplicantProfile.applicant_id).where(ApplicantProfile.experience_level == ExperienceLevel.internship)
+        )
+    )
+
+
 def match_all(session: Session, *, now: datetime) -> MatchReport:
     """Safe to repeat. Afterwards the table holds exactly the current matches."""
     report = MatchReport()
     shown = [facts for facts, quality in check_all(session, now) if _can_be_shown(facts, quality)]
+    seekers = internship_seekers(session)
     for preference in session.scalars(select(ApplicantPreference)).all():
         report.applicants += 1
-        _match_applicant(session, preference, shown, report)
+        _match_applicant(session, preference, shown, report, internship=preference.applicant_id in seekers)
     session.flush()
     return report
 
 
 def _match_applicant(
-    session: Session, preference: ApplicantPreference, shown: list[JobFacts], report: MatchReport
+    session: Session, preference: ApplicantPreference, shown: list[JobFacts], report: MatchReport, *, internship: bool
 ) -> None:
     applicant_id = preference.applicant_id
     wanted = wanted_locations(preference.locations)
@@ -267,7 +298,7 @@ def _match_applicant(
     for facts in shown:
         if facts.sector != preference.sector:
             continue
-        role = match_role(facts.title, facts.description, preference.target_roles)
+        role = match_role(facts.title, facts.description, preference.target_roles, internship=internship)
         if role is None:
             continue
         job = session.get(Job, facts.job_id)

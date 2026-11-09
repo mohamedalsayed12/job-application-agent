@@ -543,7 +543,7 @@ async def test_admin_review_list_and_decide(
     _open_review_item(session, "Listed Co")
     session.flush()
 
-    listed = await client.get(f"/admin/review?admin_key={ADMIN}")
+    listed = await client.get("/admin/review", headers={"X-Admin-Key": ADMIN})
     assert listed.status_code == 200
     assert "Listed Co" in listed.text
     assert "ownership_medium" in listed.text
@@ -551,7 +551,8 @@ async def test_admin_review_list_and_decide(
     _, item = _open_review_item(session, "Html Decide")
     session.flush()
     decide = await client.post(
-        f"/admin/review/{item.id}/decide?admin_key={ADMIN}",
+        f"/admin/review/{item.id}/decide",
+        headers={"X-Admin-Key": ADMIN},
         data={"decision": "verified", "reason": "confirmed manually"},
     )
     assert decide.status_code == 303

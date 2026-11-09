@@ -7,13 +7,13 @@ import uuid
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Query
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.api.admin_auth import require_admin_key
-from app.api.admin_html import action as _action
+from app.api.admin_auth import require_admin
 from app.api.admin_html import page as _page
+from app.api.forms import csrf_field, require_csrf
 from app.core.db import get_db
 from app.models import ReviewDecision
 from app.verify.review import (
@@ -23,12 +23,12 @@ from app.verify.review import (
     list_open_reviews,
 )
 
-router = APIRouter(prefix="/admin/review", tags=["admin-review"])
+router = APIRouter(prefix="/admin/review", tags=["admin-review"], dependencies=[Depends(require_admin)])
 
 
 @router.get("", response_class=HTMLResponse)
 def review_index(
-    admin_key: str = Depends(require_admin_key),
+    request: Request,
     db: Session = Depends(get_db),
     error: str | None = Query(default=None),
 ) -> HTMLResponse:
@@ -41,7 +41,6 @@ def review_index(
             if candidate.board_system
             else "(none)"
         )
-        form_action = _action(f"/admin/review/{item.id}/decide", admin_key)
         items.append(
             "<tr>"
             f"<td>{html.escape(candidate.company_name)}</td>"
@@ -50,7 +49,7 @@ def review_index(
             f"<td>{html.escape(item.reason)}</td>"
             f"<td>{item.priority}</td>"
             f'<td class="actions">'
-            f'<form method="post" action="{html.escape(form_action)}">'
+            f'<form method="post" action="/admin/review/{item.id}/decide">{csrf_field(request)}'
             f'<label>Decision'
             f'<select name="decision" required>'
             f'<option value="{ReviewDecision.verified.value}">approve (verified)</option>'
@@ -82,12 +81,11 @@ def review_index(
     return _page("Review queue", body)
 
 
-@router.post("/{review_item_id}/decide", response_class=HTMLResponse)
+@router.post("/{review_item_id}/decide", response_class=HTMLResponse, dependencies=[Depends(require_csrf)])
 def review_decide(
     review_item_id: uuid.UUID,
     decision: Annotated[str, Form()],
     reason: Annotated[str, Form()],
-    admin_key: str = Depends(require_admin_key),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     try:
@@ -105,10 +103,10 @@ def review_decide(
     except ReviewConflictError as exc:
         db.rollback()
         return RedirectResponse(
-            url=_action("/admin/review", admin_key) + f"&error={quote(str(exc))}",
+            url=f"/admin/review?error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=_action("/admin/review", admin_key),
+        url="/admin/review",
         status_code=303,
     )

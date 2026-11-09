@@ -8,6 +8,7 @@ _DEFAULT_AI_MODELS = {
     "anthropic": "claude-haiku-5-5",
     "openai": "gpt-4o-mini",
 }
+MIN_SESSION_SECRET_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,9 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://jaa:jaa@localhost:5432/jaa"
     admin_key: str = "change-me"
+    session_secret: str = ""
+    # Local development over plain http needs this false, or the browser drops the cookie.
+    session_cookie_secure: bool = True
 
     fetch_user_agent: str = (
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
@@ -72,6 +76,15 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return Decimal(value)
         return value
+
+    def web_problems(self) -> list[str]:
+        """Why the web app must not start. The worker and tools do not need these."""
+        problems = []
+        if len(self.session_secret) < MIN_SESSION_SECRET_LENGTH:
+            problems.append(f"SESSION_SECRET must be at least {MIN_SESSION_SECRET_LENGTH} characters")
+        if self.admin_key in ("", "change-me"):
+            problems.append("ADMIN_KEY must be set to a private value")
+        return problems
 
     def resolved_ai_extraction_model(self) -> str:
         explicit = self.ai_extraction_model.strip()

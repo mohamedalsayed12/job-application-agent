@@ -14,7 +14,12 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.matching.match import location_fit, match_role, wanted_locations
+from app.matching.match import (
+    internship_seekers,
+    location_fit,
+    match_role,
+    wanted_locations,
+)
 from app.models import (
     ApplicantPreference,
     Candidate,
@@ -66,11 +71,11 @@ def first_finders(sightings: list[Sighting]) -> set[uuid.UUID]:
     return {s.run_id for s in sightings if s.run_id is not None and s.planned_at == first.planned_at}
 
 
-def _is_relevant(facts: JobFacts, quality: JobQuality, preference: ApplicantPreference) -> bool:
+def _is_relevant(facts: JobFacts, quality: JobQuality, preference: ApplicantPreference, *, internship: bool) -> bool:
     """Role and location only, whatever the job's state: closed jobs must lower freshness."""
     if not quality.unique or facts.sector != preference.sector:
         return False
-    if match_role(facts.title, facts.description, preference.target_roles) is None:
+    if match_role(facts.title, facts.description, preference.target_roles, internship=internship) is None:
         return False
     fits, _ = location_fit(wanted_locations(preference.locations), facts.places, facts.remote_type)
     return fits
@@ -129,6 +134,7 @@ def _add_job_outcomes(
         jobs_on_board[board_id].add(job_id)
     results = {facts.job_id: (facts, quality) for facts, quality in check_all(session, now)}
     preferences = {p.applicant_id: p for p in session.scalars(select(ApplicantPreference))}
+    seekers = internship_seekers(session)
 
     for run in runs:
         preference = preferences.get(run.applicant_id)
@@ -137,7 +143,7 @@ def _add_job_outcomes(
         for board_id, share in credits.get(run.id, []):
             for job_id in jobs_on_board[board_id]:
                 facts, quality = results[job_id]
-                if not _is_relevant(facts, quality, preference):
+                if not _is_relevant(facts, quality, preference, internship=run.applicant_id in seekers):
                     continue
                 outcomes[run.id].relevant += share
                 if facts.freshness == JobFreshness.open and quality.recent:

@@ -25,6 +25,8 @@ from app.matching.match import (
 )
 from app.models import (
     ApplicantJobMatch,
+    ApplicantProfile,
+    ExperienceLevel,
     FetchRun,
     JobFreshness,
     RawPayload,
@@ -204,6 +206,25 @@ async def test_t27_one_collection_is_matched_to_every_applicant(session: Session
     assert _matches(session, first)[job.id].location_fit is True
     assert _matches(session, second)[job.id].location_fit is False
     assert _matches(session, first)[job.id].score > _matches(session, second)[job.id].score
+
+
+async def test_only_someone_whose_profile_chose_internship_is_matched_to_internships(session: Session) -> None:
+    _board(session)
+    seeker = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=seeker, experience_level=ExperienceLevel.internship))
+    graduate = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=graduate, experience_level=ExperienceLevel.entry))
+    no_profile = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    jobs = [_gh(1, title="Backend Developer Intern"), _gh(2), _gh(3, title="Backend Developer Apprentice")]
+    await _Collector(session).read(200, {"jobs": jobs})
+
+    match_all(session, now=SOON)
+
+    internship, ordinary = _job(session, 1).id, _job(session, 2).id
+    assert set(_matches(session, seeker)) == {internship}
+    assert _matches(session, seeker)[internship].reasons["role"]["level"] == "internship in the title"
+    assert set(_matches(session, graduate)) == {ordinary}
+    assert set(_matches(session, no_profile)) == {ordinary}
 
 
 async def test_t2_with_no_salary_given_no_job_is_excluded_for_salary(session: Session) -> None:
