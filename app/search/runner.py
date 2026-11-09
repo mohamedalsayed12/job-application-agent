@@ -367,20 +367,25 @@ def _bump_template_stats(
     count_run: bool,
 ) -> None:
     """Record cost always (T9); bump run_count only on settled outcomes (not mid-retry)."""
-    stats = session.get(TemplateStats, run.template_id)
-    if stats is None:
-        stats = TemplateStats(
-            template_id=run.template_id,
-            run_count=0,
-            total_cost=Decimal("0"),
-            new_candidates=0,
-            new_verified_boards=0,
-            relevant_jobs=0,
-            freshness_share=Decimal("0"),
-            updated_at=now,
-        )
-        session.add(stats)
+    stats = template_stats_row(session, run.template_id, now=now)
     if count_run:
         stats.run_count = int(stats.run_count or 0) + 1
     stats.total_cost = Decimal(stats.total_cost or 0) + cost_amount
     stats.updated_at = now
+
+
+def template_stats_row(session: Session, template_id: str, *, now: datetime) -> TemplateStats:
+    stats = session.get(TemplateStats, template_id)
+    if stats is None:
+        stats = TemplateStats(
+            template_id=template_id,
+            run_count=0,
+            total_cost=Decimal("0"),
+            new_candidates=Decimal("0"),
+            new_verified_boards=Decimal("0"),
+            relevant_jobs=Decimal("0"),
+            freshness_share=Decimal("0"),
+            updated_at=now,
+        )
+        session.add(stats)
+    return stats
