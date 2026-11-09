@@ -851,6 +851,10 @@ class ApplicantJobMatch(_UuidPk, Base):
     role_match: Mapped[bool] = mapped_column(Boolean())
     location_fit: Mapped[bool] = mapped_column(Boolean())
     salary_status: Mapped[str] = mapped_column(Text())
+    # D40: skill names as shown, and certification or licence groups the advert requires.
+    matched_skills: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    missing_skills: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    missing_licences: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 

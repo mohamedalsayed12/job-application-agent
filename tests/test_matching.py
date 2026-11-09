@@ -377,4 +377,4 @@ async def test_each_match_says_what_fitted_and_what_is_missing(session: Session)
     match_all(session, now=SOON)
     row = _matches(session, applicant)[_job(session, 1).id]
     assert row.reasons["role"] == {"target": "Graduate Software Engineer", "kind": "exact", "level": "level not stated"}
-    assert set(row.reasons["missing"]) == {"location", "stated entry level", "known salary"}
+    assert set(row.reasons["missing"]) == {"location", "stated entry level", "known salary", "skills on profile"}

@@ -144,13 +144,18 @@ uv run python -m app.quality
 ```
 
 The full report is at `/admin/quality`, after logging in at `/admin/login`. Opening it changes nothing.
+Relevance, meaning how well matches fit each applicant, has its own section, so poor matching
+can be told apart from poor data.
 The latest results and their causes are in `docs/step13-quality-round2.md`.
 
 ## Matching
 
 After each cycle that reads a board, the worker matches stored jobs to every applicant
-on role, location and salary status. This uses rules only, so it costs nothing and makes
-no requests. To run it now and print the best matches for each applicant, run:
+on role, location, salary status, skills and required licences. Each match lists the skills
+the applicant has, the skills they don't, and any licence the advert requires that they don't
+hold. This uses rules only, so it costs nothing and makes no requests. The rules are in
+`MVP.md` decisions D35 and D40. To run it now and print the best matches for each
+applicant, run:
 
 ```bash
 uv run python -m app.matching

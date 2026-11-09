@@ -72,6 +72,7 @@ def _examples(heading: str, examples: list[Example]) -> str:
 
 def _render(report: QualityReport) -> str:
     jobs, discovery, collection, audit = report.jobs, report.discovery, report.collection, report.audit
+    relevance = report.relevance
     backlog_age = "" if discovery.oldest_review_days is None else f", oldest {discovery.oldest_review_days} days"
     return f"""
 <h1>Quality report</h1>
@@ -116,6 +117,16 @@ Spent this month: £{discovery.spend_this_month:.4f}.</p>
 <h2>Audit</h2>
 <p>Latest audit day: {html.escape(_text(audit.latest_day))}. Rows: {audit.sampled}.
 Correct: {audit.correct} of {audit.judged} judged. Useful: {audit.useful} of {audit.useful_judged} judged.</p>
+<h2 id="relevance">Relevance</h2>
+<p>How well jobs fit each applicant. This is not one of the four quality measures above, so poor matching can be told apart from poor data.</p>
+{_table(("Measure", "Now"), (
+    ("Applicants with a match", f"{relevance.applicants_with_matches} of {relevance.applicants}"),
+    ("Matches", relevance.matches),
+    ("Matches in a wanted location", relevance.fitting_location),
+    ("Matches whose advert names skills", relevance.naming_skills),
+    ("Share of those skills the applicant has", "none" if relevance.skill_share_pct is None else f"{relevance.skill_share_pct}%"),
+    ("Matches missing a required licence", relevance.missing_licences),
+))}
 <h2>What this report cannot show yet</h2>
 <ul>{"".join(f"<li>{html.escape(gap)}</li>" for gap in report.gaps)}</ul>
 """
