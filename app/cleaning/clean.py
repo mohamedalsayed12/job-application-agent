@@ -9,7 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.cleaning.freshness import FULL_READS, FreshnessReport, refresh_board_freshness
-from app.cleaning.linking import is_primary, link_posting, mirror_posting
+from app.cleaning.linking import (
+    FIRST_POSTING_REASON,
+    is_primary,
+    link_posting,
+    mirror_posting,
+)
 from app.cleaning.normalize import NormalizedJob, normalize_job
 from app.models import (
     Employer,
@@ -42,6 +47,7 @@ class CleanReport:
     postings_new: int = 0
     postings_updated: int = 0
     unusable: int = 0
+    errors: list[str] = field(default_factory=list)
     freshness: FreshnessReport = field(default_factory=FreshnessReport)
 
 
@@ -140,7 +146,13 @@ def reclean_all(session: Session, *, now: datetime) -> CleanReport:
     ).all()
     for run in runs:
         board = session.get(EmployerBoard, run.employer_board_id)
-        report = clean_run(session, run, board, now=now)
+        run_id = run.id
+        try:
+            with session.begin_nested():
+                report = clean_run(session, run, board, now=now)
+        except Exception as exc:  # One bad run must not stop the replay of every other board.
+            total.errors.append(f"run {run_id}: {type(exc).__name__}: {exc}"[:300])
+            continue
         total.postings_new += report.postings_new
         total.postings_updated += report.postings_updated
         total.unusable += report.unusable
@@ -169,4 +181,11 @@ def master_job_counts(session: Session) -> dict[str, int]:
 
 
 def link_method_counts(session: Session) -> dict[str, int]:
-    return dict(session.execute(select(JobLink.method, func.count()).group_by(JobLink.method)).all())
+    """First postings are stored as exact_job_id but matched nothing, so they are counted apart."""
+    first = select(func.count()).where(JobLink.reason == FIRST_POSTING_REASON)
+    matched = (
+        select(JobLink.method, func.count())
+        .where(JobLink.reason != FIRST_POSTING_REASON)
+        .group_by(JobLink.method)
+    )
+    return {"first_posting": session.scalar(first), **dict(session.execute(matched).all())}
