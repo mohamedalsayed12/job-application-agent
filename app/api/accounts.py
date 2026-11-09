@@ -179,6 +179,7 @@ def _account_page(
         f"""
 <h1>Your account</h1>
 <p>Logged in as {html.escape(applicant.email)}.</p>
+<p><a href="/listings">Your job matches</a></p>
 <p><a href="/profile">Your profile and CV</a></p>
 <form method="post" action="/logout">{csrf_field(request)}<button type="submit">Log out</button></form>
 <h2>Delete your account</h2>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from datetime import UTC, datetime
 from itertools import zip_longest
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
@@ -34,6 +35,7 @@ from app.applicants.profile import (
 )
 from app.applicants.service import PreferenceValidationError
 from app.core.db import get_db
+from app.matching.match import match_all
 from app.models import Applicant, CvFile, CvFileType
 from app.skills.taxonomy import suggest_skills
 
@@ -274,6 +276,9 @@ def profile_save(
             certifications=certifications,
         )
         save_profile(db, applicant.id, profile)
+        db.commit()
+        # A new profile sees its matches now, not after the next collection.
+        match_all(db, now=datetime.now(UTC), applicant_ids={applicant.id})
         db.commit()
     except PreferenceValidationError as exc:
         db.rollback()
