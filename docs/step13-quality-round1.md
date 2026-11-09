@@ -1,5 +1,7 @@
 # Step 13 quality report: round 1
 
+Superseded by `step13-quality-round2.md`. This round's count of jobs naming several places is too high: about 20 Stripe jobs say `N/A`, which it counted as several places.
+
 Run on 9 November 2026 against the real database, using `python -m app.quality`. The data is 1,837 jobs from 11 verified boards. Each board has been read once. This run does not include the changes in PR #39.
 
 ## Result: the gate is not met

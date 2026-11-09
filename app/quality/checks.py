@@ -65,8 +65,7 @@ class JobFacts:
     title: str
     description: str | None
     apply_url: str | None
-    location_city: str | None
-    location_country: str | None
+    places: list[dict[str, str | None]]
     remote_type: str | None
     freshness: str
     last_seen_at: datetime
@@ -82,11 +81,15 @@ class JobFacts:
     def listed_since(self) -> datetime:
         return self.posted_at or self.first_seen_at
 
+    @property
+    def place_keys(self) -> frozenset[str]:
+        return frozenset((place["city"] or place["country"] or "").lower() for place in self.places)
+
 
 @dataclass(frozen=True, slots=True)
-class Duplicate:
+class SameAdvert:
     of_job: uuid.UUID
-    same_city: bool
+    shares_a_place: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +99,7 @@ class JobQuality:
     confidence: Confidence
     reasons: tuple[str, ...]
     missing: tuple[str, ...]
-    duplicate: Duplicate | None = None
+    same_advert: SameAdvert | None = None
 
     @property
     def recent(self) -> bool:
@@ -108,7 +111,7 @@ class JobQuality:
 
     @property
     def unique(self) -> bool:
-        return self.duplicate is None
+        return self.same_advert is None or not self.same_advert.shares_a_place
 
     def to_json(self, checked_at: datetime) -> dict:
         return {
@@ -121,7 +124,7 @@ class JobQuality:
             "complete": self.complete,
             "missing": list(self.missing),
             "unique": self.unique,
-            "duplicate_of": str(self.duplicate.of_job) if self.duplicate else None,
+            "duplicate_of": None if self.unique else str(self.same_advert.of_job),
         }
 
 
@@ -172,7 +175,7 @@ def check_complete(job: JobFacts) -> tuple[str, ...]:
     missing = []
     if not job.title.strip():
         missing.append("title")
-    if not (job.location_city or job.location_country or job.remote_type):
+    if not (job.places or job.remote_type):
         missing.append("location")
     if not job.apply_url:
         missing.append("apply_url")
@@ -181,28 +184,38 @@ def check_complete(job: JobFacts) -> tuple[str, ...]:
     return tuple(missing)
 
 
-def find_duplicates(jobs: Iterable[JobFacts]) -> dict[uuid.UUID, Duplicate]:
-    """D17: a job is a repost when company, title and description match another within 30 days.
+def find_same_adverts(jobs: Iterable[JobFacts]) -> dict[uuid.UUID, SameAdvert]:
+    """Jobs whose company, title and description match an earlier job within 30 days.
 
-    Comparing each job with the one listed just before it means a chain of reposts counts
-    as one job, and only the extras count as duplicates.
+    D34: only those sharing a place with that job are duplicates. The same advert in
+    another city is a separate job, with its own apply link.
     """
     adverts: dict[tuple, list[JobFacts]] = defaultdict(list)
     for job in jobs:
         if job.employer_id is not None and job.description:
             adverts[(job.employer_id, title_key(job.title), " ".join(job.description.split()))].append(job)
 
-    duplicates: dict[uuid.UUID, Duplicate] = {}
+    found: dict[uuid.UUID, SameAdvert] = {}
     for group in adverts.values():
         group.sort(key=lambda job: (job.listed_since, str(job.job_id)))
-        for earlier, later in zip(group, group[1:], strict=False):
-            if later.listed_since - earlier.listed_since <= REPOST_WINDOW:
-                same_city = (earlier.location_city or "").lower() == (later.location_city or "").lower()
-                duplicates[later.job_id] = Duplicate(of_job=earlier.job_id, same_city=same_city)
-    return duplicates
+        for index, later in enumerate(group):
+            nearby = [
+                earlier
+                for earlier in group[:index]
+                if later.listed_since - earlier.listed_since <= REPOST_WINDOW
+            ]
+            if nearby:
+                sharing = [earlier for earlier in nearby if _shares_a_place(earlier, later)]
+                found[later.job_id] = SameAdvert((sharing or nearby)[-1].job_id, bool(sharing))
+    return found
 
 
-def check_job(job: JobFacts, now: datetime, duplicate: Duplicate | None = None) -> JobQuality:
+def _shares_a_place(first: JobFacts, second: JobFacts) -> bool:
+    """Two jobs naming no place at all cannot be told apart, so they count as the same place."""
+    return first.place_keys == second.place_keys or bool(first.place_keys & second.place_keys)
+
+
+def check_job(job: JobFacts, now: datetime, same_advert: SameAdvert | None = None) -> JobQuality:
     confidence, reasons = check_real(job)
     return JobQuality(
         not_recent=check_recent(job, now),
@@ -210,5 +223,5 @@ def check_job(job: JobFacts, now: datetime, duplicate: Duplicate | None = None) 
         confidence=confidence,
         reasons=reasons,
         missing=check_complete(job),
-        duplicate=duplicate,
+        same_advert=same_advert,
     )

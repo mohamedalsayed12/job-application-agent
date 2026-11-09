@@ -28,7 +28,7 @@ def main() -> None:
         print(f"{target.name}: {target.value} against {target.goal}: {'met' if target.met else 'MISSED'}")
     for row in (jobs.total, *jobs.by_source, *jobs.by_sector):
         print(_line(row))
-    print(f"duplicates in the same city {jobs.same_city_duplicates}, older than 60 days {jobs.older_than_60_days}")
+    print(f"same advert in other places {jobs.same_advert_elsewhere}, older than 60 days {jobs.older_than_60_days}")
     print(f"real {jobs.real_levels}, missing {jobs.missing_counts}, not recent {jobs.not_recent_counts}")
     for gap in report.gaps:
         print(f"note: {gap}")

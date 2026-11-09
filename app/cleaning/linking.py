@@ -26,6 +26,7 @@ _MIRRORED = (
     "location_city",
     "location_country",
     "remote_type",
+    "places",
     "salary_min",
     "salary_max",
     "salary_currency",
