@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     ai_extraction_unit_price: Decimal = Decimal("0.0005")
     ai_summary_unit_price: Decimal = Decimal("0.001")
 
+    # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
+    ai_summary_model: str = ""
+    ai_summary_max_output_tokens: int = 300
+    ai_summary_per_item_token_cap: int = 8000
+    ai_summary_daily_token_cap: int = 300000
+
     @field_validator(
         "search_request_unit_price",
         "ai_extraction_unit_price",
@@ -91,6 +97,9 @@ class Settings(BaseSettings):
         if explicit:
             return explicit
         return _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_summary_model(self) -> str:
+        return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def api_allowlist_hosts(self) -> frozenset[str]:
         return frozenset(

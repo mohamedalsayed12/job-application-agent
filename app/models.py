@@ -140,6 +140,12 @@ class SkillMatchMethod(StrEnum):
     alternative_label = "alternative_label"
 
 
+class SummaryStatus(StrEnum):
+    pending = "pending"
+    accepted = "accepted"
+    rejected = "rejected"
+
+
 class SpendKind(StrEnum):
     search = "search"
     ai_extraction = "ai_extraction"
@@ -876,3 +882,28 @@ class AuditSample(_UuidPk, Base):
     is_useful: Mapped[bool | None] = mapped_column(Boolean())
     notes: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
+
+
+class JobSummary(_UuidPk, Base):
+    """D41: one per job, written on first view. Only an accepted summary is ever shown."""
+
+    __tablename__ = "job_summary"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_job_summary_job_id"),
+        _text_in("status", SummaryStatus),
+    )
+
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(Text())
+    # The draft, kept when rejected so an admin can see why.
+    summary_text: Mapped[str | None] = mapped_column(Text())
+    unsupported: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    # The posting the summary was written from. A changed posting gets a new summary.
+    source_hash: Mapped[str] = mapped_column(Text())
+    model: Mapped[str] = mapped_column(Text())
+    prompt_version: Mapped[str] = mapped_column(Text())
+    prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()

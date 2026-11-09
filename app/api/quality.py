@@ -117,6 +117,8 @@ Spent this month: £{discovery.spend_this_month:.4f}.</p>
 <h2>Audit</h2>
 <p>Latest audit day: {html.escape(_text(audit.latest_day))}. Rows: {audit.sampled}.
 Correct: {audit.correct} of {audit.judged} judged. Useful: {audit.useful} of {audit.useful_judged} judged.</p>
+<h2>Summaries</h2>
+<p>Written: {report.summaries.accepted}. Rejected by the check: {report.summaries.rejected}. Being written: {report.summaries.in_progress}. AI cost: £{report.summaries.cost:.4f}.</p>
 <h2 id="relevance">Relevance</h2>
 <p>How well jobs fit each applicant. This is not one of the four quality measures above, so poor matching can be told apart from poor data.</p>
 {_table(("Measure", "Now"), (
