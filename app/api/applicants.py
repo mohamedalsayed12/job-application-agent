@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.api.admin_auth import require_admin
 from app.api.admin_html import page as _page
+from app.api.chrome import admin_bar
 from app.api.forms import csrf_field, require_csrf
 from app.applicants.service import (
     ApplicantConflictError,
@@ -186,6 +187,7 @@ def _save(
 
 @router.get("", response_class=HTMLResponse)
 def applicants_index(
+    request: Request,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     rows = list_applicants(db)
@@ -209,15 +211,16 @@ def applicants_index(
         )
     body = f"""
 <h1>Applicants</h1>
-<p><a href="/admin/applicants/new">Create applicant</a></p>
-<table>
+<p><a class="button primary" href="/admin/applicants/new">Create applicant</a>
+<a class="button" href="/admin/accounts/set-password-link">Set-password link</a></p>
+<div class="table-wrap"><table>
   <thead><tr><th>Email</th><th>Roles</th><th>Locations</th><th>Salary</th><th></th></tr></thead>
   <tbody>
     {"".join(items) if items else "<tr><td colspan='5'>No applicants yet.</td></tr>"}
   </tbody>
-</table>
+</table></div>
 """
-    return _page("Applicants", body)
+    return _page("Applicants", body, header=admin_bar(request, "applicants"))
 
 
 @router.get("/new", response_class=HTMLResponse)

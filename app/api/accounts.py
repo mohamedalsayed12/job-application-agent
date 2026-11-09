@@ -29,6 +29,7 @@ from app.api.admin_auth import (
     start_admin_session,
 )
 from app.api.admin_html import page
+from app.api.chrome import admin_bar, applicant_bar, public_bar
 from app.api.forms import csrf_field, require_csrf
 from app.core.db import get_db
 from app.models import Applicant
@@ -69,6 +70,7 @@ def _credentials_page(
     return page(
         title,
         f"""
+<div class="card">
 <h1>{html.escape(title)}</h1>
 {_error(error)}
 <form method="post" action="{path}">
@@ -78,11 +80,14 @@ def _credentials_page(
     <input name="password" type="password" required
       autocomplete="{'new-password' if new_password else 'current-password'}"/>
   </label>
-  <p><button type="submit">{html.escape(title)}</button></p>
+  <p><button type="submit" class="primary">{html.escape(title)}</button></p>
 </form>
 {other}
+</div>
 """,
         status_code=status_code,
+        header=public_bar(),
+        narrow=True,
     )
 
 
@@ -178,10 +183,12 @@ def _account_page(
         "Your account",
         f"""
 <h1>Your account</h1>
+<div class="card">
 <p>Logged in as {html.escape(applicant.email)}.</p>
-<p><a href="/listings">Your job matches</a></p>
-<p><a href="/profile">Your profile and CV</a></p>
+<p><a href="/listings">Your job matches</a> · <a href="/profile">Your profile and CV</a></p>
 <form method="post" action="/logout">{csrf_field(request)}<button type="submit">Log out</button></form>
+</div>
+<div class="card" id="delete">
 <h2>Delete your account</h2>
 <p>This permanently removes your profile, CV, preferences and job matches, and can't be undone.</p>
 {_error(error)}
@@ -190,10 +197,13 @@ def _account_page(
   <label>Enter your password to confirm
     <input name="password" type="password" required autocomplete="current-password"/>
   </label>
-  <p><button type="submit">Delete my account</button></p>
+  <p><button type="submit" class="danger">Delete my account</button></p>
 </form>
+</div>
 """,
         status_code=status_code,
+        header=applicant_bar(request, "account"),
+        narrow=True,
     )
 
 
@@ -220,7 +230,9 @@ def account_delete(
     request.session.clear()
     return page(
         "Account deleted",
-        '<h1>Your account has been deleted</h1><p><a href="/register">Register again</a></p>',
+        '<div class="card"><h1>Your account has been deleted</h1><p><a href="/register">Register again</a></p></div>',
+        header=public_bar(),
+        narrow=True,
     )
 
 
@@ -234,10 +246,12 @@ def _set_password_page(request: Request, token: str, *, error: str | None = None
   {csrf_field(request)}
   <input type="hidden" name="token" value="{html.escape(token)}"/>
   <label>New password <input name="password" type="password" required autocomplete="new-password"/></label>
-  <p><button type="submit">Set password</button></p>
+  <p><button type="submit" class="primary">Set password</button></p>
 </form>
 """,
         status_code=status_code,
+        header=public_bar(),
+        narrow=True,
     )
     response.headers["Referrer-Policy"] = "no-referrer"
     return response
@@ -284,10 +298,11 @@ def _admin_login_page(request: Request, *, error: str | None = None, status_code
 <form method="post" action="/admin/login">
   {csrf_field(request)}
   <label>Admin key <input name="admin_key" type="password" required autocomplete="off"/></label>
-  <p><button type="submit">Log in</button></p>
+  <p><button type="submit" class="primary">Log in</button></p>
 </form>
 """,
         status_code=status_code,
+        narrow=True,
     )
 
 
@@ -324,10 +339,11 @@ once and lasts 24 hours. Send it to the person privately.</p>
 <form method="post" action="/admin/accounts/set-password-link">
   {csrf_field(request)}
   <label>Email <input name="email" type="email" required/></label>
-  <p><button type="submit">Create link</button></p>
+  <p><button type="submit" class="primary">Create link</button></p>
 </form>
 """,
         status_code=status_code,
+        header=admin_bar(request, "applicants"),
     )
 
 

@@ -90,7 +90,7 @@ async def test_saving_a_profile_matches_at_once_and_lists_the_best_first(
     await _register_with_profile(client)
     page = (await client.get("/listings")).text
     assert _titles(page) == ["Junior Backend Developer", "Backend Developer"]
-    scores = [Decimal(score) for score in re.findall(r"Match score ([0-9]+\.[0-9]+)", page)]
+    scores = [int(score) for score in re.findall(r"Match score</span><b>([0-9]+)</b><small>/100", page)]
     assert scores == sorted(scores, reverse=True)
     assert "Sales Manager" not in page
 
@@ -106,7 +106,7 @@ async def test_t36_each_listing_shows_its_source_apply_link_and_reasons(
     page = (await client.get("/listings")).text
     assert "Source: greenhouse." in page
     assert 'href="https://job-boards.greenhouse.io/acme/jobs/1"' in page
-    assert "Salary: Not stated." in page
+    assert "Salary: Not stated</span>" in page
     assert "Location: in Manchester" in page
     assert "Skills you have: Python" in page
     assert "Last confirmed open" in page
