@@ -80,6 +80,17 @@ Admin UI: `GET /admin/audit` (same admin key as applicants). One open sheet:
 a second download re-exports unfilled `audit_sample` rows. Offline fixture JSON:
 `app/audit/data/classified_companies.json`.
 
+### 8. Audit usefulness sheet (Step 16)
+
+List the open matching jobs on each audited company's verified board, and write a sheet
+with a blank `usefulness` column for the operator. This only reads the database, and it
+needs `python -m app.matching` to have run first.
+
+```bash
+uv run python -m app.audit.usefulness --sheet docs/step10-audit-sample-4.csv \
+  --out-sheet docs/step16-audit-usefulness.csv --out-jobs docs/step16-audit-jobs.csv
+```
+
 ## Daily collection
 
 The worker moves verified companies into the shared board directory, then reads each
