@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     ai_judge_daily_token_cap: int = 4000000
     # Calls sent to the AI at once; spending and saving stay one at a time.
     ai_judge_concurrency: int = 5
+    # Work per worker cycle, so matching updates the page every few minutes instead of after the whole backlog.
+    ai_judge_per_cycle: int = 100
+    ai_report_per_cycle: int = 20
 
     # D52: the full fit report for jobs scoring 3.0 or more. Blank model = provider default.
     ai_report_model: str = ""
