@@ -335,11 +335,11 @@ async def test_the_admin_page_shows_the_report_and_escapes_job_text(
     await collector.read(200, {"jobs": [_gh(1, title="<script>alert(1)</script>", city=""), _gh(2, title="Other role")]})
     before = {job.id: job.quality_results for job in session.scalars(select(Job))}
 
-    response = await client.get(f"/admin/quality?admin_key={ADMIN}")
+    response = await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})
 
     assert response.status_code == 200
     for heading in ("Targets", "Jobs", "Discovery", "Collection", "Audit", "What this report cannot show yet"):
         assert f"<h2>{heading}</h2>" in response.text
     assert "<script>" not in response.text
-    assert "Summaries: not built yet" in response.text
+    assert "<h2>Summaries</h2>" in response.text
     assert before == {job.id: job.quality_results for job in session.scalars(select(Job))}

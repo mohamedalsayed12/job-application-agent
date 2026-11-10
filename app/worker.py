@@ -24,6 +24,8 @@ from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
 from app.matching.match import match_all
 from app.quality import store_results
+from app.search.feedback import record_outcomes
+from app.skills.taxonomy import map_job_skills
 
 # Short enough for the first retry, one minute after a failed read, to happen on time.
 DEFAULT_POLL_SECONDS = 60
@@ -42,7 +44,9 @@ async def run_cycle(
     if collection.outcomes:
         now = datetime.now(UTC)
         store_results(session, now=now)
+        map_job_skills(session)
         match_all(session, now=now)
+        record_outcomes(session, now=now)
         save()
     return registration, collection
 

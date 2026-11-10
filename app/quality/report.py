@@ -14,6 +14,8 @@ from app.cleaning.freshness import BRAKE_MIN_JOBS, FULL_READS
 from app.cleaning.linking import is_primary
 from app.models import (
     AiExtraction,
+    ApplicantJobMatch,
+    ApplicantPreference,
     AuditSample,
     BoardStatus,
     BudgetPolicy,
@@ -25,6 +27,7 @@ from app.models import (
     JobFreshness,
     JobLink,
     JobPosting,
+    JobSummary,
     RawPayload,
     ReviewItem,
     SearchRun,
@@ -124,12 +127,36 @@ class AuditSection:
 
 
 @dataclass(slots=True)
+class RelevanceSection:
+    """Per applicant, from stored matches. Kept apart from the four quality measures, so bad
+    matching can be told apart from bad data (MVP section 14)."""
+
+    applicants: int
+    applicants_with_matches: int
+    matches: int
+    fitting_location: int
+    naming_skills: int
+    skill_share_pct: float | None
+    missing_licences: int
+
+
+@dataclass(slots=True)
+class SummariesSection:
+    accepted: int
+    rejected: int
+    in_progress: int
+    cost: Decimal
+
+
+@dataclass(slots=True)
 class QualityReport:
     generated_at: datetime
     jobs: JobsSection
     discovery: DiscoverySection
     collection: CollectionSection
     audit: AuditSection
+    relevance: RelevanceSection
+    summaries: SummariesSection
     gaps: list[str] = field(default_factory=list)
 
 
@@ -194,14 +221,16 @@ def build_report(session: Session, *, now: datetime | None = None) -> QualityRep
         discovery=_discovery_section(session, now),
         collection=_collection_section(session),
         audit=_audit_section(session),
+        relevance=_relevance_section(session),
+        summaries=_summaries_section(session),
         gaps=[
-            "Summaries: not built yet, so nothing has been generated, rejected or charged.",
             "Real: Companies House is not connected, so it is not one of the signals.",
             "Unique: no employer is on two sources yet, so every duplicate found is within one source.",
             "Expired jobs shown: job search does not read stored jobs yet, so this counts jobs it would show.",
             "Safety-brake events are worked out from stored fetches. Nothing records them when they happen.",
             "Duplicate candidates removed: they are folded in when found and not counted anywhere.",
             "Verified boards per £: the current boards came from the seed list, so this flatters search.",
+            "Relevance: skills are those an advert names, which includes skills it mentions without requiring.",
         ],
     )
 
@@ -409,6 +438,38 @@ def _brake_events(session: Session, board: EmployerBoard, name: str) -> list[tup
         if len(before) >= BRAKE_MIN_JOBS and len(vanished) * 2 > len(before):
             events.append((name, later.finished_at, len(vanished), len(before)))
     return events
+
+
+def _relevance_section(session: Session) -> RelevanceSection:
+    rows = session.execute(
+        select(
+            ApplicantJobMatch.applicant_id,
+            ApplicantJobMatch.location_fit,
+            func.cardinality(ApplicantJobMatch.matched_skills),
+            func.cardinality(ApplicantJobMatch.missing_skills),
+            func.cardinality(ApplicantJobMatch.missing_licences),
+        )
+    ).all()
+    named = [(matched, missing) for _, _, matched, missing, _ in rows if matched + missing]
+    return RelevanceSection(
+        applicants=session.scalar(select(func.count()).select_from(ApplicantPreference)),
+        applicants_with_matches=len({row[0] for row in rows}),
+        matches=len(rows),
+        fitting_location=sum(1 for row in rows if row[1]),
+        naming_skills=len(named),
+        skill_share_pct=_pct(sum(m for m, _ in named), sum(m + n for m, n in named)) if named else None,
+        missing_licences=sum(1 for row in rows if row[4]),
+    )
+
+
+def _summaries_section(session: Session) -> SummariesSection:
+    counts = dict(session.execute(select(JobSummary.status, func.count()).group_by(JobSummary.status)).all())
+    return SummariesSection(
+        accepted=counts.get("accepted", 0),
+        rejected=counts.get("rejected", 0),
+        in_progress=counts.get("pending", 0),
+        cost=Decimal(session.scalar(select(func.coalesce(func.sum(JobSummary.cost_amount), 0)))),
+    )
 
 
 def _audit_section(session: Session) -> AuditSection:

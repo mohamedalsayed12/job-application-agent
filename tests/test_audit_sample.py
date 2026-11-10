@@ -172,7 +172,8 @@ async def test_admin_audit_sample_download(
     seed_classified_from_fixture(session)
     session.flush()
     response = await client.post(
-        f"/admin/audit/sample?admin_key={ADMIN}",
+        "/admin/audit/sample",
+        headers={"X-Admin-Key": ADMIN},
         data={"size": "20"},
     )
     assert response.status_code == 200
@@ -194,7 +195,8 @@ async def test_admin_audit_insufficient_redirect(
         session, name="Only One", state=CandidateState.verified, domain="only.test"
     )
     response = await client.post(
-        f"/admin/audit/sample?admin_key={ADMIN}",
+        "/admin/audit/sample",
+        headers={"X-Admin-Key": ADMIN},
         data={"size": "20"},
         follow_redirects=False,
     )

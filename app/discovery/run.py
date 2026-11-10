@@ -36,9 +36,10 @@ from app.search import (
     SearchBudgetWait,
     create_runs_from_plan,
     ensure_search_templates,
-    plan_cold_start,
+    plan_searches,
     run_search,
 )
+from app.search.feedback import record_outcomes
 from app.verify import verify_candidate
 
 
@@ -77,6 +78,7 @@ async def run_discovery(
     commit = persist or session.flush
     report = DiscoveryReport()
     ensure_search_templates(session, cfg)
+    record_outcomes(session, now=datetime.now(UTC))
     commit()
 
     prefs = {
@@ -92,7 +94,7 @@ async def run_discovery(
             log(f"search applicant {applicant_id}: {len(planned)} runs wait for their retry time")
             continue
         if not planned:
-            plan = plan_cold_start(session, pref, total_slots=slots_per_applicant, settings=cfg)
+            plan = plan_searches(session, pref, total_slots=slots_per_applicant, settings=cfg)
             runs = create_runs_from_plan(session, plan, applicant_id=applicant_id)
             commit()
         for run in runs:
@@ -122,7 +124,8 @@ async def run_discovery(
         commit()
         log(f"ai   {run.template_id:4} -> {type(outcome).__name__}")
 
-    for candidate in _waiting_for_cf3(session)[:max_cf3]:
+    # With no applicants left there is no one to search for yet.
+    for candidate in _waiting_for_cf3(session)[:max_cf3] if prefs else []:
         applicant_id = _applicant_for(session, candidate) or next(iter(prefs))
         outcome = await search_official_domain(
             session, gateway, candidate, applicant_id=applicant_id, pref=prefs[applicant_id],
