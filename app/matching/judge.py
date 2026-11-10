@@ -151,13 +151,13 @@ def tokens_used_today(session: Session, now: datetime) -> int:
     return int(used or 0)
 
 
-def _todo(session: Session, now: datetime) -> list[_Work]:
+def _todo(session: Session, now: datetime, applicant_ids: set[uuid.UUID] | None = None) -> list[_Work]:
     """Jobs each person has no current verdict for: their own locations first, then newest first.
 
     Only jobs whose title shares a word with one of the person's target roles: the rest would cost
     money for a near-certain "no".
     """
-    profiles = load_profiles(session)
+    profiles = load_profiles(session, applicant_ids)
     wanted = {row.applicant_id: wanted_locations(row.locations) for row in session.scalars(select(ApplicantPreference))}
     done = {
         (row.applicant_id, row.job_id): (row.job_hash, row.profile_hash)
@@ -204,7 +204,7 @@ async def judge_jobs(
             text=f"{item.profile.text}\n{item.text}",
             body=lambda item=item: build_body(item.profile.text, item.text, model=model, max_tokens=max_tokens),
         )
-        for item in islice(_todo(session, now), settings.ai_judge_per_cycle)
+        for item in islice(_todo(session, now, settings.ai_applicants()), settings.ai_judge_per_cycle)
     )
     cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_job_judge, units=Decimal(1), settings=settings)
 

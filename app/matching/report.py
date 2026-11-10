@@ -366,7 +366,7 @@ async def write_reports(
         return run
     model = settings.resolved_ai_report_model()
     max_tokens = settings.ai_report_max_output_tokens
-    readers = load_readers(session, cv_chars=settings.ai_report_cv_chars)
+    readers = load_readers(session, cv_chars=settings.ai_report_cv_chars, applicant_ids=settings.ai_applicants())
     asks = (
         Ask(
             item=item,

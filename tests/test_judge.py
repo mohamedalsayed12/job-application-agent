@@ -253,3 +253,15 @@ async def test_d50_one_run_judges_at_most_a_cycles_worth_and_the_next_carries_on
     second = await _judge(session, judge, ai_judge_per_cycle=2)
 
     assert (first.outcomes, second.outcomes) == ({"fits": 2}, {"fits": 1})
+
+
+async def test_d50_the_ai_can_be_limited_to_chosen_people(session: Session) -> None:
+    _policy(session, Decimal("1"))
+    await _jobs(session, ("Backend Developer", "Manchester, UK"))
+    chosen = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    judge = _Judge({"Backend Developer": (True, "mid", "It is a backend role.")})
+
+    await _judge(session, judge, ai_applicant_ids=f" {chosen} ")
+
+    assert [row.applicant_id for row in session.scalars(select(JobVerdict))] == [chosen]
