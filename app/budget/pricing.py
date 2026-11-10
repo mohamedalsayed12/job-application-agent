@@ -28,6 +28,8 @@ def estimate_cost(
         unit_price = settings.ai_cv_unit_price
     elif kind == SpendKind.ai_job_judge:
         unit_price = settings.ai_judge_unit_price
+    elif kind == SpendKind.ai_fit_report:
+        unit_price = settings.ai_report_unit_price
     else:
         unit_price = settings.ai_summary_unit_price
     return (unit_price * units).quantize(Decimal("0.0001"))

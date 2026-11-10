@@ -31,7 +31,9 @@ from app.matching.entry_level import (
     YEARS_REQUIRED,
 )
 from app.matching.verdicts import (
+    ADD_LINE,
     Profile,
+    current_reports,
     current_verdicts,
     digest,
     job_text,
@@ -485,6 +487,7 @@ def _match_applicant(
     wanted = wanted_locations(preference.locations)
     expected = _expected_salary(preference)
     held = skills.credentials.get(applicant_id, set())
+    fit_reports = current_reports(session, applicant_id)
     existing = {
         row.job_id: row
         for row in session.scalars(select(ApplicantJobMatch).where(ApplicantJobMatch.applicant_id == applicant_id))
@@ -495,6 +498,10 @@ def _match_applicant(
             continue
         verdict = verdicts.get(facts.job_id)
         if verdict is not None and not verdict.fits:
+            continue
+        # D52: once the full report is written, its score decides as well.
+        fit_report = fit_reports.get(facts.job_id) if verdict is not None else None
+        if fit_report is not None and fit_report.score < ADD_LINE:
             continue
         skill_fit = skills.fit(applicant_id, facts.job_id)
         role = match_role(
@@ -542,6 +549,8 @@ def _match_applicant(
                 "score": str(verdict.score) if verdict.score is not None else None,
                 "ratings": verdict.ratings,
             }
+        if fit_report is not None:
+            row.reasons["report"] = fit_report.report
         row.role_match = role.kind != RoleKind.skills
         row.location_fit = fits
         row.salary_status = salary

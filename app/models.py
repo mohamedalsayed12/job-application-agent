@@ -153,6 +153,7 @@ class SpendKind(StrEnum):
     ai_summary = "ai_summary"
     ai_cv_read = "ai_cv_read"
     ai_job_judge = "ai_job_judge"
+    ai_fit_report = "ai_fit_report"
 
 
 CANDIDATE_CLAIMABLE = (CandidateState.queued, CandidateState.retry_wait)
@@ -946,6 +947,31 @@ class JobVerdict(_UuidPk, Base):
     ratings: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     job_hash: Mapped[str] = mapped_column(Text())
     profile_hash: Mapped[str] = mapped_column(Text())
+    model: Mapped[str] = mapped_column(Text())
+    prompt_version: Mapped[str] = mapped_column(Text())
+    prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+
+class JobReport(_UuidPk, Base):
+    """D52: the AI's full fit report for one job and one person, written for jobs scoring 3.0 or more."""
+
+    __tablename__ = "job_report"
+    __table_args__ = (UniqueConstraint("applicant_id", "job_id", name="uq_job_report_applicant_job"),)
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    # Apply, Consider, Research first or Skip.
+    verdict: Mapped[str] = mapped_column(Text())
+    score: Mapped[Decimal] = mapped_column(Numeric(2, 1))
+    # Verdict sentence, requirements table, five criteria, blockers, confidence and questions, checked by code.
+    report: Mapped[dict[str, Any]] = mapped_column(JSONB())
+    # Hash of the job text and everything sent about the person, CV included; a change means a new report.
+    input_hash: Mapped[str] = mapped_column(Text())
     model: Mapped[str] = mapped_column(Text())
     prompt_version: Mapped[str] = mapped_column(Text())
     prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
