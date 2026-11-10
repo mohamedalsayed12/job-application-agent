@@ -297,3 +297,13 @@ def test_the_web_app_refuses_unsafe_settings(secret: str, key: str, problem: str
 
 def test_safe_settings_pass() -> None:
     assert Settings(_env_file=None, session_secret="s" * 32, admin_key="private-key").web_problems() == []
+
+
+async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: httpx.AsyncClient) -> None:
+    notice = await client.get("/privacy")
+    assert notice.status_code == 200
+    for expected in ("controller", "Argon2", "jaa_session", "30 days", "ico.org.uk", "never your profile, CV or email"):
+        assert expected in notice.text
+    register = (await client.get("/register")).text
+    assert 'href="/privacy"' in register
+    assert register.count('href="/privacy"') == 2
