@@ -302,7 +302,7 @@ def test_safe_settings_pass() -> None:
 async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: httpx.AsyncClient) -> None:
     notice = await client.get("/privacy")
     assert notice.status_code == 200
-    for expected in ("controller", "Argon2", "jaa_session", "30 days", "ico.org.uk", "the text of your CV is sent to Anthropic", "saved profile are never"):
+    for expected in ("controller", "Argon2", "jaa_session", "30 days", "ico.org.uk", "the text of your CV is sent to Anthropic", "your target roles, experience level, skills and degrees"):
         assert expected in notice.text
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register

@@ -152,6 +152,7 @@ class SpendKind(StrEnum):
     ai_extraction = "ai_extraction"
     ai_summary = "ai_summary"
     ai_cv_read = "ai_cv_read"
+    ai_job_judge = "ai_job_judge"
 
 
 CANDIDATE_CLAIMABLE = (CandidateState.queued, CandidateState.retry_wait)
@@ -923,4 +924,32 @@ class JobEmbedding(Base):
     # The text the vector was made from. A new summary or description gets a new vector.
     source_hash: Mapped[str] = mapped_column(Text())
     vector: Mapped[list[float]] = mapped_column(ARRAY(Float()))
+    updated_at: Mapped[datetime] = _updated()
+
+
+class JobVerdict(_UuidPk, Base):
+    """D50: the AI's judgement of whether one job fits one person, kept until the job or profile changes."""
+
+    __tablename__ = "job_verdict"
+    __table_args__ = (UniqueConstraint("applicant_id", "job_id", name="uq_job_verdict_applicant_job"),)
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    fits: Mapped[bool] = mapped_column(Boolean())
+    # entry, mid, senior or unclear, as the AI read the advert.
+    level: Mapped[str] = mapped_column(Text())
+    # Shown to the person only when every name and number in it is in the advert or their profile.
+    reason: Mapped[str | None] = mapped_column(Text())
+    # The overall 1-5 score; fits means 4.0 or more. Null on verdicts made before the score existed.
+    score: Mapped[Decimal | None] = mapped_column(Numeric(2, 1))
+    # The 1-5 rating per area (cv_match, role_alignment, comp, culture) and the red flags it named.
+    ratings: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
+    job_hash: Mapped[str] = mapped_column(Text())
+    profile_hash: Mapped[str] = mapped_column(Text())
+    model: Mapped[str] = mapped_column(Text())
+    prompt_version: Mapped[str] = mapped_column(Text())
+    prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
