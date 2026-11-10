@@ -1,3 +1,4 @@
+import uuid
 from decimal import Decimal
 from functools import lru_cache
 
@@ -81,6 +82,11 @@ class Settings(BaseSettings):
     ai_judge_daily_token_cap: int = 4000000
     # Calls sent to the AI at once; spending and saving stay one at a time.
     ai_judge_concurrency: int = 5
+    # Work per worker cycle, so matching updates the page every few minutes instead of after the whole backlog.
+    ai_judge_per_cycle: int = 100
+    ai_report_per_cycle: int = 20
+    # Operator request (2026-11-10): comma-separated applicant ids the AI judges and reports for. Blank = everyone.
+    ai_applicant_ids: str = ""
 
     # D52: the full fit report for jobs scoring 3.0 or more. Blank model = provider default.
     ai_report_model: str = ""
@@ -123,6 +129,11 @@ class Settings(BaseSettings):
 
     def resolved_ai_judge_model(self) -> str:
         return self.ai_judge_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def ai_applicants(self) -> set[uuid.UUID] | None:
+        """The people the AI works for, or None for everyone."""
+        ids = {uuid.UUID(part.strip()) for part in self.ai_applicant_ids.split(",") if part.strip()}
+        return ids or None
 
     def resolved_ai_report_model(self) -> str:
         return self.ai_report_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")

@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from itertools import islice
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -150,13 +151,13 @@ def tokens_used_today(session: Session, now: datetime) -> int:
     return int(used or 0)
 
 
-def _todo(session: Session, now: datetime) -> list[_Work]:
+def _todo(session: Session, now: datetime, applicant_ids: set[uuid.UUID] | None = None) -> list[_Work]:
     """Jobs each person has no current verdict for: their own locations first, then newest first.
 
     Only jobs whose title shares a word with one of the person's target roles: the rest would cost
     money for a near-certain "no".
     """
-    profiles = load_profiles(session)
+    profiles = load_profiles(session, applicant_ids)
     wanted = {row.applicant_id: wanted_locations(row.locations) for row in session.scalars(select(ApplicantPreference))}
     done = {
         (row.applicant_id, row.job_id): (row.job_hash, row.profile_hash)
@@ -185,7 +186,7 @@ async def judge_jobs(
     persist: Callable[[], None],
     now: datetime | None = None,
 ) -> JudgeReport:
-    """Judge every job that has no current verdict, until a cap stops it. The next run carries on."""
+    """Judge up to a cycle's worth of jobs with no current verdict, until a cap stops it. The next run carries on."""
     now = now or datetime.now(UTC)
     report = JudgeReport()
     api_key = settings.anthropic_api_key.strip()
@@ -203,7 +204,7 @@ async def judge_jobs(
             text=f"{item.profile.text}\n{item.text}",
             body=lambda item=item: build_body(item.profile.text, item.text, model=model, max_tokens=max_tokens),
         )
-        for item in _todo(session, now)
+        for item in islice(_todo(session, now, settings.ai_applicants()), settings.ai_judge_per_cycle)
     )
     cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_job_judge, units=Decimal(1), settings=settings)
 

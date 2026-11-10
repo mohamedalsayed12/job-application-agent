@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from itertools import islice
 from typing import Any
 
 from sqlalchemy import func, select
@@ -356,7 +357,7 @@ async def write_reports(
     persist: Callable[[], None],
     now: datetime | None = None,
 ) -> ReportRun:
-    """Write every missing report until a cap stops it. The next run carries on."""
+    """Write up to a cycle's worth of missing reports, until a cap stops it. The next run carries on."""
     now = now or datetime.now(UTC)
     run = ReportRun()
     api_key = settings.anthropic_api_key.strip()
@@ -365,7 +366,7 @@ async def write_reports(
         return run
     model = settings.resolved_ai_report_model()
     max_tokens = settings.ai_report_max_output_tokens
-    readers = load_readers(session, cv_chars=settings.ai_report_cv_chars)
+    readers = load_readers(session, cv_chars=settings.ai_report_cv_chars, applicant_ids=settings.ai_applicants())
     asks = (
         Ask(
             item=item,
@@ -375,7 +376,7 @@ async def write_reports(
             text=f"{item.reader.profile}\n{item.reader.cv}\n{item.text}",
             body=lambda item=item: build_body(item.reader, item.text, model=model, max_tokens=max_tokens),
         )
-        for item in _todo(session, now, readers)
+        for item in islice(_todo(session, now, readers), settings.ai_report_per_cycle)
     )
     cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_fit_report, units=Decimal(1), settings=settings)
 
