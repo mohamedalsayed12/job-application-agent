@@ -21,12 +21,12 @@ from app.audit.sample import (
     list_classified_candidates,
     stratified_sample,
 )
-from tests.fixtures.audit.seed import seed_classified_from_fixture
 from app.audit.types import CLASSIFIED_STATES, CSV_COLUMNS, DEFAULT_SAMPLE_SIZE
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
 from app.models import AuditSample, Candidate, CandidateState, ExtractedBy
+from tests.fixtures.audit.seed import seed_classified_from_fixture
 
 ADMIN = "test-admin-key-step10"
 

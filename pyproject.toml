@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "ruff>=0.17.4",
 ]
 
 [tool.pytest.ini_options]
@@ -26,6 +27,13 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    "B008",  # FastAPI Depends() in defaults
+    "E501",  # no formatter enforced; 198 existing long lines
+]
 
 [build-system]
 requires = ["hatchling"]

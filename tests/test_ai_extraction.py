@@ -30,6 +30,7 @@ from app.extraction.ai_openai import OPENAI_CHAT_URL
 from app.extraction.ai_prompt import wrap_results_as_data
 from app.extraction.ai_types import (
     AiEvidenceItem,
+    AiInFlightWait,
     AiSuggestion,
     LeftoverResult,
 )
@@ -580,3 +581,116 @@ def test_code_handled_rows_are_not_leftovers(session: Session) -> None:
     leftovers = leftover_search_results(rows)
     assert len(leftovers) == 1
     assert leftovers[0].url == "https://news.example/x"
+
+def test_stale_pending_cache_row_is_stealable() -> None:
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from app.extraction import ai_extract
+
+    fresh = SimpleNamespace(
+        output={"status": "pending"},
+        created_at=datetime.now(UTC),
+    )
+    stale = SimpleNamespace(
+        output={"status": "pending"},
+        created_at=datetime.now(UTC) - timedelta(minutes=16),
+    )
+    done = SimpleNamespace(output={"employers": []}, created_at=datetime.now(UTC))
+    assert ai_extract._is_pending(fresh) is True
+    assert ai_extract._pending_is_stale(fresh) is False
+    assert ai_extract._pending_is_stale(stale) is True
+    assert ai_extract._is_pending(done) is False
+
+
+def test_cached_employer_requires_all_evidence_ids() -> None:
+    from app.extraction import ai_extract
+
+    kept = uuid.uuid4()
+    dropped = uuid.uuid4()
+    entry = {
+        "company_name": " Acme ",
+        "domain_candidates": ["acme.example"],
+        "evidence": [
+            {"result_id": str(kept), "quote": "Acme builds widgets"},
+            {"result_id": str(dropped), "quote": "Acme hires"},
+        ],
+    }
+    assert ai_extract._hit_from_cached_employer(entry, {kept}) is None
+    hit = ai_extract._hit_from_cached_employer(entry, {kept, dropped})
+    assert hit is not None
+    assert hit.company_name == "Acme"
+    assert ai_extract._hit_from_cached_employer(
+        {"company_name": "  ", "domain_candidates": [], "evidence": []},
+        {kept},
+    ) is None
+
+
+def test_concurrent_stale_claim_loser_waits(migrated_engine) -> None:
+    """Two passes recovering the same stale pending row must not raise IntegrityError."""
+    from datetime import timedelta
+
+    from sqlalchemy import delete, update
+
+    from app.extraction import ai_extract
+
+    leftover = LeftoverResult(
+        id=uuid.uuid4(),
+        url="https://example.com/x",
+        title="t",
+        snippet="s",
+    )
+    leftovers = [leftover]
+    digest = input_hash(
+        leftovers, model="gpt-4o-mini", prompt_version=PROMPT_VERSION
+    )
+    suspicious: frozenset[uuid.UUID] = frozenset()
+
+    try:
+        with Session(migrated_engine) as setup:
+            setup.add(
+                AiExtraction(
+                    input_hash=digest,
+                    model="gpt-4o-mini",
+                    prompt_version=PROMPT_VERSION,
+                    output={"status": "pending"},
+                    grounded_count=0,
+                    ungrounded_count=0,
+                    cost_amount=Decimal("0"),
+                )
+            )
+            setup.commit()
+            setup.execute(
+                update(AiExtraction)
+                .where(AiExtraction.input_hash == digest)
+                .values(created_at=datetime.now(UTC) - timedelta(minutes=20))
+            )
+            setup.commit()
+
+        with Session(migrated_engine) as first, Session(migrated_engine) as second:
+            winner = ai_extract._take_claim(
+                first,
+                digest=digest,
+                model="gpt-4o-mini",
+                leftovers=leftovers,
+                suspicious=suspicious,
+                cf3_target=None,
+            )
+            loser = ai_extract._take_claim(
+                second,
+                digest=digest,
+                model="gpt-4o-mini",
+                leftovers=leftovers,
+                suspicious=suspicious,
+                cf3_target=None,
+            )
+            assert isinstance(winner, AiExtraction)
+            assert isinstance(loser, AiInFlightWait)
+            first.rollback()
+            second.rollback()
+    finally:
+        with Session(migrated_engine) as cleanup:
+            cleanup.execute(
+                delete(AiExtraction).where(AiExtraction.input_hash == digest)
+            )
+            cleanup.commit()

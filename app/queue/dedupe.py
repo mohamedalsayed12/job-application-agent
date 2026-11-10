@@ -188,10 +188,24 @@ def _resolve(
         live = _live_by_board(session, board)
         if live is not None:
             return _ResolveHit("existing", "board_live", candidate=live)
-        cached = _discovery_cache_board(session, board, now=now)
+        cached = _cache_lookup(
+            session,
+            Candidate.board_system == board.system,
+            Candidate.board_instance == board.instance,
+            Candidate.board_id == board.board_id,
+            now=now,
+            due=False,
+        )
         if cached is not None:
             return _ResolveHit("existing", "discovery_cache", candidate=cached)
-        due = _due_cache_board(session, board, now=now)
+        due = _cache_lookup(
+            session,
+            Candidate.board_system == board.system,
+            Candidate.board_instance == board.instance,
+            Candidate.board_id == board.board_id,
+            now=now,
+            due=True,
+        )
         if due is not None:
             return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
 
@@ -223,10 +237,14 @@ def _resolve(
         )
         if live is not None:
             return _ResolveHit("existing", "domain_live", candidate=live)
-        cached = _discovery_cache_domain(session, domain, now=now)
+        domain_match = or_(
+            Candidate.primary_domain == domain,
+            _array_has(Candidate.domain_candidates, domain),
+        )
+        cached = _cache_lookup(session, domain_match, now=now, due=False)
         if cached is not None:
             return _ResolveHit("existing", "discovery_cache", candidate=cached)
-        due = _due_cache_domain(session, domain, now=now)
+        due = _cache_lookup(session, domain_match, now=now, due=True)
         if due is not None:
             return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
 
@@ -238,10 +256,16 @@ def _resolve(
     # 3. Cleaned name — group only when both sides have no board and no domains.
     #    A matching name alone never merges across different domains.
     if primary is None and board is None and not domains:
-        cached = _discovery_cache_name(session, cleaned, now=now)
+        name_match = (
+            Candidate.cleaned_name == cleaned,
+            Candidate.primary_domain.is_(None),
+            Candidate.board_system.is_(None),
+            func.cardinality(Candidate.domain_candidates) == 0,
+        )
+        cached = _cache_lookup(session, *name_match, now=now, due=False)
         if cached is not None:
             return _ResolveHit("existing", "discovery_cache", candidate=cached)
-        due = _due_cache_name(session, cleaned, now=now)
+        due = _cache_lookup(session, *name_match, now=now, due=True)
         if due is not None:
             return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
         grouped = _live_by_name_bare(session, cleaned)
@@ -391,104 +415,14 @@ def _due_unsupported_predicate(now: datetime):
     )
 
 
-def _discovery_cache_board(
+def _cache_lookup(
     session: Session,
-    board: BoardKey,
-    *,
+    *key_filters: ColumnElement[bool],
     now: datetime,
+    due: bool,
 ) -> Candidate | None:
-    return session.scalars(
-        select(Candidate).where(
-            Candidate.board_system == board.system,
-            Candidate.board_instance == board.instance,
-            Candidate.board_id == board.board_id,
-            _active_cache_predicate(now),
-        )
-    ).first()
-
-
-def _due_cache_board(
-    session: Session,
-    board: BoardKey,
-    *,
-    now: datetime,
-) -> Candidate | None:
-    return session.scalars(
-        select(Candidate).where(
-            Candidate.board_system == board.system,
-            Candidate.board_instance == board.instance,
-            Candidate.board_id == board.board_id,
-            _due_unsupported_predicate(now),
-        )
-    ).first()
-
-
-def _discovery_cache_domain(
-    session: Session,
-    domain: str,
-    *,
-    now: datetime,
-) -> Candidate | None:
-    return session.scalars(
-        select(Candidate).where(
-            or_(
-                Candidate.primary_domain == domain,
-                _array_has(Candidate.domain_candidates, domain),
-            ),
-            _active_cache_predicate(now),
-        )
-    ).first()
-
-
-def _due_cache_domain(
-    session: Session,
-    domain: str,
-    *,
-    now: datetime,
-) -> Candidate | None:
-    return session.scalars(
-        select(Candidate).where(
-            or_(
-                Candidate.primary_domain == domain,
-                _array_has(Candidate.domain_candidates, domain),
-            ),
-            _due_unsupported_predicate(now),
-        )
-    ).first()
-
-
-def _discovery_cache_name(
-    session: Session,
-    cleaned: str,
-    *,
-    now: datetime,
-) -> Candidate | None:
-    return session.scalars(
-        select(Candidate).where(
-            Candidate.cleaned_name == cleaned,
-            Candidate.primary_domain.is_(None),
-            Candidate.board_system.is_(None),
-            func.cardinality(Candidate.domain_candidates) == 0,
-            _active_cache_predicate(now),
-        )
-    ).first()
-
-
-def _due_cache_name(
-    session: Session,
-    cleaned: str,
-    *,
-    now: datetime,
-) -> Candidate | None:
-    return session.scalars(
-        select(Candidate).where(
-            Candidate.cleaned_name == cleaned,
-            Candidate.primary_domain.is_(None),
-            Candidate.board_system.is_(None),
-            func.cardinality(Candidate.domain_candidates) == 0,
-            _due_unsupported_predicate(now),
-        )
-    ).first()
+    predicate = _due_unsupported_predicate(now) if due else _active_cache_predicate(now)
+    return session.scalars(select(Candidate).where(*key_filters, predicate)).first()
 
 
 def _enrich(

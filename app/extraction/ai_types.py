@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -85,7 +85,6 @@ class AiExtractionOutcome:
     cost_amount: Decimal | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    raw_suggestions: tuple[AiSuggestion, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,11 +1,11 @@
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+import app.models as domain_models
+from alembic import context
 from app.core.config import get_settings
 from app.core.db import Base
-import app.models as domain_models
 
 config = context.config
 
@@ -17,7 +17,8 @@ if "applicant" not in target_metadata.tables:
     raise RuntimeError(f"models not registered: {domain_models.__name__}")
 
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# ConfigParser treats % as interpolation; passwords like p%40ss must be doubled.
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

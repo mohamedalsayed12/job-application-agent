@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from math import ceil
-from urllib.parse import parse_qs, urlparse, unquote_plus
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 import httpx
 import pytest
@@ -27,7 +27,12 @@ from app.models import (
     SpendLedger,
     TemplateStats,
 )
-from app.search.planner import EXPLORATION_SHARE, PlannedSearch, SearchPlan, plan_cold_start
+from app.search.planner import (
+    EXPLORATION_SHARE,
+    PlannedSearch,
+    SearchPlan,
+    plan_cold_start,
+)
 from app.search.runner import SearchBudgetWait, run_search
 from app.search.schedule import create_runs_from_plan
 from app.search.templates import (

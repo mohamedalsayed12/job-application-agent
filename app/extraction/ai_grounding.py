@@ -199,7 +199,7 @@ def parse_suggestions(payload: object) -> tuple[list[AiSuggestion], list[Ungroun
 
     suggestions: list[AiSuggestion] = []
     for entry in raw_employers:
-        parsed = _parse_one_employer(entry)
+        parsed = parse_one_employer(entry)
         if isinstance(parsed, UngroundedItem):
             rejects.append(parsed)
             continue
@@ -207,7 +207,7 @@ def parse_suggestions(payload: object) -> tuple[list[AiSuggestion], list[Ungroun
     return suggestions, rejects
 
 
-def _parse_one_employer(entry: object) -> AiSuggestion | UngroundedItem:
+def parse_one_employer(entry: object) -> AiSuggestion | UngroundedItem:
     if not isinstance(entry, dict):
         return UngroundedItem(reason="employer_not_object")
     name = entry.get("company_name")

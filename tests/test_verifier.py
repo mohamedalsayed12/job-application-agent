@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
-from collections.abc import AsyncIterator, Iterator
-
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -260,7 +259,7 @@ async def test_t16_timeout_retries_then_needs_review_never_unsupported(
 
     gateway = _gateway(handler)
 
-    for step, delay in enumerate(VERIFICATION_RETRY_DELAYS):
+    for _step, delay in enumerate(VERIFICATION_RETRY_DELAYS):
         if candidate.state != CandidateState.verifying:
             claimed = claim_next_candidate(session, now=now)
             assert claimed is not None

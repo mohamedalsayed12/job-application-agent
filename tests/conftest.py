@@ -2,12 +2,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from alembic import command
 from app.core.config import get_settings
 
 _ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"

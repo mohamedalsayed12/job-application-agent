@@ -8,10 +8,13 @@ from fastapi import Header, HTTPException, Query, status
 
 from app.core.config import Settings, get_settings
 
+# Shipped default is not a credential; refuse it so a forgotten .env cannot open admin.
+_UNSET_ADMIN_KEY = "change-me"
+
 
 def _matches(provided: str | None, settings: Settings) -> bool:
     expected = settings.admin_key or ""
-    if not expected:
+    if not expected or expected == _UNSET_ADMIN_KEY:
         return False
     return secrets.compare_digest(provided or "", expected)
 

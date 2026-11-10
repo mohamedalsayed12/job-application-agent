@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable, Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -18,16 +18,18 @@ from app.budget.pricing import estimate_cost
 from app.core.config import Settings, get_settings
 from app.extraction.ai_cache import input_hash, lookup_cached
 from app.extraction.ai_call import call_leftover_extraction
-from app.extraction.ai_grounding import ground_suggestions, parse_suggestions
+from app.extraction.ai_grounding import (
+    ground_suggestions,
+    parse_one_employer,
+    parse_suggestions,
+)
 from app.extraction.ai_injection import scan_suspicious
 from app.extraction.ai_prompt import PROMPT_VERSION, estimate_input_tokens
 from app.extraction.ai_types import (
     AiBudgetWait,
     AiCallFailure,
-    AiEvidenceItem,
     AiExtractionOutcome,
     AiInFlightWait,
-    AiSuggestion,
     AiTokenCapWait,
     GroundedHit,
     LeftoverResult,
@@ -49,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 AiExtractResult = AiExtractionOutcome | AiBudgetWait | AiTokenCapWait | AiInFlightWait
 _PENDING_OUTPUT: dict[str, Any] = {"status": "pending"}
+# Crash after commit of the pending marker can leave a permanent in-flight row.
+_PENDING_STEAL_AFTER = timedelta(minutes=15)
 
 
 async def extract_ai_leftovers(
@@ -148,45 +152,37 @@ async def _extract_chunk(
     cf3_target: Candidate | None = None,
 ) -> AiExtractResult:
     digest = input_hash(leftovers, model=model, prompt_version=PROMPT_VERSION)
-    cached = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
-    if cached is not None:
-        if _is_pending(cached):
-            return AiInFlightWait()
-        outcome = _outcome_from_cache(cached, leftovers, suspicious)
-        _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
-        return outcome
-
     estimated_in = estimate_input_tokens(leftovers)
     max_out = settings.ai_extraction_max_output_tokens
     estimated_total = estimated_in + max_out
     if estimated_total > settings.ai_extraction_per_item_token_cap:
+        # Still honour a finished cache hit when over the live-call token cap.
+        cached = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
+        if cached is not None and not _is_pending(cached):
+            outcome = _outcome_from_cache(cached, leftovers, suspicious)
+            _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
+            return outcome
         return AiTokenCapWait(cap="per_item")
     used_today = _tokens_used_today(session)
     if used_today + estimated_total > settings.ai_extraction_daily_token_cap:
+        cached = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
+        if cached is not None and not _is_pending(cached):
+            outcome = _outcome_from_cache(cached, leftovers, suspicious)
+            _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
+            return outcome
         return AiTokenCapWait(cap="per_day")
 
-    # Claim the cache slot before any paid call so concurrent workers cannot
-    # both hit the AI provider for the same input (§10.6). Survives persist=commit.
-    claim = AiExtraction(
-        input_hash=digest,
+    claimed = _take_claim(
+        session,
+        digest=digest,
         model=model,
-        prompt_version=PROMPT_VERSION,
-        output=dict(_PENDING_OUTPUT),
-        grounded_count=0,
-        ungrounded_count=0,
-        cost_amount=Decimal("0"),
+        leftovers=leftovers,
+        suspicious=suspicious,
+        cf3_target=cf3_target,
     )
-    try:
-        with session.begin_nested():
-            session.add(claim)
-            session.flush()
-    except IntegrityError:
-        existing = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
-        if existing is None or _is_pending(existing):
-            return AiInFlightWait()
-        outcome = _outcome_from_cache(existing, leftovers, suspicious)
-        _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
-        return outcome
+    if not isinstance(claimed, AiExtraction):
+        return claimed
+    claim = claimed
 
     gate = BudgetGate(session)
     cost = estimate_cost(
@@ -253,7 +249,6 @@ async def _extract_chunk(
         grounded=grounded,
         ungrounded=ungrounded,
         suspicious=chunk_suspicious,
-        suggestions=suggestions,
         prompt_tokens=call.prompt_tokens,
         completion_tokens=call.completion_tokens,
         provider_model=call.model,
@@ -275,7 +270,6 @@ async def _extract_chunk(
         cost_amount=cost,
         prompt_tokens=call.prompt_tokens,
         completion_tokens=call.completion_tokens,
-        raw_suggestions=tuple(suggestions),
     )
     _persist_grounded(session, outcome, leftovers, cf3_target)
     return outcome
@@ -315,6 +309,100 @@ def _is_pending(row: AiExtraction) -> bool:
     return isinstance(row.output, dict) and row.output.get("status") == "pending"
 
 
+def _pending_is_stale(row: AiExtraction, *, now: datetime | None = None) -> bool:
+    moment = now or datetime.now(UTC)
+    created = row.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return created <= moment - _PENDING_STEAL_AFTER
+
+
+def _new_pending_claim(*, digest: str, model: str) -> AiExtraction:
+    return AiExtraction(
+        input_hash=digest,
+        model=model,
+        prompt_version=PROMPT_VERSION,
+        output=dict(_PENDING_OUTPUT),
+        grounded_count=0,
+        ungrounded_count=0,
+        cost_amount=Decimal("0"),
+    )
+
+
+def _resolve_cached_row(
+    session: Session,
+    row: AiExtraction,
+    leftovers: Sequence[LeftoverResult],
+    suspicious: frozenset[uuid.UUID],
+    cf3_target: Candidate | None,
+) -> AiExtractionOutcome | AiInFlightWait | None:
+    """Return a finished outcome, an in-flight wait, or None after deleting a stale pending row."""
+    if _is_pending(row):
+        if not _pending_is_stale(row):
+            return AiInFlightWait()
+        # Lock before delete so a second pass waits instead of deleting a live claim.
+        locked = session.scalars(
+            select(AiExtraction)
+            .where(AiExtraction.id == row.id)
+            .with_for_update(skip_locked=True)
+        ).first()
+        if locked is None:
+            return AiInFlightWait()
+        if not _is_pending(locked):
+            outcome = _outcome_from_cache(locked, leftovers, suspicious)
+            _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
+            return outcome
+        if not _pending_is_stale(locked):
+            return AiInFlightWait()
+        session.delete(locked)
+        session.flush()
+        return None
+    outcome = _outcome_from_cache(row, leftovers, suspicious)
+    _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
+    return outcome
+
+
+def _take_claim(
+    session: Session,
+    *,
+    digest: str,
+    model: str,
+    leftovers: Sequence[LeftoverResult],
+    suspicious: frozenset[uuid.UUID],
+    cf3_target: Candidate | None,
+) -> AiExtraction | AiExtractionOutcome | AiInFlightWait:
+    """Claim the cache slot for a live call, or return a cache hit / in-flight wait.
+
+    Survives persist=commit. A stale pending row is deleted and the insert is
+    retried once so a crash cannot block the hash forever.
+    """
+    existing = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
+    if existing is not None:
+        resolved = _resolve_cached_row(
+            session, existing, leftovers, suspicious, cf3_target
+        )
+        if resolved is not None:
+            return resolved
+
+    for _ in range(2):
+        claim = _new_pending_claim(digest=digest, model=model)
+        try:
+            with session.begin_nested():
+                session.add(claim)
+                session.flush()
+            return claim
+        except IntegrityError:
+            raced = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
+            if raced is None:
+                return AiInFlightWait()
+            resolved = _resolve_cached_row(
+                session, raced, leftovers, suspicious, cf3_target
+            )
+            if resolved is not None:
+                return resolved
+    return AiInFlightWait()
+
+
 def _tokens_used_today(session: Session, *, now: datetime | None = None) -> int:
     moment = now or datetime.now(UTC)
     day_start = datetime(moment.year, moment.month, moment.day, tzinfo=UTC)
@@ -340,7 +428,6 @@ def _serialize_output(
     grounded: Sequence[GroundedHit],
     ungrounded: Sequence[UngroundedItem],
     suspicious: frozenset[uuid.UUID],
-    suggestions: Sequence[AiSuggestion],
     prompt_tokens: int,
     completion_tokens: int,
     provider_model: str,
@@ -366,17 +453,6 @@ def _serialize_output(
             for item in ungrounded
         ],
         "suspicious_result_ids": [str(item) for item in sorted(suspicious, key=str)],
-        "raw_suggestions": [
-            {
-                "company_name": item.company_name,
-                "domain_candidates": list(item.domain_candidates),
-                "evidence": [
-                    {"result_id": str(ev.result_id), "quote": ev.quote}
-                    for ev in item.evidence
-                ],
-            }
-            for item in suggestions
-        ],
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -453,37 +529,20 @@ def _hit_from_cached_employer(
     entry: object,
     leftover_ids: set[uuid.UUID],
 ) -> GroundedHit | None:
-    if not isinstance(entry, dict):
+    parsed = parse_one_employer(entry)
+    if isinstance(parsed, UngroundedItem):
         return None
-    name = entry.get("company_name")
-    if not isinstance(name, str) or not name.strip():
+    name = parsed.company_name.strip()
+    if not name:
         return None
-    domains_raw = entry.get("domain_candidates", [])
-    if not isinstance(domains_raw, list):
+    if not parsed.evidence or any(
+        item.result_id not in leftover_ids for item in parsed.evidence
+    ):
         return None
-    domains = tuple(item for item in domains_raw if isinstance(item, str))
-    evidence_raw = entry.get("evidence", [])
-    if not isinstance(evidence_raw, list) or not evidence_raw:
-        return None
-    evidence: list[AiEvidenceItem] = []
-    for item in evidence_raw:
-        if not isinstance(item, dict):
-            return None
-        result_id_raw = item.get("result_id")
-        quote = item.get("quote")
-        if not isinstance(result_id_raw, str) or not isinstance(quote, str):
-            return None
-        try:
-            result_id = uuid.UUID(result_id_raw)
-        except ValueError:
-            return None
-        if result_id not in leftover_ids:
-            return None
-        evidence.append(AiEvidenceItem(result_id=result_id, quote=quote[:200]))
     return GroundedHit(
-        company_name=name.strip(),
-        domain_candidates=domains,
-        evidence=tuple(evidence),
+        company_name=name,
+        domain_candidates=parsed.domain_candidates,
+        evidence=parsed.evidence,
     )
 
 

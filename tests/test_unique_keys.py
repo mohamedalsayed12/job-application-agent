@@ -1,14 +1,14 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import UniqueConstraint, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from alembic import command
 from app.models import (
     BoardStatus,
     Employer,
@@ -129,7 +129,7 @@ def test_employer_board_system_instance_board_id_unique(session: Session) -> Non
 
 
 def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     fetch = FetchRun(
         source="greenhouse",
         outcome=FetchOutcome.complete,

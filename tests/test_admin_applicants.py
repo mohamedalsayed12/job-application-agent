@@ -316,3 +316,15 @@ def test_update_clears_salary(session: Session) -> None:
     assert row.salary_amount is None
     assert row.salary_currency is None
     assert row.salary_period is None
+
+def test_default_admin_key_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api.admin_auth import _matches
+    from app.core.config import Settings
+
+    monkeypatch.delenv("ADMIN_KEY", raising=False)
+    get_settings.cache_clear()
+    settings = Settings(admin_key="change-me", _env_file=None)  # type: ignore[call-arg]
+    assert _matches("change-me", settings) is False
+    assert _matches("anything", settings) is False
+    real = Settings(admin_key=ADMIN, _env_file=None)  # type: ignore[call-arg]
+    assert _matches(ADMIN, real) is True
