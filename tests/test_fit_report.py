@@ -152,7 +152,8 @@ async def test_d52_a_job_scoring_3_or_more_gets_a_checked_report_shown_on_the_pa
 
     listing = load_listings(session, applicant, everywhere=False, page_number=1)[0][0]
     page = render_listing(listing)
-    assert "Consider · 3.8/5" in page
+    assert ">Consider</span>" in page
+    assert "<b>3.8</b><small>/5</small>" in page
     assert "<summary>Fit report</summary>" in page
     assert "Evidence confidence: Medium." in page
     assert "Is the role open to graduates?" in page

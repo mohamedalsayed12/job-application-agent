@@ -100,8 +100,9 @@ async def test_saving_a_profile_matches_at_once_and_lists_the_best_first(
     await _register_with_profile(client)
     page = (await client.get("/listings", params={"sort": "score"})).text
     assert sorted(_titles(page)) == ["Graduate Backend Developer", "Junior Backend Developer"]
-    scores = [int(score) for score in re.findall(r"Match score</span><b>([0-9]+)</b><small>/100", page)]
-    assert scores == sorted(scores, reverse=True)
+    # D53: only the AI's score out of 5 is shown; jobs it has not scored yet say so.
+    assert "/100" not in page
+    assert page.count("Not scored yet") == 2
     assert "Sales Manager" not in page
 
     everywhere = _titles((await client.get("/listings", params={"everywhere": "1", "sort": "score"})).text)
