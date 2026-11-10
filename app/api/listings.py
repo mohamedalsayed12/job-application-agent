@@ -78,6 +78,10 @@ _STYLE = """<style>
 .skills-row { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; font-size: 0.8rem; }
 .why { background: var(--bg); border-radius: 8px; padding: 0.5rem 0.75rem; margin-top: 0.75rem; font-size: 0.85rem; }
 .why summary { cursor: pointer; font-weight: 600; }
+.why table.report { width: 100%; border-collapse: collapse; margin: 0.5rem 0; display: block; overflow-x: auto; }
+.why table.report th, .why table.report td { text-align: left; vertical-align: top; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--line, #ddd); }
+.why ol.criteria { margin: 0.5rem 0; padding-left: 1.25rem; }
+.why ul.plain { margin: 0.25rem 0 0.5rem; padding-left: 1.25rem; list-style: disc; display: block; }
 .why ul { margin: 0.5rem 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.25rem 1rem; }
 .job-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.75rem; font-size: 0.8rem; color: var(--muted); }
 .discover { background: var(--primary-soft); border-color: #c9d5f7; font-size: 0.9rem; }
@@ -298,10 +302,66 @@ _AI_TAG = '<span class="tag blue" title="The AI read the advert and judged it fi
 
 
 def _ai_score_tag(item: Listing) -> str:
+    report = item.reasons.get("report")
+    if report:
+        verdict, score = report.get("verdict", ""), report.get("score", "")
+        tone = "good" if verdict == "Apply" else "blue"
+        return f'<span class="tag {tone}" title="Verdict and score out of 5 from the AI fit report">{_e(verdict)} · {_e(score)}/5</span>'
     score = item.reasons.get("ai", {}).get("score")
     if not score:
         return ""
     return f'<span class="tag blue" title="How well the AI judged this job fits you, out of 5">AI score {_e(score)}/5</span>'
+
+
+_REPORT_CRITERIA = (
+    ("cv_match", "CV match"),
+    ("career_direction", "Career direction"),
+    ("compensation", "Compensation"),
+    ("culture", "Culture and work setup"),
+    ("red_flags", "Red flags and blockers"),
+)
+
+
+def _fit_report(item: Listing) -> str:
+    """D52: the AI's full fit report, in the order the operator asked for."""
+    report = item.reasons.get("report")
+    if not report:
+        return ""
+    head = f"<p><b>{_e(report.get('verdict', ''))} · {_e(report.get('score', ''))}/5.</b> {_e(report.get('verdict_reason', ''))}</p>"
+    if report.get("hard_blockers"):
+        head += f"<p><b>Hard blockers:</b> {_e('; '.join(report['hard_blockers']))}</p>"
+    rows = "".join(
+        f"<tr><td>{_e(row['requirement'])}</td><td>{_e(row['importance'])} ({_e(row['basis'])})</td>"
+        f"<td>{_e(row['match'])}</td><td>{_e(chr(34) + row['cv_quote'] + chr(34) if row.get('cv_quote') else row.get('evidence', ''))}</td></tr>"
+        for row in report.get("requirements", [])
+    )
+    table = (
+        '<table class="report"><thead><tr><th>Requirement</th><th>Importance and basis</th><th>Match</th>'
+        f"<th>CV evidence or gap</th></tr></thead><tbody>{rows}</tbody></table>"
+        if rows
+        else ""
+    )
+    criteria = report.get("criteria", {})
+    assessed = "".join(
+        f"<li><b>{label}</b> ({_e(criteria[key]['evidence'])}): {_e(criteria[key]['assessment'])}</li>"
+        for key, label in _REPORT_CRITERIA
+        if key in criteria
+    )
+    pay = f"<p>Advertised pay: {_e(report.get('advertised_pay', 'not stated'))}. Market estimate: {_e(report.get('market_estimate', 'none given'))}.</p>"
+    confidence = f"<p><b>Evidence confidence: {_e(report.get('confidence', ''))}.</b></p>"
+    questions = _plain_list("Questions that could change the verdict:", report.get("questions", []))
+    assumptions = _plain_list("Assumptions:", report.get("assumptions", []))
+    cv_note = "" if report.get("cv_read") else '<p class="muted">No CV was read for this report, so CV evidence comes from your profile only.</p>'
+    return (
+        '<details class="why"><summary>Fit report</summary>'
+        f'{head}{table}<ol class="criteria">{assessed}</ol>{pay}{confidence}{questions}{assumptions}{cv_note}</details>'
+    )
+
+
+def _plain_list(title: str, items: list[str]) -> str:
+    if not items:
+        return ""
+    return f'<p>{_e(title)}</p><ul class="plain">' + "".join(f"<li>{_e(item)}</li>" for item in items) + "</ul>"
 
 
 def render_listing(item: Listing) -> str:
@@ -337,6 +397,7 @@ def render_listing(item: Listing) -> str:
 <div class="about">{about}</div>
 {_skills(item)}
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
+{_fit_report(item)}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url)}

@@ -10,14 +10,25 @@ import hashlib
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ApplicantPreference, ApplicantProfile, ApplicantSkill, JobVerdict
+from app.models import (
+    ApplicantPreference,
+    ApplicantProfile,
+    ApplicantSkill,
+    JobReport,
+    JobVerdict,
+)
 
 PROMPT_VERSION = "job-judge-v2"
+# D52: the full fit report. Shared here so matching can read reports without importing the writer.
+REPORT_PROMPT_VERSION = "fit-report-v1"
+# Operator's choice (2026-11-10): career-ops draws its apply line at 4.0; this product adds jobs from 3.0.
+ADD_LINE = Decimal("3.0")
 DESCRIPTION_CHARS = 6000
 
 
@@ -88,3 +99,11 @@ def current_verdicts(
         for row in rows
         if row.profile_hash == profile.digest and row.job_hash == job_digests.get(row.job_id)
     }
+
+
+def current_reports(session: Session, applicant_id: uuid.UUID) -> dict[uuid.UUID, JobReport]:
+    """This person's fit reports from the current prompt, by job (D52)."""
+    rows = session.scalars(
+        select(JobReport).where(JobReport.applicant_id == applicant_id, JobReport.prompt_version == REPORT_PROMPT_VERSION)
+    )
+    return {row.job_id: row for row in rows}

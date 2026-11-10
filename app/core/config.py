@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     ai_cv_unit_price: Decimal = Decimal("0.005")
     # D51: about 3.5k tokens in and 0.2k out on Haiku 5.5, ~$0.00045 at the prices above; this is a ceiling.
     ai_judge_unit_price: Decimal = Decimal("0.0005")
+    # D52: about 6k tokens in (advert and CV) and 1.5k out, ~$0.0014 at the prices above; this is a ceiling.
+    ai_report_unit_price: Decimal = Decimal("0.0015")
 
     # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
     ai_summary_model: str = ""
@@ -74,11 +76,17 @@ class Settings(BaseSettings):
 
     # D50: the AI judging whether each job fits each person. Blank model = provider default.
     ai_judge_model: str = ""
-    ai_judge_max_output_tokens: int = 300
+    ai_judge_max_output_tokens: int = 400
     # About 1,000 verdicts a day at ~4k tokens each; the money cap still bounds the month.
     ai_judge_daily_token_cap: int = 4000000
     # Calls sent to the AI at once; spending and saving stay one at a time.
     ai_judge_concurrency: int = 5
+
+    # D52: the full fit report for jobs scoring 3.0 or more. Blank model = provider default.
+    ai_report_model: str = ""
+    ai_report_max_output_tokens: int = 3000
+    ai_report_daily_token_cap: int = 3000000
+    ai_report_cv_chars: int = 12000
 
     @field_validator(
         "search_request_unit_price",
@@ -86,6 +94,7 @@ class Settings(BaseSettings):
         "ai_summary_unit_price",
         "ai_cv_unit_price",
         "ai_judge_unit_price",
+        "ai_report_unit_price",
         mode="before",
     )
     @classmethod
@@ -114,6 +123,9 @@ class Settings(BaseSettings):
 
     def resolved_ai_judge_model(self) -> str:
         return self.ai_judge_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_report_model(self) -> str:
+        return self.ai_report_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def resolved_ai_cv_model(self) -> str:
         return self.ai_cv_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")

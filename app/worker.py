@@ -26,6 +26,7 @@ from app.fetch.gateway import FetchGateway
 from app.matching import semantic
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
+from app.matching.report import write_reports
 from app.quality import store_results
 from app.search.feedback import record_outcomes
 from app.skills.taxonomy import map_job_skills
@@ -56,6 +57,11 @@ async def run_cycle(
     judged = await judge_jobs(session, gateway=gateway, settings=get_settings(), persist=save)
     if judged.judged:
         match_all(session, now=datetime.now(UTC), applicant_ids=judged.judged)
+        save()
+    # D52: the full report for jobs the judge scored 3.0 or more; its score can then take a job off the page.
+    reported = await write_reports(session, gateway=gateway, settings=get_settings(), persist=save)
+    if reported.written:
+        match_all(session, now=datetime.now(UTC), applicant_ids=reported.written)
         save()
     # Every cycle, not only after collection: a backlog stopped by the day's token cap carries on tomorrow.
     await summarise_matches(session, gateway=gateway, settings=get_settings(), persist=save)
