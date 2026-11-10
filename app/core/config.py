@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     search_request_unit_price: Decimal = Decimal("0.003")
     ai_extraction_unit_price: Decimal = Decimal("0.0005")
     ai_summary_unit_price: Decimal = Decimal("0.001")
+    # D43: about 6k tokens in and 0.5k out on Haiku 5.5 is under £0.002; this is a ceiling.
+    ai_cv_unit_price: Decimal = Decimal("0.005")
 
     # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
     ai_summary_model: str = ""
@@ -71,10 +73,16 @@ class Settings(BaseSettings):
     ai_summary_per_item_token_cap: int = 8000
     ai_summary_daily_token_cap: int = 300000
 
+    # D43: reading a CV to fill the profile form. Blank model = provider default.
+    ai_cv_model: str = ""
+    ai_cv_max_output_tokens: int = 1500
+    ai_cv_max_chars: int = 24000
+
     @field_validator(
         "search_request_unit_price",
         "ai_extraction_unit_price",
         "ai_summary_unit_price",
+        "ai_cv_unit_price",
         mode="before",
     )
     @classmethod
@@ -100,6 +108,9 @@ class Settings(BaseSettings):
 
     def resolved_ai_summary_model(self) -> str:
         return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_cv_model(self) -> str:
+        return self.ai_cv_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def api_allowlist_hosts(self) -> frozenset[str]:
         return frozenset(

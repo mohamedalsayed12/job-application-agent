@@ -30,6 +30,7 @@ from app.models import (
     Applicant,
     ApplicantJobMatch,
     ApplicantPreference,
+    ApplicantSkill,
     Job,
     JobFreshness,
     JobLink,
@@ -46,6 +47,9 @@ _CURRENCY = {"GBP": "£", "USD": "$", "EUR": "€"}
 _PERIOD = {"year": "a year", "month": "a month", "week": "a week", "day": "a day", "hour": "an hour"}
 _SOURCE_LABEL = {"greenhouse": "Employer's Greenhouse board", "lever": "Employer's Lever board", ADZUNA: "Adzuna"}
 Sort = Literal["score", "newest"]
+# D44: matches on a target role, matches on skills alone, or both.
+Show = Literal["roles", "skills", "all"]
+_SKILLS_KIND = "skills"
 
 _STYLE = """<style>
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.75rem; align-items: end; margin-bottom: 1.25rem; }
@@ -71,6 +75,7 @@ _STYLE = """<style>
 .why summary { cursor: pointer; font-weight: 600; }
 .why ul { margin: 0.5rem 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.25rem 1rem; }
 .job-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.75rem; font-size: 0.8rem; color: var(--muted); }
+.discover { background: var(--primary-soft); border-color: #c9d5f7; font-size: 0.9rem; }
 .pager { display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
 @media (max-width: 34rem) { .job-head { flex-direction: column; } .score { text-align: left; } }
 </style>"""
@@ -145,6 +150,7 @@ def load_listings(
     page_number: int,
     role: str = "",
     sort: Sort = "score",
+    show: Show = "roles",
 ) -> tuple[list[Listing], int]:
     """One page of open matched jobs, best score (or newest) first, and how many there are in all."""
     query = (
@@ -154,7 +160,8 @@ def load_listings(
     )
     if not everywhere:
         query = query.where(ApplicantJobMatch.location_fit.is_(True))
-    if role:
+    query = _only(query, show)
+    if role and show != "skills":
         query = query.where(ApplicantJobMatch.reasons["role"]["target"].astext == role)
     total = session.scalar(select(func.count()).select_from(query.subquery()))
     first = (Job.first_seen_at.desc(), ApplicantJobMatch.score.desc()) if sort == "newest" else (ApplicantJobMatch.score.desc(),)
@@ -195,6 +202,31 @@ def load_listings(
     return listings, total
 
 
+def _only(query, show: Show):
+    kind = ApplicantJobMatch.reasons["role"]["kind"].astext
+    if show == "roles":
+        return query.where(kind != _SKILLS_KIND)
+    if show == "skills":
+        return query.where(kind == _SKILLS_KIND)
+    return query
+
+
+def count_skill_matches(session: Session, applicant_id: uuid.UUID, *, everywhere: bool) -> int:
+    query = (
+        select(func.count())
+        .select_from(ApplicantJobMatch)
+        .join(Job, Job.id == ApplicantJobMatch.job_id)
+        .where(
+            ApplicantJobMatch.applicant_id == applicant_id,
+            Job.freshness == JobFreshness.open,
+            ApplicantJobMatch.reasons["role"]["kind"].astext == _SKILLS_KIND,
+        )
+    )
+    if not everywhere:
+        query = query.where(ApplicantJobMatch.location_fit.is_(True))
+    return session.scalar(query) or 0
+
+
 def _e(value: object) -> str:
     return html.escape(str(value))
 
@@ -208,8 +240,13 @@ def _apply(url: str) -> str:
 def _reasons(item: Listing) -> str:
     role = item.reasons.get("role", {})
     level = f", {role['level']}" if role.get("level") else ""
+    if role.get("kind") == _SKILLS_KIND:
+        named = len(item.matched_skills) + len(item.missing_skills)
+        role_line = f"Role: not one of your target roles, but you have {len(item.matched_skills)} of the {named} skills it names{level}"
+    else:
+        role_line = f"Role: {role.get('kind', 'unknown')} match for {role.get('target', '')}{level}"
     lines = [
-        f"Role: {role.get('kind', 'unknown')} match for {role.get('target', '')}{level}",
+        role_line,
         f"Location: {item.reasons.get('location', 'unknown')}",
         f"Salary: {item.reasons.get('salary', 'unknown')}",
         f"Skills you have: {', '.join(item.matched_skills) or 'none named'}",
@@ -227,6 +264,9 @@ def _skills(item: Listing) -> str:
     chips += [f'<span class="tag miss" title="Not on your profile">{_e(name)}</span>' for name in item.missing_skills]
     chips += [f'<span class="tag bad" title="Licence you don\'t list">{_e(name)}</span>' for name in item.missing_licences]
     return f'<div class="skills-row"><span class="muted">Skills in the advert</span>{"".join(chips)}</div>'
+
+
+_SKILLS_TAG = '<span class="tag blue">Fits your skills</span>'
 
 
 def render_listing(item: Listing) -> str:
@@ -252,6 +292,7 @@ def render_listing(item: Listing) -> str:
     <p class="company"><b>{_e(item.company)}</b> · {_e(item.places)}</p>
     <div class="tags">
       <span class="tag">Salary: {_e(item.salary)}</span>
+      {_SKILLS_TAG if item.reasons.get("role", {}).get("kind") == _SKILLS_KIND else ""}
       <span class="tag good">Open · confirmed {_e(seen)}</span>
       <span class="tag">{_e(_SOURCE_LABEL.get(item.source, item.source))}</span>
     </div>
@@ -273,14 +314,14 @@ def render_listing(item: Listing) -> str:
 
 
 def _query(**params: object) -> str:
-    return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "score")}))
+    return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "score", "roles")}))
 
 
 def _option(value: str, label: str, selected: str) -> str:
     return f'<option value="{_e(value)}"{" selected" if value == selected else ""}>{_e(label)}</option>'
 
 
-def _filters(preference: ApplicantPreference | None, *, role: str, everywhere: bool, sort: Sort) -> str:
+def _filters(preference: ApplicantPreference | None, *, role: str, everywhere: bool, sort: Sort, show: Show) -> str:
     roles = "".join(_option(name, name, role) for name in (preference.target_roles if preference else []))
     if preference and preference.salary_amount is not None:
         symbol = _CURRENCY.get(preference.salary_currency or "", f"{preference.salary_currency or ''} ")
@@ -290,6 +331,9 @@ def _filters(preference: ApplicantPreference | None, *, role: str, everywhere: b
         salary = "No minimum salary set"
     return f"""
 <form class="filters" method="get" action="/listings">
+  <label>Show<select name="show" onchange="this.form.submit()">
+    {_option("roles", "My target roles", show)}{_option("skills", "Roles my skills fit", show)}{_option("all", "Both", show)}
+  </select></label>
   <label>Role<select name="role" onchange="this.form.submit()">{_option("", "All my target roles", role)}{roles}</select></label>
   <label>Location<select name="everywhere" onchange="this.form.submit()">
     {_option("0", "My locations", "1" if everywhere else "0")}{_option("1", "All locations", "1" if everywhere else "0")}
@@ -302,19 +346,41 @@ def _filters(preference: ApplicantPreference | None, *, role: str, everywhere: b
 </form>"""
 
 
-def _nav(page_number: int, total: int, *, everywhere: bool, role: str, sort: Sort) -> str:
+def _nav(page_number: int, total: int, *, everywhere: bool, role: str, sort: Sort, show: Show) -> str:
     pages = max(1, -(-total // PAGE_SIZE))
     previous = (
-        f'<a href="/listings?{_query(page=page_number - 1, everywhere=int(everywhere), role=role, sort=sort)}">← Previous</a>'
+        f'<a href="/listings?{_query(page=page_number - 1, everywhere=int(everywhere), role=role, sort=sort, show=show)}">← Previous</a>'
         if page_number > 1
         else "<span></span>"
     )
     following = (
-        f'<a href="/listings?{_query(page=page_number + 1, everywhere=int(everywhere), role=role, sort=sort)}">Next →</a>'
+        f'<a href="/listings?{_query(page=page_number + 1, everywhere=int(everywhere), role=role, sort=sort, show=show)}">Next →</a>'
         if page_number < pages
         else "<span></span>"
     )
     return f'<div class="pager">{previous}<span class="muted">Page {page_number} of {pages}</span>{following}</div>'
+
+
+def _discover_hint(
+    db: Session, applicant: Applicant, preference: ApplicantPreference | None, *, everywhere: bool, sort: Sort
+) -> str:
+    """Points people to jobs their skills fit that their target roles missed (D44)."""
+    extra = count_skill_matches(db, applicant.id, everywhere=everywhere)
+    if extra:
+        link = f"/listings?{_query(everywhere=int(everywhere), sort=sort, show='skills')}"
+        many = extra != 1
+        return (
+            f'<div class="card discover"><b>{extra} more job{"s" if many else ""} fit{"" if many else "s"} your skills</b>, '
+            f'though {"they aren&#39;t roles" if many else "it isn&#39;t a role"} you listed. You might qualify for more than '
+            f'you think. <a href="{link}">See {"them" if many else "it"}</a></div>'
+        )
+    has_skills = db.scalar(select(func.count()).select_from(ApplicantSkill).where(ApplicantSkill.applicant_id == applicant.id))
+    if preference is not None and not has_skills:
+        return (
+            '<div class="card discover">Add your skills on <a href="/profile">your profile</a>, or let us read them from '
+            "your CV, to discover roles your skills fit that you might not have searched for.</div>"
+        )
+    return ""
 
 
 @router.get("", response_class=HTMLResponse)
@@ -326,12 +392,14 @@ def listings_page(
     everywhere: bool = Query(False),
     role: str = Query("", max_length=200),
     sort: Sort = Query("score"),
+    show: Show = Query("roles"),
 ) -> HTMLResponse:
     listings, total = load_listings(
-        db, applicant.id, everywhere=everywhere, page_number=page_number, role=role, sort=sort
+        db, applicant.id, everywhere=everywhere, page_number=page_number, role=role, sort=sort, show=show
     )
     preference = db.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant.id))
     where = "in every location" if everywhere else "in your locations"
+    hint = _discover_hint(db, applicant, preference, everywhere=everywhere, sort=sort) if show == "roles" else ""
     if listings:
         body = "".join(render_listing(item) for item in listings)
     elif preference is None:
@@ -345,8 +413,9 @@ def listings_page(
   <h1>Your matches</h1>
   <p class="muted">{total} open jobs {where}. Sorted by {"newest" if sort == "newest" else "match score"}.</p>
 </div></div>
-{_filters(preference, role=role, everywhere=everywhere, sort=sort)}
+{_filters(preference, role=role, everywhere=everywhere, sort=sort, show=show)}
+{hint}
 {body}
-{_nav(page_number, total, everywhere=everywhere, role=role, sort=sort)}""",
+{_nav(page_number, total, everywhere=everywhere, role=role, sort=sort, show=show)}""",
         header=applicant_bar(request, "matches"),
     )

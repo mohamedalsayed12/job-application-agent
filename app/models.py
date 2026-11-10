@@ -150,6 +150,7 @@ class SpendKind(StrEnum):
     search = "search"
     ai_extraction = "ai_extraction"
     ai_summary = "ai_summary"
+    ai_cv_read = "ai_cv_read"
 
 
 CANDIDATE_CLAIMABLE = (CandidateState.queued, CandidateState.retry_wait)
@@ -380,6 +381,8 @@ class ApplicantProfile(_UuidPk, Base):
     )
     experience_level: Mapped[str] = mapped_column(Text())
     travel_distance_miles: Mapped[int | None] = mapped_column(Integer())
+    # As typed, such as "BSc Business Management". Studying for one counts (D45).
+    degrees: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     updated_at: Mapped[datetime] = _updated()
 
 

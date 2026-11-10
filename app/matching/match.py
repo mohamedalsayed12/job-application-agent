@@ -22,6 +22,7 @@ from app.applicants.salary import job_excluded_for_salary, salary_match_status
 from app.applicants.types import ExpectedSalary
 from app.cleaning.normalize import Place, parse_location, parse_places
 from app.matching.credentials import Held, held_groups, required_in_advert
+from app.matching.degrees import degree_shuts_out, required_fields
 from app.matching.entry_level import (
     ENTRY_TITLE,
     NOT_ENTRY_TITLE,
@@ -86,7 +87,7 @@ _REGION_COUNTRIES = {
     "apac": frozenset("IN SG CN TW AU JP PK NZ KR HK MY TH ID PH VN".split()),
 }
 
-_ROLE_SCORE = {"exact": Decimal("0.5"), "similar": Decimal("0.3")}
+_ROLE_SCORE = {"exact": Decimal("0.5"), "similar": Decimal("0.3"), "skills": Decimal("0.2")}
 _ENTRY_SCORE = Decimal("0.1")
 _LOCATION_SCORE = Decimal("0.3")
 _SALARY_MEETS_SCORE = Decimal("0.1")
@@ -94,11 +95,15 @@ _SKILLS_SCORE = Decimal("0.3")
 MAX_SCORE = _ROLE_SCORE["exact"] + _ENTRY_SCORE + _LOCATION_SCORE + _SALARY_MEETS_SCORE + _SKILLS_SCORE
 _MISSING_LICENCE_COST = Decimal("0.2")
 _SCORE_PLACES = Decimal("0.001")
+# D44: a job outside the target roles matches when the applicant has most of the skills its advert names.
+SKILLS_MATCH_MIN = 3
+SKILLS_MATCH_SHARE = Decimal("0.5")
 
 
 class RoleKind(StrEnum):
     exact = "exact"
     similar = "similar"
+    skills = "skills"
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +231,26 @@ def _fit_role(title: str, words: set[str], description: str | None, role: str) -
     return _fit_title(words, _title_words(role) - _LEVEL_WORDS, role, level)
 
 
+def match_by_skills(title: str, description: str | None, skills: SkillFit, *, level: str | None) -> RoleMatch | None:
+    """A job outside the target roles that the applicant's skills fit (D44). Level rules still apply."""
+    if len(skills.matched) < SKILLS_MATCH_MIN or skills.share < SKILLS_MATCH_SHARE:
+        return None
+    if level == ExperienceLevel.internship:
+        if not _INTERNSHIP_TITLE.search(title) or _APPRENTICE_TITLE.search(title):
+            return None
+        return RoleMatch("", RoleKind.skills, _INTERNSHIP_LEVEL)
+    if _TRAINING_TITLE.search(title):
+        return None
+    if level != ExperienceLevel.entry:
+        return RoleMatch("", RoleKind.skills, None)
+    if NOT_ENTRY_TITLE.search(title):
+        return None
+    says_entry = bool(ENTRY_TITLE.search(title))
+    if not says_entry and YEARS_REQUIRED.search(description or ""):
+        return None
+    return RoleMatch("", RoleKind.skills, "entry level in the title" if says_entry else "level not stated")
+
+
 def _fit_title(words: set[str], core: set[str], role: str, level: str | None) -> RoleMatch | None:
     if not core or words & (_DIFFERENT_JOB_WORDS - core):
         return None
@@ -308,6 +333,8 @@ def reasons(fit: Fit) -> dict[str, Any]:
         missing.append("location")
     if fit.role.kind == RoleKind.similar:
         missing.append("exact role title")
+    if fit.role.kind == RoleKind.skills:
+        missing.append("target role")
     if fit.role.level == "level not stated":
         missing.append("stated entry level")
     if fit.salary is SalaryStatus.unknown:
@@ -342,6 +369,14 @@ def _can_be_shown(facts: JobFacts, quality: JobQuality) -> bool:
     )
 
 
+def experience_levels(session: Session) -> dict[uuid.UUID, str]:
+    return dict(session.execute(select(ApplicantProfile.applicant_id, ApplicantProfile.experience_level)).all())
+
+
+def applicant_degrees(session: Session) -> dict[uuid.UUID, list[str]]:
+    return dict(session.execute(select(ApplicantProfile.applicant_id, ApplicantProfile.degrees)).all())
+
+
 def internship_seekers(session: Session) -> set[uuid.UUID]:
     """Applicants whose profile asks for internships. Everyone else never sees one."""
     return set(
@@ -358,16 +393,26 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
     """
     report = MatchReport()
     shown = [facts for facts, quality in check_all(session, now) if _can_be_shown(facts, quality)]
-    seekers = internship_seekers(session)
+    levels = experience_levels(session)
     skills = load_skills(session, now=now)
     required = {facts.job_id: required_in_advert(facts.description) for facts in shown}
+    degrees = applicant_degrees(session)
+    subjects = {facts.job_id: required_fields(facts.description) for facts in shown}
     preferences = select(ApplicantPreference)
     if applicant_ids is not None:
         preferences = preferences.where(ApplicantPreference.applicant_id.in_(applicant_ids))
     for preference in session.scalars(preferences).all():
         report.applicants += 1
         _match_applicant(
-            session, preference, shown, report, skills, required, internship=preference.applicant_id in seekers
+            session,
+            preference,
+            shown,
+            report,
+            skills,
+            required,
+            subjects,
+            level=levels.get(preference.applicant_id),
+            degrees=degrees.get(preference.applicant_id) or [],
         )
     session.flush()
     return report
@@ -380,8 +425,10 @@ def _match_applicant(
     report: MatchReport,
     skills: Skills,
     required: dict[uuid.UUID, list[str]],
+    subjects: dict[uuid.UUID, list[frozenset[str]]],
     *,
-    internship: bool,
+    level: str | None,
+    degrees: list[str],
 ) -> None:
     applicant_id = preference.applicant_id
     wanted = wanted_locations(preference.locations)
@@ -395,8 +442,11 @@ def _match_applicant(
     for facts in shown:
         if facts.sector != preference.sector:
             continue
-        role = match_role(facts.title, facts.description, preference.target_roles, internship=internship)
-        if role is None:
+        skill_fit = skills.fit(applicant_id, facts.job_id)
+        role = match_role(
+            facts.title, facts.description, preference.target_roles, internship=level == ExperienceLevel.internship
+        ) or match_by_skills(facts.title, facts.description, skill_fit, level=level)
+        if role is None or degree_shuts_out(subjects[facts.job_id], degrees):
             continue
         job = session.get(Job, facts.job_id)
         salary = salary_match_status(
@@ -415,7 +465,7 @@ def _match_applicant(
             location=location,
             location_fits=fits,
             salary=salary,
-            skills=skills.fit(applicant_id, facts.job_id),
+            skills=skill_fit,
             missing_licences=[name for name in required[facts.job_id] if name not in held],
         )
         row = existing.get(facts.job_id)
@@ -424,7 +474,7 @@ def _match_applicant(
             session.add(row)
         row.score = score(fit)
         row.reasons = reasons(fit)
-        row.role_match = True
+        row.role_match = role.kind != RoleKind.skills
         row.location_fit = fits
         row.salary_status = salary
         row.matched_skills = fit.skills.matched
