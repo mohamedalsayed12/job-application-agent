@@ -6,7 +6,6 @@ from app.search.schedule import create_runs_from_plan
 from app.search.templates import (
     TEMPLATE_SPECS,
     ensure_search_templates,
-    is_template_enabled,
 )
 
 __all__ = [
@@ -17,7 +16,6 @@ __all__ = [
     "SearchPlan",
     "create_runs_from_plan",
     "ensure_search_templates",
-    "is_template_enabled",
     "plan_searches",
     "run_search",
 ]

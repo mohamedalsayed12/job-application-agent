@@ -24,6 +24,7 @@ from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
 from app.matching import semantic
+from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.quality import store_results
 from app.search.feedback import record_outcomes
@@ -50,6 +51,11 @@ async def run_cycle(
         map_job_skills(session)
         match_all(session, now=now)
         record_outcomes(session, now=now)
+        save()
+    # Every cycle, not only after collection: a backlog stopped by a cap carries on next time (D50).
+    judged = await judge_jobs(session, gateway=gateway, settings=get_settings(), persist=save)
+    if judged.judged:
+        match_all(session, now=datetime.now(UTC), applicant_ids=judged.judged)
         save()
     # Every cycle, not only after collection: a backlog stopped by the day's token cap carries on tomorrow.
     await summarise_matches(session, gateway=gateway, settings=get_settings(), persist=save)

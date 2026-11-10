@@ -6,7 +6,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEFAULT_AI_MODELS = {
     "anthropic": "claude-haiku-5-5",
-    "openai": "gpt-4o-mini",
 }
 MIN_SESSION_SECRET_LENGTH = 32
 
@@ -30,29 +29,22 @@ class Settings(BaseSettings):
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
     api_allowlist: str = (
-        "api.greenhouse.io,boards-api.greenhouse.io,"
+        "boards-api.greenhouse.io,"
         "api.lever.co,api.eu.lever.co,jobs.lever.co,jobs.eu.lever.co,"
-        "www.reed.co.uk,api.reed.co.uk,"
-        "api.adzuna.com,api.adzuna.co.uk,"
+        "www.reed.co.uk,"
         "serpapi.com,"
-        "api.mojeek.com,"
-        "api.openai.com,"
         "api.anthropic.com"
     )
 
-    # D29: web search provider id is a setting (default SerpAPI free tier).
-    web_search_provider: str = "serpapi"
+    # D29, D49: SerpAPI is the only web search; it also runs Google Jobs for CF1b.
     serpapi_api_key: str = ""
-    mojeek_api_key: str = ""
     reed_api_key: str = ""
-    adzuna_enabled: bool = False
 
     # D30: leftover AI extraction (Anthropic Claude Haiku 5.5 + JSON Schema outputs).
-    # AI_PROVIDER=openai keeps the gpt-4o-mini client. Blank model = provider default.
+    # Blank model = provider default.
     ai_provider: str = "anthropic"
     ai_extraction_model: str = ""
     anthropic_api_key: str = ""
-    openai_api_key: str = ""
     # B4 seed: Haiku 5.5 ≈ $0.00035 per leftover batch (1.5k in × $0.10/M + 0.4k out × $0.50/M);
     # the £0.0005 unit price below stays a conservative ceiling for either provider.
     # Step 10 audit C5: 500 output tokens truncated batches (stop_reason max_tokens).
@@ -60,12 +52,14 @@ class Settings(BaseSettings):
     ai_extraction_per_item_token_cap: int = 4000
     ai_extraction_max_output_tokens: int = 1500
 
-    # Paid Mojeek Business fallback £3/1k ⇒ £0.003; SerpAPI free tier is £0 via FREE_MONEY.
+    # Only for a paid search provider; SerpAPI's free plan and Reed are £0 via FREE_MONEY_PROVIDERS.
     search_request_unit_price: Decimal = Decimal("0.003")
     ai_extraction_unit_price: Decimal = Decimal("0.0005")
     ai_summary_unit_price: Decimal = Decimal("0.001")
     # D43: about 6k tokens in and 0.5k out on Haiku 5.5 is under £0.002; this is a ceiling.
     ai_cv_unit_price: Decimal = Decimal("0.005")
+    # D51: about 3.5k tokens in and 0.2k out on Haiku 5.5, ~$0.00045 at the prices above; this is a ceiling.
+    ai_judge_unit_price: Decimal = Decimal("0.0005")
 
     # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
     ai_summary_model: str = ""
@@ -78,11 +72,20 @@ class Settings(BaseSettings):
     ai_cv_max_output_tokens: int = 1500
     ai_cv_max_chars: int = 24000
 
+    # D50: the AI judging whether each job fits each person. Blank model = provider default.
+    ai_judge_model: str = ""
+    ai_judge_max_output_tokens: int = 300
+    # About 1,000 verdicts a day at ~4k tokens each; the money cap still bounds the month.
+    ai_judge_daily_token_cap: int = 4000000
+    # Calls sent to the AI at once; spending and saving stay one at a time.
+    ai_judge_concurrency: int = 5
+
     @field_validator(
         "search_request_unit_price",
         "ai_extraction_unit_price",
         "ai_summary_unit_price",
         "ai_cv_unit_price",
+        "ai_judge_unit_price",
         mode="before",
     )
     @classmethod
@@ -108,6 +111,9 @@ class Settings(BaseSettings):
 
     def resolved_ai_summary_model(self) -> str:
         return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_judge_model(self) -> str:
+        return self.ai_judge_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def resolved_ai_cv_model(self) -> str:
         return self.ai_cv_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")

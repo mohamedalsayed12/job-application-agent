@@ -45,14 +45,15 @@ from app.models import (
 router = APIRouter(prefix="/listings", tags=["listings"])
 
 PAGE_SIZE = 25
-ADZUNA = "adzuna"
 _CURRENCY = {"GBP": "£", "USD": "$", "EUR": "€"}
 _PERIOD = {"year": "a year", "month": "a month", "week": "a week", "day": "a day", "hour": "an hour"}
-_SOURCE_LABEL = {"greenhouse": "Employer's Greenhouse board", "lever": "Employer's Lever board", ADZUNA: "Adzuna"}
+_SOURCE_LABEL = {"greenhouse": "Employer's Greenhouse board", "lever": "Employer's Lever board"}
 Sort = Literal["score", "newest"]
 # D44: matches on a target role, matches on skills alone, or both.
 Show = Literal["roles", "skills", "all"]
 _SKILLS_KIND = "skills"
+_AI_KIND = "ai"
+_AI_AREAS = (("cv_match", "your profile"), ("role_alignment", "your target roles"), ("comp", "pay"), ("culture", "culture"))
 
 _STYLE = """<style>
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.75rem; align-items: end; margin-bottom: 1.25rem; }
@@ -256,6 +257,8 @@ def _reasons(item: Listing) -> str:
     if role.get("kind") == _SKILLS_KIND:
         named = len(item.matched_skills) + len(item.missing_skills)
         role_line = f"Role: not one of your target roles, but you have {len(item.matched_skills)} of the {named} skills it names{level}"
+    elif role.get("kind") == _AI_KIND:
+        role_line = f"Role: the AI read the advert and judged it fits your profile{level}"
     else:
         role_line = f"Role: {role.get('kind', 'unknown')} match for {role.get('target', '')}{level}"
     lines = [
@@ -267,6 +270,17 @@ def _reasons(item: Listing) -> str:
     ]
     if item.missing_licences:
         lines.append(f"Licences you don't list: {', '.join(item.missing_licences)}")
+    ai = item.reasons.get("ai", {})
+    if ai.get("score"):
+        lines.append(f"AI score: {ai['score']} out of 5 (added at 3.0 or more)")
+    ratings = ai.get("ratings") or {}
+    rated = [f"{label} {ratings[key]}/5" for key, label in _AI_AREAS if key in ratings]
+    if rated:
+        lines.append(f"AI ratings: {', '.join(rated)}")
+    if ratings.get("red_flags"):
+        lines.append(f"AI red flags: {'; '.join(ratings['red_flags'])}")
+    if ai.get("reason"):
+        lines.append(f"AI's reason: {ai['reason']}")
     return "<ul>" + "".join(f"<li>{_e(line)}</li>" for line in lines) + "</ul>"
 
 
@@ -280,6 +294,14 @@ def _skills(item: Listing) -> str:
 
 
 _SKILLS_TAG = '<span class="tag blue">Fits your skills</span>'
+_AI_TAG = '<span class="tag blue" title="The AI read the advert and judged it fits you">AI match</span>'
+
+
+def _ai_score_tag(item: Listing) -> str:
+    score = item.reasons.get("ai", {}).get("score")
+    if not score:
+        return ""
+    return f'<span class="tag blue" title="How well the AI judged this job fits you, out of 5">AI score {_e(score)}/5</span>'
 
 
 def render_listing(item: Listing) -> str:
@@ -291,11 +313,6 @@ def render_listing(item: Listing) -> str:
             f"{_e(item.description or 'No description was given.')}</div></details>"
         )
     seen = item.last_seen_at.strftime("%d %b %Y") if item.last_seen_at else "not recorded"
-    label = (
-        ' <a href="https://www.adzuna.co.uk/" rel="noopener noreferrer">Jobs by Adzuna</a>'
-        if item.source == ADZUNA
-        else ""
-    )
     out_of_100 = score_out_of_100(item.score)
     return f"""
 <article class="card job">
@@ -306,6 +323,8 @@ def render_listing(item: Listing) -> str:
     <div class="tags">
       <span class="tag">Salary: {_e(item.salary)}</span>
       {_SKILLS_TAG if item.reasons.get("role", {}).get("kind") == _SKILLS_KIND else ""}
+      {_AI_TAG if item.reasons.get("role", {}).get("kind") == _AI_KIND else ""}
+      {_ai_score_tag(item)}
       <span class="tag good">Open · confirmed {_e(seen)}</span>
       <span class="tag">{_e(_SOURCE_LABEL.get(item.source, item.source))}</span>
     </div>
@@ -319,7 +338,7 @@ def render_listing(item: Listing) -> str:
 {_skills(item)}
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 <div class="job-foot">
-  <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.{label}</span>
+  <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url)}
 </div>
 </article>

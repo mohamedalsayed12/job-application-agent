@@ -1,4 +1,4 @@
-"""T10: board IDs only from code pattern matching on real URLs; Reed/Adzuna employers."""
+"""T10: board IDs only from code pattern matching on real URLs; Reed and Google Jobs employers."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 from app.extraction import (
     clean_company_name,
     extract_and_persist_search_results,
-    format_employer_snippet,
     parse_board_from_url,
 )
 from app.extraction.postings import extract_hit
@@ -30,6 +29,7 @@ from app.models import (
     SearchTemplate,
 )
 from app.search.reed import search_reed
+from app.search.serpapi import search_serpapi_jobs
 from app.search.types import ProviderSuccess
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures" / "extraction"
@@ -178,17 +178,46 @@ async def test_reed_search_enriches_external_url_from_details() -> None:
     assert second.url.startswith("https://www.reed.co.uk/")
 
 
-def test_adzuna_style_search_result_employer_and_lever_eu() -> None:
-    payload = _load("adzuna_search_results.json")
-    item = payload["results"][0]
-    employer = item["company"]["display_name"]
-    hit = extract_hit(
-        url=item["redirect_url"],
-        title=item["title"],
-        snippet=format_employer_snippet(employer, item["description"]),
+async def _google_jobs_hits() -> tuple:
+    import ipaddress
+
+    from app.core.config import Settings
+
+    seen: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return httpx.Response(200, json=_load("google_jobs_results.json"))
+
+    gateway = FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset({"serpapi.com"}),
+        resolve=lambda host: [ipaddress.IPv4Address("93.184.216.34")],
+        transport=httpx.MockTransport(handler),
     )
+    outcome = await search_serpapi_jobs(
+        gateway,
+        query="Backend Engineer jobs in London",
+        settings=Settings(serpapi_api_key="test-serpapi-key"),  # type: ignore[arg-type]
+    )
+    await gateway.aclose()
+    assert isinstance(outcome, ProviderSuccess)
+    assert seen[0].params["engine"] == "google_jobs"
+    assert seen[0].params["q"] == "Backend Engineer jobs in London"
+    return outcome.hits
+
+
+@pytest.mark.asyncio
+async def test_d49_google_jobs_keeps_the_employer_and_prefers_its_own_board() -> None:
+    lever, agency, linkedin_only = await _google_jobs_hits()
+    # The Lever board wins over LinkedIn listed before it; Indeed is skipped for the employer's site.
+    assert lever.url.startswith("https://jobs.eu.lever.co/lever/")
+    assert agency.url == "https://careers.acme.example/jobs/2"
+    assert linkedin_only.url.startswith("https://www.google.com/")
+
+    hit = extract_hit(url=lever.url, title=lever.title, snippet=lever.snippet)
     assert hit is not None
-    assert hit.company_name == employer
+    assert hit.company_name == "Lever Demo EU Limited"
     assert hit.board is not None
     assert hit.board.instance == "lever_eu"
     assert hit.board.board_id == "lever"
@@ -258,14 +287,14 @@ def test_t10_persist_search_results_with_evidence(session: Session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_t10_reed_and_adzuna_persist_via_search_results(session: Session) -> None:
+async def test_t10_reed_and_google_jobs_persist_via_search_results(session: Session) -> None:
     run = _seed_run(session)
     search_body = _load("reed_search_results.json")
     details = {
         "51234567": _load("reed_job_details_51234567.json"),
         "51234568": _load("reed_job_details_51234568.json"),
     }
-    adzuna = _load("adzuna_search_results.json")
+    google_jobs = await _google_jobs_hits()
 
     import ipaddress
 
@@ -304,14 +333,13 @@ async def test_t10_reed_and_adzuna_persist_via_search_results(session: Session) 
         session.add(row)
         rows.append(row)
 
-    for rank, item in enumerate(adzuna["results"], start=100):
-        employer = item["company"]["display_name"]
+    for rank, hit in enumerate(google_jobs, start=100):
         row = SearchResult(
             search_run_id=run.id,
             rank=rank,
-            url=item["redirect_url"],
-            title=item["title"],
-            snippet=format_employer_snippet(employer, item["description"]),
+            url=hit.url,
+            title=hit.title,
+            snippet=hit.snippet,
         )
         session.add(row)
         rows.append(row)

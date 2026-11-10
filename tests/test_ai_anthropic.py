@@ -68,7 +68,6 @@ def test_default_provider_is_anthropic_haiku() -> None:
     cfg = _settings(ai_provider="anthropic", ai_extraction_model="")
     assert cfg.resolved_ai_extraction_model() == "claude-haiku-5-5"
     assert "api.anthropic.com" in cfg.api_allowlist_hosts()
-    assert _settings(ai_provider="openai", ai_extraction_model="").resolved_ai_extraction_model() == "gpt-4o-mini"
 
 
 def test_anthropic_schema_drops_string_limits_only() -> None:

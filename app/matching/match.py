@@ -1,7 +1,8 @@
 """Stage 10: match stored jobs to every applicant, on role, location, salary status, skills and licences.
 
-Rules only: no fetching and no AI, so matching costs nothing and any number of
-applicants can share one collection of each board (T27).
+Rules, plus the AI's saved verdicts (D50): a job the AI says fits is matched even when the rules
+miss it, and a job it says doesn't fit is left out. Matching itself never calls the AI, so it
+costs nothing and any number of applicants can share one collection of each board (T27).
 """
 
 from __future__ import annotations
@@ -29,6 +30,13 @@ from app.matching.entry_level import (
     UK_PLACE,
     YEARS_REQUIRED,
 )
+from app.matching.verdicts import (
+    Profile,
+    current_verdicts,
+    digest,
+    job_text,
+    load_profiles,
+)
 from app.models import (
     ApplicantCertification,
     ApplicantJobMatch,
@@ -39,6 +47,7 @@ from app.models import (
     Job,
     JobFreshness,
     JobSkill,
+    JobVerdict,
     SalaryStatus,
     Skill,
 )
@@ -87,7 +96,8 @@ _REGION_COUNTRIES = {
     "apac": frozenset("IN SG CN TW AU JP PK NZ KR HK MY TH ID PH VN".split()),
 }
 
-_ROLE_SCORE = {"exact": Decimal("0.5"), "similar": Decimal("0.3"), "skills": Decimal("0.2")}
+# D50: the AI judged the job against the person's roles, level and skills, so it scores between exact and similar.
+_ROLE_SCORE = {"exact": Decimal("0.5"), "ai": Decimal("0.4"), "similar": Decimal("0.3"), "skills": Decimal("0.2")}
 _ENTRY_SCORE = Decimal("0.1")
 _LOCATION_SCORE = Decimal("0.3")
 _SALARY_MEETS_SCORE = Decimal("0.1")
@@ -100,6 +110,7 @@ SKILLS_MATCH_MIN = 3
 SKILLS_MATCH_SHARE = Decimal("0.5")
 ENTRY_IN_TITLE = "entry level in the title"
 ENTRY_IN_ADVERT = "entry level in the advert"
+ENTRY_BY_AI = "entry level, judged by AI"
 # D46: wording that shows an untitled job is for people starting out. A senior advert that
 # mentions graduates ("mentor new graduates") usually also asks for 3+ years, which rules it out first.
 _ENTRY_ADVERT = re.compile(
@@ -116,6 +127,7 @@ class RoleKind(StrEnum):
     exact = "exact"
     similar = "similar"
     skills = "skills"
+    ai = "ai"
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +218,13 @@ def _title_words(text: str) -> set[str]:
     for pattern, spelling in _SPELLINGS:
         lowered = pattern.sub(spelling, lowered)
     return set(re.findall(r"[a-z0-9+#]+", lowered))
+
+
+def worth_judging(title: str, target_roles: list[str]) -> bool:
+    """A free check before paying the AI (D50): the title shares a word with a target role."""
+    words = _title_words(title)
+    core = set().union(*(_title_words(role) for role in target_roles)) - _LEVEL_WORDS - _INTERNSHIP_WORDS
+    return bool(words & core) and not words & (_DIFFERENT_JOB_WORDS - core)
 
 
 def match_role(
@@ -340,7 +359,7 @@ def _same_city(want: Wanted, place: dict[str, Any]) -> bool:
 def score(fit: Fit) -> Decimal:
     """Up to MAX_SCORE, 1.3. Skills add up to 0.3 by the share of the advert's skills the applicant has."""
     total = _ROLE_SCORE[fit.role.kind]
-    if fit.role.level in (ENTRY_IN_TITLE, ENTRY_IN_ADVERT, _INTERNSHIP_LEVEL):
+    if fit.role.level in (ENTRY_IN_TITLE, ENTRY_IN_ADVERT, ENTRY_BY_AI, _INTERNSHIP_LEVEL):
         total += _ENTRY_SCORE
     if fit.location_fits:
         total += _LOCATION_SCORE
@@ -391,6 +410,10 @@ def _can_be_shown(facts: JobFacts, quality: JobQuality) -> bool:
     )
 
 
+def showable(session: Session, now: datetime) -> list[JobFacts]:
+    return [facts for facts, quality in check_all(session, now) if _can_be_shown(facts, quality)]
+
+
 def experience_levels(session: Session) -> dict[uuid.UUID, str]:
     return dict(session.execute(select(ApplicantProfile.applicant_id, ApplicantProfile.experience_level)).all())
 
@@ -405,12 +428,25 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
     `applicant_ids` limits the run to those people, as when someone saves their profile.
     """
     report = MatchReport()
-    shown = [facts for facts, quality in check_all(session, now) if _can_be_shown(facts, quality)]
+    shown = showable(session, now)
     levels = experience_levels(session)
     skills = load_skills(session, now=now)
     required = {facts.job_id: required_in_advert(facts.description) for facts in shown}
     degrees = applicant_degrees(session)
     subjects = {facts.job_id: required_fields(facts.description) for facts in shown}
+    profiles = load_profiles(session, applicant_ids)
+    job_digests = {
+        facts.job_id: digest(
+            job_text(
+                title=facts.title,
+                company=facts.company_name,
+                places=facts.places,
+                apply_url=facts.apply_url,
+                description=facts.description,
+            )
+        )
+        for facts in shown
+    }
     preferences = select(ApplicantPreference)
     if applicant_ids is not None:
         preferences = preferences.where(ApplicantPreference.applicant_id.in_(applicant_ids))
@@ -426,6 +462,7 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
             subjects,
             level=levels.get(preference.applicant_id),
             degrees=degrees.get(preference.applicant_id) or [],
+            verdicts=_verdicts(session, profiles.get(preference.applicant_id), job_digests),
         )
     session.flush()
     return report
@@ -442,6 +479,7 @@ def _match_applicant(
     *,
     level: str | None,
     degrees: list[str],
+    verdicts: dict[uuid.UUID, JobVerdict],
 ) -> None:
     applicant_id = preference.applicant_id
     wanted = wanted_locations(preference.locations)
@@ -455,6 +493,9 @@ def _match_applicant(
     for facts in shown:
         if facts.sector != preference.sector:
             continue
+        verdict = verdicts.get(facts.job_id)
+        if verdict is not None and not verdict.fits:
+            continue
         skill_fit = skills.fit(applicant_id, facts.job_id)
         role = match_role(
             facts.title,
@@ -463,6 +504,8 @@ def _match_applicant(
             internship=level == ExperienceLevel.internship,
             entry=level == ExperienceLevel.entry,
         ) or match_by_skills(facts.title, facts.description, skill_fit, level=level)
+        if role is None and verdict is not None:
+            role = RoleMatch(target="", kind=RoleKind.ai, level=ENTRY_BY_AI if verdict.level == "entry" else None)
         if role is None or degree_shuts_out(subjects[facts.job_id], degrees):
             continue
         job = session.get(Job, facts.job_id)
@@ -491,6 +534,14 @@ def _match_applicant(
             session.add(row)
         row.score = score(fit)
         row.reasons = reasons(fit)
+        if verdict is not None:
+            row.reasons["ai"] = {
+                "fits": True,
+                "level": verdict.level,
+                "reason": verdict.reason,
+                "score": str(verdict.score) if verdict.score is not None else None,
+                "ratings": verdict.ratings,
+            }
         row.role_match = role.kind != RoleKind.skills
         row.location_fit = fits
         row.salary_status = salary
@@ -509,3 +560,9 @@ def _match_applicant(
     report.removed += len(stale)
     report.matches += len(kept)
     report.by_applicant[applicant_id] = len(kept)
+
+
+def _verdicts(
+    session: Session, profile: Profile | None, job_digests: dict[uuid.UUID, str]
+) -> dict[uuid.UUID, JobVerdict]:
+    return current_verdicts(session, profile, job_digests) if profile is not None else {}

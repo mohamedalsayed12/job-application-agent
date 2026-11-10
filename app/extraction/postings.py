@@ -7,7 +7,7 @@ import uuid
 from app.extraction.types import CodeHit
 from app.extraction.urls import parse_board_from_url
 
-# Written by Reed/Adzuna clients into snippet until search_result has a company column.
+# Written by the Reed and Google Jobs clients into snippet until search_result has a company column.
 _EMPLOYER_PREFIX = "employer="
 
 

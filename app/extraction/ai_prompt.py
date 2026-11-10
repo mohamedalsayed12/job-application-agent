@@ -21,7 +21,7 @@ Rules:
 - If nothing is grounded, return an empty employers list.
 """
 
-# Strict JSON Schema (additionalProperties false). OpenAI strict mode takes it as-is;
+# Strict JSON Schema (additionalProperties false);
 # Anthropic gets ``schema_without_string_limits`` (no maxLength). Grounding re-checks quote length.
 EXTRACTION_JSON_SCHEMA: dict = {
     "type": "object",

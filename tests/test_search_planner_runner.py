@@ -1,4 +1,4 @@
-"""T5 / T6 / T9 and search_run states with mocked SerpAPI, Mojeek, and Reed responses."""
+"""T5 / T6 / T9 and search_run states with mocked SerpAPI and Reed responses."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from math import ceil
-from urllib.parse import parse_qs, urlparse, unquote_plus
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 import httpx
 import pytest
@@ -27,24 +27,25 @@ from app.models import (
     SpendLedger,
     TemplateStats,
 )
-from app.search.planner import EXPLORATION_SHARE, PlannedSearch, SearchPlan, plan_searches
+from app.search.planner import (
+    EXPLORATION_SHARE,
+    PlannedSearch,
+    SearchPlan,
+    plan_searches,
+)
 from app.search.runner import SearchBudgetWait, run_search
 from app.search.schedule import create_runs_from_plan
 from app.search.templates import (
     TEMPLATE_SPECS,
     UNPROVEN_RUN_THRESHOLD,
     ensure_search_templates,
-    is_template_enabled,
 )
 
 
 def _settings(**overrides: object) -> Settings:
     base: dict[str, object] = dict(
-        web_search_provider="serpapi",
         serpapi_api_key="test-serpapi-key",
-        mojeek_api_key="test-mojeek-key",
         reed_api_key="test-reed-key",
-        adzuna_enabled=False,
         search_request_unit_price=Decimal("0.003"),
     )
     base.update(overrides)
@@ -92,7 +93,6 @@ def _gateway(handler: object) -> FetchGateway:
         allowlist=frozenset(
             {
                 "serpapi.com",
-                "api.mojeek.com",
                 "www.reed.co.uk",
                 "api.reed.co.uk",
             }
@@ -116,37 +116,35 @@ def _serpapi_ok_body(
     }
 
 
-def test_templates_seeded_cf1b_disabled(session: Session) -> None:
-    cfg = _settings()
-    rows = ensure_search_templates(session, cfg)
+def test_templates_seeded_with_google_jobs_for_cf1b(session: Session) -> None:
+    rows = ensure_search_templates(session)
     assert {r.id for r in rows} == {s.id for s in TEMPLATE_SPECS}
-    assert not is_template_enabled("CF1b", cfg)
     by_id = {r.id: r for r in rows}
     assert by_id["CF1"].provider == "reed"
+    assert by_id["CF1b"].provider == "serpapi_jobs"
     assert by_id["CF2"].provider == "serpapi"
     assert by_id["BD1"].provider == "serpapi"
     assert by_id["BD1"].pattern.startswith("Greenhouse")
 
 
 def test_t5_empty_stats_equal_share_broad_queries(session: Session) -> None:
-    cfg = _settings()
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     plan = plan_searches(
         session,
         _pref(),
-        total_slots=5,
+        total_slots=6,
         employer_names=("Acme Ltd",),
-        settings=cfg,
     )
-    assert plan.total_slots == 5
+    assert plan.total_slots == 6
     ids = [item.template_id for item in plan.items]
-    assert "CF1b" not in ids
-    assert set(ids) == {"CF1", "CF2", "CF3", "BD1", "BD2"}
-    assert sum(item.request_slots for item in plan.items) == 5
+    assert set(ids) == {"CF1", "CF1b", "CF2", "CF3", "BD1", "BD2"}
+    assert sum(item.request_slots for item in plan.items) == 6
     assert all(item.request_slots == 1 for item in plan.items)
     by_id = {item.template_id: item for item in plan.items}
     assert by_id["CF1"].query == "Software Engineer"
     assert by_id["CF1"].location == "London"
+    assert by_id["CF1b"].query == "Software Engineer jobs in London"
+    assert by_id["CF1b"].provider == "serpapi_jobs"
     assert "hiring" in by_id["CF2"].query.lower() or "careers" in by_id["CF2"].query.lower()
     assert "Acme Ltd" in by_id["CF3"].query
     assert by_id["BD1"].site == "greenhouse.io"
@@ -157,8 +155,7 @@ def test_t5_empty_stats_equal_share_broad_queries(session: Session) -> None:
 
 
 def test_t6_unproven_below_five_runs_not_zero(session: Session) -> None:
-    cfg = _settings()
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     session.add(
         TemplateStats(
             template_id="CF1",
@@ -189,7 +186,6 @@ def test_t6_unproven_below_five_runs_not_zero(session: Session) -> None:
         _pref(),
         total_slots=10,
         employer_names=(),
-        settings=cfg,
     )
     by_id = {item.template_id: item.request_slots for item in plan.items}
     assert by_id.get("CF2", 0) >= 1
@@ -201,7 +197,7 @@ def test_t6_unproven_below_five_runs_not_zero(session: Session) -> None:
 async def test_t9_cost_recorded_immediately(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("0"), now)
     applicant = _applicant(session)
 
@@ -263,7 +259,7 @@ async def test_t9_cost_recorded_immediately(session: Session) -> None:
 async def test_serpapi_bd1_site_filter(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 12, 30, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("0"), now)
     applicant = _applicant(session)
     seen_q: list[str] = []
@@ -299,7 +295,7 @@ async def test_serpapi_bd1_site_filter(session: Session) -> None:
 async def test_search_run_planned_to_running_to_succeeded_reed(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 13, 0, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("0"), now)
     applicant = _applicant(session)
     seen_qs: list[dict[str, list[str]]] = []
@@ -356,7 +352,7 @@ async def test_search_run_planned_to_running_to_succeeded_reed(session: Session)
 async def test_search_run_failed_schedules_retry(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 14, 0, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("50"), now)
     applicant = _applicant(session)
 
@@ -389,7 +385,7 @@ async def test_search_run_failed_schedules_retry(session: Session) -> None:
 async def test_search_run_third_retry_uses_thirty_minutes(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 14, 30, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("50"), now)
     applicant = _applicant(session)
 
@@ -422,7 +418,7 @@ async def test_serpapi_success_empty_results_not_failure(session: Session) -> No
     """SerpAPI Success + empty Google results must be zero-hit success, not failed."""
     cfg = _settings()
     now = datetime(2026, 11, 5, 14, 45, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("0"), now)
     applicant = _applicant(session)
 
@@ -465,7 +461,7 @@ async def test_serpapi_success_empty_results_not_failure(session: Session) -> No
 async def test_search_run_inconclusive_no_usable_urls(session: Session) -> None:
     cfg = _settings()
     now = datetime(2026, 11, 5, 15, 0, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("50"), now)
     applicant = _applicant(session)
 
@@ -505,10 +501,10 @@ async def test_search_run_inconclusive_no_usable_urls(session: Session) -> None:
 
 @pytest.mark.asyncio
 async def test_budget_wait_leaves_run_planned_with_backoff(session: Session) -> None:
-    """Paid Mojeek path still hits money_cap; SerpAPI free credits do not."""
+    """A paid search provider still hits money_cap; SerpAPI free credits do not."""
     cfg = _settings()
     now = datetime(2026, 11, 5, 16, 0, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("0"), now)
     applicant = _applicant(session)
 
@@ -523,7 +519,7 @@ async def test_budget_wait_leaves_run_planned_with_backoff(session: Session) -> 
         template_id="CF2",
         applicant_id=applicant.id,
         query="paid search",
-        provider="mojeek",
+        provider="paid-search",
         status=SearchRunStatus.planned,
         next_attempt_at=now,
     )
@@ -543,9 +539,9 @@ async def test_budget_wait_leaves_run_planned_with_backoff(session: Session) -> 
 
 @pytest.mark.asyncio
 async def test_unknown_web_provider_fails_closed(session: Session) -> None:
-    cfg = _settings(web_search_provider="brave")
+    cfg = _settings()
     now = datetime(2026, 11, 5, 17, 0, tzinfo=UTC)
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     _policy(session, Decimal("50"), now)
     applicant = _applicant(session)
 

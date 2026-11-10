@@ -43,8 +43,9 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
 <p>Your data is stored in a database on the operator's own computer. It isn't sold, and it isn't shared except as described
 below.</p>
 <p>The service uses Anthropic's Claude AI to summarise job adverts, to read company websites, and to read your CV when you upload
-it or ask it to. So the text of your CV is sent to Anthropic at those times. Your email address and saved profile are never
-sent.</p>
+it or ask it to. So the text of your CV is sent to Anthropic at those times.</p>
+<p>To judge which jobs suit you, the service also sends Anthropic your target roles, experience level, skills and degrees,
+together with each job advert. Your email address, name, locations, salary and CV are not part of that.</p>
 </div>
 
 <div class="card">

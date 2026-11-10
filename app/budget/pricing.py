@@ -7,8 +7,8 @@ from decimal import Decimal
 from app.core.config import Settings
 from app.models import SpendKind
 
-# Reed/Adzuna quotas and SerpAPI free-plan credits do not spend money_cap.
-FREE_MONEY_PROVIDERS = frozenset({"reed", "adzuna", "serpapi"})
+# The Reed quota and SerpAPI free-plan credits do not spend money_cap.
+FREE_MONEY_PROVIDERS = frozenset({"reed", "serpapi", "serpapi_jobs"})
 
 
 def estimate_cost(
@@ -26,6 +26,8 @@ def estimate_cost(
         unit_price = settings.ai_extraction_unit_price
     elif kind == SpendKind.ai_cv_read:
         unit_price = settings.ai_cv_unit_price
+    elif kind == SpendKind.ai_job_judge:
+        unit_price = settings.ai_judge_unit_price
     else:
         unit_price = settings.ai_summary_unit_price
     return (unit_price * units).quantize(Decimal("0.0001"))
