@@ -21,7 +21,6 @@ from app.extraction import (
     AiBudgetWait,
     AiTokenCapWait,
     extract_ai_leftovers,
-    leftover_search_results,
 )
 from app.extraction.ai_cache import input_hash
 from app.extraction.ai_grounding import ground_suggestions, parse_suggestions
@@ -34,6 +33,7 @@ from app.extraction.ai_types import (
     AiSuggestion,
     LeftoverResult,
 )
+from app.extraction.leftovers import partition_search_results
 from app.fetch.gateway import FetchGateway
 from app.models import (
     AiExtraction,
@@ -453,8 +453,9 @@ async def test_cache_skips_second_paid_call(session: Session) -> None:
     assert first.cached is False
     assert second.cached is True
     assert calls["n"] == 1
+    _, leftovers = partition_search_results(rows)
     assert session.scalars(select(AiExtraction)).one().input_hash == input_hash(
-        leftover_search_results(rows),
+        leftovers,
         model="gpt-4o-mini",
         prompt_version=PROMPT_VERSION,
     )
@@ -578,7 +579,7 @@ def test_code_handled_rows_are_not_leftovers(session: Session) -> None:
             },
         ],
     )
-    leftovers = leftover_search_results(rows)
+    _, leftovers = partition_search_results(rows)
     assert len(leftovers) == 1
     assert leftovers[0].url == "https://news.example/x"
 

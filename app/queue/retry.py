@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 
 from app.models import Candidate, CandidateState
@@ -14,14 +13,13 @@ def schedule_verification_failure(
     *,
     error: str,
     now: datetime | None = None,
-    clock: Callable[[], datetime] | None = None,
 ) -> RetrySchedule:
     """Apply D12 backoff after a failed verification request.
 
     Never transitions to ``unsupported`` or ``rejected`` (D8 / T16).
     Expects ``attempt_count`` already incremented by the claim step.
     """
-    stamp = now or (clock() if clock else datetime.now(UTC))
+    stamp = now or datetime.now(UTC)
     attempts = int(candidate.attempt_count or 0)
     plan = next_retry_schedule(attempts)
     candidate.state = plan.state

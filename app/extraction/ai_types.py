@@ -102,3 +102,12 @@ class AiCallFailure:
     """Provider call did not yield usable JSON; ``reason`` is ``<provider>_<detail>``."""
 
     reason: str
+
+
+def usage_token_count(usage: dict, key: str) -> int:
+    value = usage.get(key, 0)
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, float) and value >= 0:
+        return int(value)
+    return 0

@@ -25,7 +25,7 @@ def extract_hrefs(html: str, *, base_url: str) -> tuple[str, ...]:
     try:
         parser.feed(html)
     except Exception:
-        return tuple(parser.hrefs)
+        pass
     return tuple(parser.hrefs)
 
 

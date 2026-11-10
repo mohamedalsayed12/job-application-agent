@@ -35,7 +35,3 @@ def partition_search_results(
                 )
             )
     return hits, leftovers
-
-
-def leftover_search_results(results: Iterable[SearchResult]) -> list[LeftoverResult]:
-    return partition_search_results(results)[1]

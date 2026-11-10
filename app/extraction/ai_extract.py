@@ -35,7 +35,7 @@ from app.extraction.ai_types import (
     LeftoverResult,
     UngroundedItem,
 )
-from app.extraction.leftovers import leftover_search_results
+from app.extraction.leftovers import partition_search_results
 from app.fetch.gateway import FetchGateway
 from app.models import (
     AiExtraction,
@@ -73,7 +73,7 @@ async def extract_ai_leftovers(
     """
     cfg = settings or get_settings()
     if leftovers is None:
-        leftovers = leftover_search_results(results or ())
+        _, leftovers = partition_search_results(results or ())
     if not leftovers:
         return AiExtractionOutcome(
             grounded=(),

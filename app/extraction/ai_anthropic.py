@@ -16,7 +16,12 @@ from app.extraction.ai_prompt import (
     schema_without_string_limits,
     wrap_results_as_data,
 )
-from app.extraction.ai_types import AiCallFailure, AiCallResponse, LeftoverResult
+from app.extraction.ai_types import (
+    AiCallFailure,
+    AiCallResponse,
+    LeftoverResult,
+    usage_token_count,
+)
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
@@ -124,12 +129,7 @@ def _parse_http(
     model = data.get("model")
     return AiCallResponse(
         payload=payload,
-        prompt_tokens=_count(usage, "input_tokens"),
-        completion_tokens=_count(usage, "output_tokens"),
+        prompt_tokens=usage_token_count(usage, "input_tokens"),
+        completion_tokens=usage_token_count(usage, "output_tokens"),
         model=model if isinstance(model, str) and model else fallback_model,
     )
-
-
-def _count(usage: dict, key: str) -> int:
-    value = usage.get(key, 0)
-    return value if isinstance(value, int) and value >= 0 else 0

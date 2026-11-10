@@ -7,7 +7,12 @@ from collections.abc import Sequence
 
 from app.core.config import Settings, get_settings
 from app.extraction.ai_prompt import EXTRACTION_JSON_SCHEMA, build_messages
-from app.extraction.ai_types import AiCallFailure, AiCallResponse, LeftoverResult
+from app.extraction.ai_types import (
+    AiCallFailure,
+    AiCallResponse,
+    LeftoverResult,
+    usage_token_count,
+)
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
@@ -96,8 +101,8 @@ def _parse_http(
     if not isinstance(payload, dict):
         return AiCallFailure(reason="openai_content_not_object")
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-    prompt_tokens = _int_field(usage, "prompt_tokens")
-    completion_tokens = _int_field(usage, "completion_tokens")
+    prompt_tokens = usage_token_count(usage, "prompt_tokens")
+    completion_tokens = usage_token_count(usage, "completion_tokens")
     model = data.get("model")
     return AiCallResponse(
         payload=payload,
@@ -105,12 +110,3 @@ def _parse_http(
         completion_tokens=completion_tokens,
         model=model if isinstance(model, str) and model else fallback_model,
     )
-
-
-def _int_field(usage: dict, key: str) -> int:
-    value = usage.get(key, 0)
-    if isinstance(value, int) and value >= 0:
-        return value
-    if isinstance(value, float) and value >= 0:
-        return int(value)
-    return 0

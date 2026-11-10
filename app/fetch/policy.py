@@ -33,7 +33,6 @@ PUBLIC_SUFFIX_BLOCKLIST = frozenset(
         "gov.uk",
     }
 )
-_PUBLIC_SUFFIX_BLOCKLIST = PUBLIC_SUFFIX_BLOCKLIST  # compat for in-module callers
 _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 
 
@@ -63,7 +62,7 @@ def is_allowlisted_host(host: str, allowlist: frozenset[str]) -> bool:
 
 def is_official_domain_host(host: str, official_domain: str) -> bool:
     domain = official_domain.lower().rstrip(".")
-    if "." not in domain or domain in _PUBLIC_SUFFIX_BLOCKLIST:
+    if "." not in domain or domain in PUBLIC_SUFFIX_BLOCKLIST:
         return False
     return host_matches_suffix(host, domain)
 
