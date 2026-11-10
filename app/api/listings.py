@@ -45,10 +45,9 @@ from app.models import (
 router = APIRouter(prefix="/listings", tags=["listings"])
 
 PAGE_SIZE = 25
-ADZUNA = "adzuna"
 _CURRENCY = {"GBP": "£", "USD": "$", "EUR": "€"}
 _PERIOD = {"year": "a year", "month": "a month", "week": "a week", "day": "a day", "hour": "an hour"}
-_SOURCE_LABEL = {"greenhouse": "Employer's Greenhouse board", "lever": "Employer's Lever board", ADZUNA: "Adzuna"}
+_SOURCE_LABEL = {"greenhouse": "Employer's Greenhouse board", "lever": "Employer's Lever board"}
 Sort = Literal["score", "newest"]
 # D44: matches on a target role, matches on skills alone, or both.
 Show = Literal["roles", "skills", "all"]
@@ -291,11 +290,6 @@ def render_listing(item: Listing) -> str:
             f"{_e(item.description or 'No description was given.')}</div></details>"
         )
     seen = item.last_seen_at.strftime("%d %b %Y") if item.last_seen_at else "not recorded"
-    label = (
-        ' <a href="https://www.adzuna.co.uk/" rel="noopener noreferrer">Jobs by Adzuna</a>'
-        if item.source == ADZUNA
-        else ""
-    )
     out_of_100 = score_out_of_100(item.score)
     return f"""
 <article class="card job">
@@ -319,7 +313,7 @@ def render_listing(item: Listing) -> str:
 {_skills(item)}
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 <div class="job-foot">
-  <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.{label}</span>
+  <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url)}
 </div>
 </article>

@@ -40,7 +40,7 @@ def _gateway(
                 "api.example.com",
                 "boards-api.greenhouse.io",
                 "api.reed.co.uk",
-                "api.adzuna.com",
+                "serpapi.com",
             }
         ),
         resolve=resolve,
@@ -358,7 +358,7 @@ async def test_cross_host_redirect_strips_authorization() -> None:
         if request.url.host == "api.reed.co.uk":
             return httpx.Response(
                 302,
-                headers={"Location": "https://api.adzuna.com/steal"},
+                headers={"Location": "https://serpapi.com/steal"},
             )
         auth_on_second.append(request.headers.get("authorization"))
         return httpx.Response(

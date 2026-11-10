@@ -51,7 +51,7 @@ def _build_for_spec(
     if spec.id == "CF1":
         return BuiltQuery(text=role, location=location)
     if spec.id == "CF1b":
-        return BuiltQuery(text=role, location=location)
+        return BuiltQuery(text=f"{role} jobs in {location}")
     if spec.id == "CF2":
         return BuiltQuery(text=f"{role} {location} hiring OR careers OR jobs")
     if spec.id == "CF3":

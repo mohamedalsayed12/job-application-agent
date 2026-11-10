@@ -68,7 +68,7 @@ async def search_official_domain(
             template_id="CF3",
             applicant_id=applicant_id,
             query=built.text,
-            provider=cfg.web_search_provider,
+            provider="serpapi",
             status=SearchRunStatus.planned,
             attempt_count=0,
         )

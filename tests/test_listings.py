@@ -197,11 +197,6 @@ def _listing(source: str, **job: object) -> Listing:
     )
 
 
-def test_t36_adzuna_listings_carry_the_adzuna_label_and_others_do_not() -> None:
-    assert 'href="https://www.adzuna.co.uk/"' in render_listing(_listing("adzuna"))
-    assert "Adzuna" not in render_listing(_listing("greenhouse"))
-
-
 def test_an_apply_link_that_is_not_a_web_link_is_not_rendered() -> None:
     page = render_listing(_listing("lever", apply_url="javascript:alert(1)"))
     assert "javascript:" not in page

@@ -233,12 +233,11 @@ def _cf3_gateway(seen: list[str]) -> FetchGateway:
 async def test_r1_r4_r5_cf3_end_to_end(session: Session) -> None:
     cfg = Settings(
         _env_file=None,  # type: ignore[call-arg]
-        web_search_provider="serpapi",
         serpapi_api_key="test-serpapi",
         ai_provider="anthropic",
         anthropic_api_key="test-anthropic",
     )
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     session.add(BudgetPolicy(provider="*", period="month", money_cap=Decimal("2.00"), request_cap=None,
                              currency="GBP", effective_from=_NOW, effective_to=None))
     applicant = Applicant(email=f"{uuid.uuid4()}@example.com")
@@ -399,7 +398,7 @@ async def test_a_company_still_waiting_when_the_last_account_is_deleted_stops_no
 def test_rerun_resumes_planned_cold_start_runs(session: Session) -> None:
     from app.discovery.run import _planned_runs
 
-    ensure_search_templates(session, Settings(_env_file=None))  # type: ignore[call-arg]
+    ensure_search_templates(session)
     applicant = Applicant(email=f"{uuid.uuid4()}@example.com")
     session.add(applicant)
     session.flush()
@@ -416,12 +415,11 @@ def test_rerun_resumes_planned_cold_start_runs(session: Session) -> None:
 async def test_cf3_reuses_an_earlier_search_for_the_same_query(session: Session) -> None:
     cfg = Settings(
         _env_file=None,  # type: ignore[call-arg]
-        web_search_provider="serpapi",
         serpapi_api_key="test-serpapi",
         ai_provider="anthropic",
         anthropic_api_key="test-anthropic",
     )
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     session.add(BudgetPolicy(provider="*", period="month", money_cap=Decimal("2.00"), request_cap=None,
                              currency="GBP", effective_from=_NOW, effective_to=None))
     applicant = Applicant(email=f"{uuid.uuid4()}@example.com")
@@ -449,7 +447,7 @@ async def test_discovery_leaves_runs_alone_until_their_retry_time(session: Sessi
     from app.applicants.service import create_applicant, parse_preference_input
 
     cfg = Settings(_env_file=None)  # type: ignore[call-arg]
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     applicant = create_applicant(
         session, email=f"{uuid.uuid4()}@example.com", display_name="Due Test",
         preference=parse_preference_input(target_roles=["Software Engineer"], locations=["Leeds"]),

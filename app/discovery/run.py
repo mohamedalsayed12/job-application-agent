@@ -77,7 +77,7 @@ async def run_discovery(
     cfg = settings or get_settings()
     commit = persist or session.flush
     report = DiscoveryReport()
-    ensure_search_templates(session, cfg)
+    ensure_search_templates(session)
     record_outcomes(session, now=datetime.now(UTC))
     commit()
 
@@ -94,7 +94,7 @@ async def run_discovery(
             log(f"search applicant {applicant_id}: {len(planned)} runs wait for their retry time")
             continue
         if not planned:
-            plan = plan_searches(session, pref, total_slots=slots_per_applicant, settings=cfg)
+            plan = plan_searches(session, pref, total_slots=slots_per_applicant)
             runs = create_runs_from_plan(session, plan, applicant_id=applicant_id)
             commit()
         for run in runs:

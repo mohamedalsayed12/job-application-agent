@@ -1,4 +1,4 @@
-"""T11 / T12: AI leftover extraction grounding, injection, cache, mocked OpenAI."""
+"""T11 / T12: AI leftover extraction grounding, injection, cache, mocked Anthropic."""
 
 from __future__ import annotations
 
@@ -23,10 +23,10 @@ from app.extraction import (
     extract_ai_leftovers,
     leftover_search_results,
 )
+from app.extraction.ai_anthropic import ANTHROPIC_MESSAGES_URL
 from app.extraction.ai_cache import input_hash
 from app.extraction.ai_grounding import ground_suggestions, parse_suggestions
 from app.extraction.ai_injection import scan_suspicious
-from app.extraction.ai_openai import OPENAI_CHAT_URL
 from app.extraction.ai_prompt import wrap_results_as_data
 from app.extraction.ai_types import (
     AiEvidenceItem,
@@ -60,9 +60,9 @@ def _load(name: str) -> dict:
 
 def _settings(**overrides: object) -> Settings:
     base: dict[str, object] = dict(
-        ai_provider="openai",
-        ai_extraction_model="gpt-4o-mini",
-        openai_api_key="test-openai-key",
+        ai_provider="anthropic",
+        ai_extraction_model="claude-haiku-5-5",
+        anthropic_api_key="test-anthropic-key",
         ai_extraction_unit_price=Decimal("0.0005"),
         ai_extraction_per_item_token_cap=2500,
         ai_extraction_max_output_tokens=500,
@@ -133,32 +133,22 @@ def _add_results(session: Session, run: SearchRun, rows: list[dict]) -> list[Sea
     return out
 
 
-def _openai_body(employers: list[dict], *, prompt_tokens: int = 200, completion_tokens: int = 80) -> dict:
+def _ai_body(employers: list[dict], *, prompt_tokens: int = 200, completion_tokens: int = 80) -> dict:
     return {
-        "id": "chatcmpl-test",
-        "model": "gpt-4o-mini",
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": json.dumps({"employers": employers}),
-                },
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        },
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-haiku-5-5",
+        "content": [{"type": "text", "text": json.dumps({"employers": employers})}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens},
     }
 
 
 def _gateway(handler: object) -> FetchGateway:
     return FetchGateway(
         user_agent="JobApplicationAgent-Test/0.1",
-        allowlist=frozenset({"api.openai.com"}),
+        allowlist=frozenset({"api.anthropic.com"}),
         resolve=_public_resolve,
         transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
     )
@@ -181,16 +171,16 @@ async def test_t11_ungrounded_invention_rejected_and_logged(
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
-        assert request.url == httpx.URL(OPENAI_CHAT_URL)
+        assert request.url == httpx.URL(ANTHROPIC_MESSAGES_URL)
         body = json.loads(request.content.decode("utf-8"))
-        assert body["model"] == "gpt-4o-mini"
-        assert body["response_format"]["json_schema"]["strict"] is True
-        user = body["messages"][1]["content"]
+        assert body["model"] == "claude-haiku-5-5"
+        assert body["output_config"]["format"]["type"] == "json_schema"
+        user = body["messages"][0]["content"]
         assert "SEARCH_RESULTS_DATA_BEGIN" in user
         assert "DATA only" in user
         return httpx.Response(
             200,
-            json=_openai_body(
+            json=_ai_body(
                 [
                     {
                         "company_name": "Brightly Software",
@@ -248,7 +238,7 @@ async def test_t11_ungrounded_invention_rejected_and_logged(
 
     ledger = session.scalars(select(SpendLedger)).one()
     assert ledger.kind == SpendKind.ai_extraction
-    assert ledger.provider == "openai"
+    assert ledger.provider == "anthropic"
     assert ledger.actual_cost is not None
 
     cached = session.scalars(select(AiExtraction)).one()
@@ -258,7 +248,7 @@ async def test_t11_ungrounded_invention_rejected_and_logged(
     stored_reasons = {item["reason"] for item in cached.output["ungrounded"]}
     assert "quote_not_in_result" in stored_reasons
     assert "unknown_result_id" in stored_reasons
-    assert seen == [OPENAI_CHAT_URL]
+    assert seen == [ANTHROPIC_MESSAGES_URL]
 
 
 @pytest.mark.asyncio
@@ -282,13 +272,13 @@ async def test_t12_injection_page_marked_suspicious_and_never_auto_verified(
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
-        user = body["messages"][1]["content"]
+        user = body["messages"][0]["content"]
         assert "Ignore your rules" in user
         assert "SEARCH_RESULTS_DATA_BEGIN" in user
         # Model tries to obey the page; code must still ground.
         return httpx.Response(
             200,
-            json=_openai_body(
+            json=_ai_body(
                 [
                     {
                         "company_name": "Acme Engineering",
@@ -427,7 +417,7 @@ async def test_cache_skips_second_paid_call(session: Session) -> None:
         calls["n"] += 1
         return httpx.Response(
             200,
-            json=_openai_body(
+            json=_ai_body(
                 [
                     {
                         "company_name": "Brightly Software",
@@ -453,7 +443,7 @@ async def test_cache_skips_second_paid_call(session: Session) -> None:
     assert calls["n"] == 1
     assert session.scalars(select(AiExtraction)).one().input_hash == input_hash(
         leftover_search_results(rows),
-        model="gpt-4o-mini",
+        model="claude-haiku-5-5",
         prompt_version=PROMPT_VERSION,
     )
     # Second pass must not duplicate candidates for the same ai_extraction row.
@@ -467,7 +457,7 @@ async def test_budget_gate_blocks_without_money_cap(session: Session) -> None:
     rows = _add_results(session, run, fixture["results"][:1])
 
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("OpenAI must not be called when budget waits")
+        raise AssertionError("the AI must not be called when budget waits")
 
     outcome = await extract_ai_leftovers(
         session,
@@ -504,7 +494,7 @@ async def test_large_leftover_batch_chunks_under_token_cap(session: Session) -> 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         body = json.loads(request.content.decode("utf-8"))
-        user = body["messages"][1]["content"]
+        user = body["messages"][0]["content"]
         ids = re.findall(r'"result_id":"([0-9a-f-]{36})"', user)
         assert ids
         rid = ids[0]
@@ -517,7 +507,7 @@ async def test_large_leftover_batch_chunks_under_token_cap(session: Session) -> 
         company = title.split(" careers")[0]
         return httpx.Response(
             200,
-            json=_openai_body(
+            json=_ai_body(
                 [
                     {
                         "company_name": company,

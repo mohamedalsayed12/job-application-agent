@@ -46,7 +46,7 @@ PREF = DiscoveryPreference(target_roles=("Software Engineer",), locations=("Lond
 
 
 def _settings() -> Settings:
-    return Settings(web_search_provider="serpapi", adzuna_enabled=False, search_request_unit_price=Decimal("0.003"))
+    return Settings(search_request_unit_price=Decimal("0.003"))
 
 
 def _run(session: Session, template: str, applicant: uuid.UUID, *, planned_at: datetime = T0) -> SearchRun:
@@ -100,7 +100,7 @@ def _found(session: Session, candidate: Candidate, run: SearchRun | None, *, at:
 
 
 def _verified_board(session: Session) -> tuple[EmployerBoard, Candidate]:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     board = _board(session)
     board.verified_at = VERIFIED
     return board, _candidate(session, board)
@@ -122,7 +122,7 @@ def _stats(session: Session, template: str, **fields: object) -> None:
 
 
 def _slots(session: Session, total: int = 10, pref: DiscoveryPreference = PREF) -> dict[str, int]:
-    plan = plan_searches(session, pref, total_slots=total, settings=_settings())
+    plan = plan_searches(session, pref, total_slots=total)
     return {item.template_id: item.request_slots for item in plan.items}
 
 
@@ -182,7 +182,7 @@ def test_a_board_found_by_several_runs_of_the_first_plan_is_shared(session: Sess
 
 
 async def test_t9_job_outcomes_are_recorded_once_known_and_closed_jobs_lower_freshness(session: Session) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     board = _board(session)
     board.verified_at = VERIFIED
     candidate = _candidate(session, board)
@@ -251,7 +251,7 @@ def test_recording_twice_gives_the_same_figures(session: Session) -> None:
 
 
 def test_a_template_with_five_runs_stops_being_unproven(session: Session) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     _run(session, "BD1", applicant)
     _stats(session, "BD1", run_count=UNPROVEN_RUN_THRESHOLD)
@@ -265,7 +265,7 @@ def test_a_template_with_five_runs_stops_being_unproven(session: Session) -> Non
 
 
 def test_t7_higher_scorers_get_more_and_a_fifth_still_goes_to_unproven(session: Session) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     _stats(session, "BD1", new_verified_boards=Decimal(6))
     _stats(session, "BD2", new_verified_boards=Decimal(2))
     _stats(session, "CF1", run_count=UNPROVEN_RUN_THRESHOLD - 1)
@@ -273,12 +273,13 @@ def test_t7_higher_scorers_get_more_and_a_fifth_still_goes_to_unproven(session: 
     slots = _slots(session, total=10)
 
     assert slots["BD1"] > slots["BD2"] > 0
-    assert slots["CF1"] + slots["CF2"] >= ceil(10 * EXPLORATION_SHARE)
+    unproven = ("CF1", "CF1b", "CF2")
+    assert sum(slots.get(template, 0) for template in unproven) >= ceil(10 * EXPLORATION_SHARE)
     assert sum(slots.values()) == 10
 
 
 def test_a_cheaper_template_with_the_same_value_scores_higher(session: Session) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     _stats(session, "BD1", new_verified_boards=Decimal(4), total_cost=Decimal("0.10"))
     _stats(session, "BD2", new_verified_boards=Decimal(4), total_cost=Decimal("0.40"))
 
@@ -288,7 +289,7 @@ def test_a_cheaper_template_with_the_same_value_scores_higher(session: Session) 
 
 
 def test_a_stale_haul_scores_below_a_fresh_one(session: Session) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     _stats(session, "BD1", relevant_jobs=Decimal(50), freshness_share=Decimal("0.2"))
     _stats(session, "BD2", relevant_jobs=Decimal(50), freshness_share=Decimal("1"))
 
@@ -298,36 +299,36 @@ def test_a_stale_haul_scores_below_a_fresh_one(session: Session) -> None:
 
 
 def test_all_proven_and_all_zero_shares_equally_and_drops_nobody(session: Session) -> None:
-    ensure_search_templates(session, _settings())
-    for template in ("CF1", "CF2", "BD1", "BD2"):
+    ensure_search_templates(session)
+    for template in ("CF1", "CF1b", "CF2", "BD1", "BD2"):
         _stats(session, template)
 
-    slots = _slots(session, total=8)
+    slots = _slots(session, total=10)
 
-    assert slots == {"CF1": 2, "CF2": 2, "BD1": 2, "BD2": 2}
+    assert slots == {"CF1": 2, "CF1b": 2, "CF2": 2, "BD1": 2, "BD2": 2}
 
 
 def test_the_reserve_keeps_a_low_scorer_alive_when_nothing_is_unproven(session: Session) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     _stats(session, "BD1", new_verified_boards=Decimal(9))
-    for template in ("CF1", "CF2", "BD2"):
+    for template in ("CF1", "CF1b", "CF2", "BD2"):
         _stats(session, template)
 
     slots = _slots(session, total=20)
 
-    assert all(slots[template] >= 1 for template in ("CF1", "CF2", "BD2"))
+    assert all(slots[template] >= 1 for template in ("CF1", "CF1b", "CF2", "BD2"))
     assert slots["BD1"] > slots["BD2"]
 
 
 def test_more_slots_buy_more_different_searches_never_the_same_one_twice(session: Session) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     _stats(session, "BD1", new_verified_boards=Decimal(9))
-    for template in ("CF1", "CF2", "BD2"):
+    for template in ("CF1", "CF1b", "CF2", "BD2"):
         _stats(session, template)
     pref = DiscoveryPreference(
         target_roles=("Junior Python Developer", "Junior Backend Developer"), locations=("Manchester", "Leeds"), sector="tech"
     )
-    plan = plan_searches(session, pref, total_slots=20, settings=_settings())
+    plan = plan_searches(session, pref, total_slots=20)
     runs = create_runs_from_plan(session, plan, applicant_id=_applicant(session, roles=["Backend Developer"], locations=["Leeds"]))
 
     bd1 = [run.query for run in runs if run.template_id == "BD1"]
@@ -338,9 +339,9 @@ def test_more_slots_buy_more_different_searches_never_the_same_one_twice(session
 
 
 def test_a_single_role_and_location_never_repeats_a_query(session: Session) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     _stats(session, "BD1", new_verified_boards=Decimal(9))
-    plan = plan_searches(session, PREF, total_slots=10, settings=_settings())
+    plan = plan_searches(session, PREF, total_slots=10)
     runs = create_runs_from_plan(session, plan, applicant_id=_applicant(session, roles=["Backend Developer"], locations=["Leeds"]))
 
     assert len([run for run in runs if run.template_id == "BD1"]) == 1
@@ -367,7 +368,7 @@ async def test_the_worker_records_outcomes_after_it_collects(session: Session) -
 
 @pytest.mark.parametrize("total", [1, 5, 10, 17])
 def test_every_slot_is_accounted_for(session: Session, total: int) -> None:
-    ensure_search_templates(session, _settings())
+    ensure_search_templates(session)
     _stats(session, "BD1", new_verified_boards=Decimal(3))
     _stats(session, "BD2", new_verified_boards=Decimal(1), total_cost=Decimal("0.5"))
     _stats(session, "CF1", run_count=1)

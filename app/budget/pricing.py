@@ -7,8 +7,8 @@ from decimal import Decimal
 from app.core.config import Settings
 from app.models import SpendKind
 
-# Reed/Adzuna quotas and SerpAPI free-plan credits do not spend money_cap.
-FREE_MONEY_PROVIDERS = frozenset({"reed", "adzuna", "serpapi"})
+# The Reed quota and SerpAPI free-plan credits do not spend money_cap.
+FREE_MONEY_PROVIDERS = frozenset({"reed", "serpapi", "serpapi_jobs"})
 
 
 def estimate_cost(

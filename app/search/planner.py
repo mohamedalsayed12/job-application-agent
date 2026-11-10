@@ -11,14 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.applicants.types import DiscoveryPreference
-from app.core.config import Settings, get_settings
 from app.models import TemplateStats
 from app.search.queries import BuiltQuery, build_queries
 from app.search.templates import (
     TEMPLATE_SPECS,
     UNPROVEN_RUN_THRESHOLD,
-    is_template_enabled,
-    resolve_provider,
 )
 
 EXPLORATION_SHARE = 0.20
@@ -97,14 +94,12 @@ def plan_searches(
     *,
     total_slots: int = 5,
     employer_names: Sequence[str] = (),
-    settings: Settings | None = None,
 ) -> SearchPlan:
     """Equal shares until a template has 5 runs, then the rest follows its measured score.
 
-    Unproven is never scored as zero. CF1b stays out while ``adzuna_enabled`` is false.
+    Unproven is never scored as zero.
     CF3 needs an employer name.
     """
-    cfg = settings or get_settings()
     if total_slots < 1:
         raise ValueError("total_slots must be >= 1")
     if not pref.target_roles or not pref.locations:
@@ -112,8 +107,6 @@ def plan_searches(
 
     runnable: list[str] = []
     for spec in TEMPLATE_SPECS:
-        if not is_template_enabled(spec.id, cfg):
-            continue
         if spec.needs_employer and not employer_names:
             continue
         runnable.append(spec.id)
@@ -133,7 +126,8 @@ def plan_searches(
     else:
         exploration_slots = min(total_slots, max(1, ceil(total_slots * EXPLORATION_SHARE)))
         # With nothing unproven, the reserve still stops a low scorer being dropped for good.
-        explored = _distribute_equal(unproven or runnable, exploration_slots)
+        # Lowest scorers come first, so a reserve smaller than the template count still reaches them.
+        explored = _distribute_equal(unproven or sorted(runnable, key=lambda t: weights.get(t, 0)), exploration_slots)
         scored = _distribute_by_weight(weights, total_slots - exploration_slots)
         slots_by_id = {t: explored.get(t, 0) + scored.get(t, 0) for t in runnable}
 
@@ -147,7 +141,7 @@ def plan_searches(
         items.append(
             PlannedSearch(
                 template_id=spec.id,
-                provider=resolve_provider(spec, cfg),
+                provider=spec.provider,
                 query=first.text,
                 location=first.location,
                 site=first.site,

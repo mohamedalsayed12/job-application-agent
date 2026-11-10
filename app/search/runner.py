@@ -22,9 +22,8 @@ from app.models import (
     SpendKind,
     TemplateStats,
 )
-from app.search.mojeek import search_mojeek
 from app.search.reed import search_reed
-from app.search.serpapi import search_serpapi
+from app.search.serpapi import search_serpapi, search_serpapi_jobs
 from app.search.templates import get_template_spec
 from app.search.types import (
     ProviderFailure,
@@ -267,13 +266,8 @@ async def _call_provider(
             site=site,
             settings=settings,
         )
-    if provider == "mojeek":
-        return await search_mojeek(
-            gateway,
-            query=query,
-            site=site,
-            settings=settings,
-        )
+    if provider == "serpapi_jobs":
+        return await search_serpapi_jobs(gateway, query=query, settings=settings)
     return ProviderFailure(reason=f"unknown_provider:{provider}", retryable=False)
 
 

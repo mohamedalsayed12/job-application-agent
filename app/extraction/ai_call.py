@@ -1,4 +1,4 @@
-"""Route one leftover-extraction call to the configured AI_PROVIDER (D30)."""
+"""Send one leftover-extraction call to the configured AI_PROVIDER (D30). Only Anthropic is built."""
 
 from __future__ import annotations
 
@@ -6,13 +6,11 @@ from collections.abc import Sequence
 
 from app.core.config import Settings
 from app.extraction.ai_anthropic import call_anthropic_extraction
-from app.extraction.ai_openai import call_openai_extraction
 from app.extraction.ai_types import AiCallFailure, AiCallResponse, LeftoverResult
 from app.fetch.gateway import FetchGateway
 
 _PROVIDERS = {
     "anthropic": call_anthropic_extraction,
-    "openai": call_openai_extraction,
 }
 
 

@@ -34,6 +34,8 @@ RefusalReason = Literal[
 MAX_REDIRECTS = 3
 MAX_BODY_BYTES = 16 * 1024 * 1024
 DEFAULT_TIMEOUT_S = 10.0
+# A request may ask for longer, up to this: SerpAPI's Google Jobs engine often takes over 10 s.
+MAX_TIMEOUT_S = 30.0
 ALLOWED_CONTENT_TYPES = frozenset(
     {
         "text/html",
@@ -155,7 +157,7 @@ class FetchGateway:
         host: str,
     ) -> FetchResponse | FetchRefusal | _Redirect:
         headers = {**dict(request.headers), "User-Agent": self._user_agent}
-        timeout_s = min(request.timeout_s or DEFAULT_TIMEOUT_S, DEFAULT_TIMEOUT_S)
+        timeout_s = min(request.timeout_s or DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S)
         try:
             async with self._client.stream(
                 request.method,

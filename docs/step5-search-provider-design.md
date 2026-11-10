@@ -2,6 +2,8 @@
 
 **Status:** approved (D29). Milestone 1 search provider: Mojeek Business + Reed; Adzuna CF1b off.
 
+**Superseded (2026-11-10, D49):** SerpAPI is now the only search provider and CF1b runs on SerpAPI Google Jobs. Mojeek and Adzuna were removed from the code. This page is kept as the record of the original decision.
+
 **Sources:** MVP.md sections 5, 7 (Stage 2), 8 and 11; V1-V4 and V9; PROMPTS Step 5 Decide. Schema expectations from `docs/step1-data-model.md` (`search_run`, `search_result`). Spend path from `docs/step2-fetch-budget-design.md`.
 
 **Checked:** Brave, Reed and Adzuna primary docs and terms (and Mojeek as the fallback that publishes storage rights), as of 5 Nov 2026. Third-party blogs are cited only where the vendor page is silent.

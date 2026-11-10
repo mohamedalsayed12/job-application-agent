@@ -6,7 +6,7 @@ Reed:
 - `reed_search_results.json` — Jobseeker search list shape (no External Url).
 - `reed_job_details_*.json` — Jobseeker details shape, where External Url appears.
 
-Adzuna fixture follows the public search result shape; tests store `employer=` in the snippet the same way the Reed client does.
+The Google Jobs fixture follows the SerpAPI `google_jobs` result shape; the client stores `employer=` in the snippet the same way the Reed client does.
 
 Step 7 leftovers:
 - `leftover_web_results.json` — prose pages with no board URL / employer= prefix (AI path).
