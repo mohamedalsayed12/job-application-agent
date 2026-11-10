@@ -11,7 +11,7 @@ from app.api.chrome import public_bar
 router = APIRouter(tags=["privacy"])
 
 CONTACT_EMAIL = "mohammed33771885@gmail.com"
-UPDATED = "9 November 2026"
+UPDATED = "10 November 2026"
 
 _BODY = f"""
 <h1>Privacy notice</h1>
@@ -27,10 +27,11 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
 <h2>What we keep about you, and why</h2>
 <ul>
   <li><b>Your email and password.</b> To let you log in. The password is stored only as an Argon2 hash, never as text.</li>
-  <li><b>Your profile:</b> target roles, locations, experience level, travel distance, minimum salary, skills,
+  <li><b>Your profile:</b> target roles, locations, experience level, travel distance, minimum salary, degrees, skills,
   certifications and licences. To find jobs that fit you and explain each match.</li>
-  <li><b>Your CV, if you upload one.</b> Stored so you can download it again. Nothing reads its contents, and it is never sent to
-  any other service.</li>
+  <li><b>Your CV, if you upload one.</b> Stored so you can download it again. When you upload it, or press "Fill my profile
+  from my CV", its text is read to suggest entries for your profile form. The suggestions aren't stored: only what you
+  save is kept.</li>
   <li><b>Your job matches:</b> which jobs fit your profile, with a score and the reasons.</li>
   <li><b>Your IP address</b>, held briefly in memory to limit repeated login attempts. It isn't written to the database.</li>
 </ul>
@@ -39,9 +40,11 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
 
 <div class="card">
 <h2>Who else sees it</h2>
-<p>No one. Your data is stored in a database on the operator's own computer and isn't sold or shared.</p>
-<p>The service uses Anthropic's Claude AI to summarise job adverts and to read company websites. Only the job adverts and public
-web pages are sent, never your profile, CV or email.</p>
+<p>Your data is stored in a database on the operator's own computer. It isn't sold, and it isn't shared except as described
+below.</p>
+<p>The service uses Anthropic's Claude AI to summarise job adverts, to read company websites, and to read your CV when you upload
+it or ask it to. So the text of your CV is sent to Anthropic at those times. Your email address and saved profile are never
+sent.</p>
 </div>
 
 <div class="card">

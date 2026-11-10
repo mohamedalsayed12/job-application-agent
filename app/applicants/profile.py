@@ -38,6 +38,7 @@ MAX_ROLES = 10
 MAX_LOCATIONS = 10
 MAX_SKILLS = 50
 MAX_CERTIFICATIONS = 20
+MAX_DEGREES = 5
 MAX_ITEM_LENGTH = 200
 
 
@@ -56,6 +57,7 @@ class ProfileInput:
     travel_distance_miles: int | None
     skills: tuple[str, ...]
     certifications: tuple[CertificationInput, ...]
+    degrees: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +131,7 @@ def parse_profile_input(
     travel_distance: str,
     skills: list[str],
     certifications: list[CertificationInput],
+    degrees: list[str] | None = None,
 ) -> ProfileInput:
     roles = [role.strip() for role in target_roles if role.strip()]
     places = [place.strip() for place in locations if place.strip()]
@@ -152,7 +155,18 @@ def parse_profile_input(
         travel_distance_miles=_parse_travel(travel_distance),
         skills=_parse_skills(skills),
         certifications=tuple(certifications),
+        degrees=_parse_degrees(degrees or []),
     )
+
+
+def _parse_degrees(degrees: list[str]) -> tuple[str, ...]:
+    unique: dict[str, str] = {}
+    for degree in degrees:
+        if cleaned := " ".join(degree.split()):
+            unique.setdefault(cleaned.casefold(), cleaned)
+    kept = list(unique.values())
+    _check_items(kept, label="degrees", limit=MAX_DEGREES)
+    return tuple(kept)
 
 
 def save_profile(session: Session, applicant_id: uuid.UUID, profile: ProfileInput) -> None:
@@ -163,6 +177,7 @@ def save_profile(session: Session, applicant_id: uuid.UUID, profile: ProfileInpu
         session.add(row)
     row.experience_level = profile.experience_level
     row.travel_distance_miles = profile.travel_distance_miles
+    row.degrees = list(profile.degrees)
 
     session.execute(delete(ApplicantSkill).where(ApplicantSkill.applicant_id == applicant_id))
     session.execute(delete(ApplicantCertification).where(ApplicantCertification.applicant_id == applicant_id))

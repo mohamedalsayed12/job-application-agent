@@ -627,21 +627,17 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
+    { name = "fastembed" },
     { name = "httpx" },
     { name = "itsdangerous" },
     { name = "limits" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pwdlib", extra = ["argon2"] },
     { name = "pydantic-settings" },
+    { name = "pypdf" },
     { name = "python-multipart" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-semantic = [
-    { name = "fastembed" },
-    { name = "pypdf" },
 ]
 
 [package.dev-dependencies]
@@ -654,19 +650,18 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "fastembed", marker = "extra == 'semantic'", specifier = ">=0.7" },
+    { name = "fastembed", specifier = ">=0.7" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "limits", specifier = ">=5.8.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.3" },
     { name = "pwdlib", extras = ["argon2"], specifier = ">=0.3.1" },
     { name = "pydantic-settings", specifier = ">=2.6.0" },
-    { name = "pypdf", marker = "extra == 'semantic'", specifier = ">=5" },
+    { name = "pypdf", specifier = ">=5" },
     { name = "python-multipart", specifier = ">=0.0.33" },
     { name = "sqlalchemy", specifier = ">=2.0.36" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
 ]
-provides-extras = ["semantic"]
 
 [package.metadata.requires-dev]
 dev = [

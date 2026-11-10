@@ -75,7 +75,7 @@ NOT_ENTRY_TITLE = re.compile(
     r"intern|interns|internship|placement|apprentice|apprenticeship)\b",
     re.IGNORECASE,
 )
-ENTRY_TITLE = re.compile(r"\b(graduate|grad|junior|jr\.?|entry.level)\b", re.IGNORECASE)
+ENTRY_TITLE = re.compile(r"\b(graduate|grad|junior|jr\.?|entry.level|early.careers?)\b", re.IGNORECASE)
 YEARS_REQUIRED = re.compile(
     r"\b([3-9]|1\d)\s*\+?\s*(?:(?:-|–|to)\s*\d+\s*)?(?:years?|yrs?)\b[^.]{0,60}\bexperience",
     re.IGNORECASE,
@@ -505,10 +505,8 @@ async def search_jobs(
 
 
 def local_embedder() -> Embedder:
-    try:
-        from fastembed import TextEmbedding
-    except ImportError as exc:
-        raise SystemExit("Embeddings need the extra: uv sync --extra semantic") from exc
+    from fastembed import TextEmbedding
+
     model = TextEmbedding(_EMBEDDING_MODEL)
 
     def embed(texts: list[str]) -> list[list[float]]:

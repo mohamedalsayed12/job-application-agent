@@ -24,6 +24,8 @@ def estimate_cost(
         unit_price = settings.search_request_unit_price
     elif kind == SpendKind.ai_extraction:
         unit_price = settings.ai_extraction_unit_price
+    elif kind == SpendKind.ai_cv_read:
+        unit_price = settings.ai_cv_unit_price
     else:
         unit_price = settings.ai_summary_unit_price
     return (unit_price * units).quantize(Decimal("0.0001"))

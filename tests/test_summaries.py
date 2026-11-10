@@ -19,6 +19,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.main import app
+from app.matching.match import match_all
 from app.models import (
     BudgetPolicy,
     Job,
@@ -29,10 +30,16 @@ from app.models import (
     SummaryStatus,
 )
 from app.summaries.check import unsupported
-from app.summaries.generate import Reason, posting_text, source_hash, summary_for_view
+from app.summaries.generate import (
+    Reason,
+    posting_text,
+    source_hash,
+    summarise_matches,
+    summary_for_view,
+)
 from tests.test_ai_extraction import _public_resolve
 from tests.test_cleaning import _board, _Collector, _job
-from tests.test_matching import _gh
+from tests.test_matching import SOON, _applicant, _gh
 
 POSTING = (
     "Junior Backend Developer at Acme in Manchester. You will build payment services in Python and "
@@ -55,10 +62,36 @@ PASSWORD = "correct horse battery"
         ("Acme's team builds payment services.", []),
         ("Build payment services for Acme.", []),
         ("Leading payment services at Acme.", ["Leading"]),
+        ("Key skills are Python and PostgreSQL. Required: Python.", []),
+        ("A Manchester-based role building Python-based payment services.", []),
+        ("A Leeds-based role.", ["Leeds-based"]),
+        ("You build a payment service in Python.", []),
+        ("You build payment APIs.", ["APIs"]),
+        ("You join a team of twelve engineers.", []),
+        ("You join a team of twelve developers.", ["twelve"]),
+        ("Applications close on 3 March, three days away.", ["three"]),
     ],
 )
 def test_t35_a_number_date_or_name_not_in_the_posting_is_caught(summary: str, problems: list[str]) -> None:
     assert unsupported(summary, POSTING) == problems
+
+
+@pytest.mark.parametrize(
+    ("posting", "summary", "problems"),
+    [
+        ("Based in the United Kingdom.", "A UK role.", []),
+        ("A UK role.", "Based in the United Kingdom.", []),
+        ("You will own continuous integration and deployment.", "You own CI pipelines.", []),
+        ("Trade foreign exchange products.", "You build FX products.", []),
+        ("Run services on K8s.", "You run Kubernetes services.", []),
+        ("Come and join us in London.", "Join the United States team.", ["United", "States"]),
+        ("A UK role.", "A role in Taiwan.", ["Taiwan"]),
+        ("Strong English-language skills and Git-based workflows.", "You need English and Git.", []),
+        ("Datastores, especially Mongo.", "You work with MongoDB.", []),
+    ],
+)
+def test_d47_names_the_posting_writes_another_way_are_accepted(posting: str, summary: str, problems: list[str]) -> None:
+    assert unsupported(summary, posting) == problems
 
 
 def _settings(**overrides: object) -> Settings:
@@ -280,3 +313,70 @@ async def test_a_job_that_is_not_open_is_not_shown(client: httpx.AsyncClient, se
     session.commit()
     await _login(client)
     assert (await client.get(f"/jobs/{job.id}")).status_code == 404
+
+
+async def _matched_jobs(session: Session) -> tuple[Job, Job, Job]:
+    """A Manchester job, the same job in London, which scores lower, and a job nobody matches."""
+    _board(session)
+    jobs = [
+        _gh(1, title="Backend Developer", city="Manchester, UK", content=POSTING),
+        _gh(2, title="Backend Developer", city="London, UK", content=POSTING),
+        _gh(3, title="Sales Manager", city="Manchester, UK", content=POSTING),
+    ]
+    await _Collector(session).read(200, {"jobs": jobs})
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    match_all(session, now=SOON)
+    return _job(session, 1), _job(session, 2), _job(session, 3)
+
+
+async def _batch(session: Session, provider: _Provider, **settings: object):
+    return await summarise_matches(
+        session, gateway=provider.gateway(), settings=_settings(**settings), persist=session.flush
+    )
+
+
+def _summarised(session: Session) -> set:
+    return set(session.scalars(select(JobSummary.job_id).where(JobSummary.status == SummaryStatus.accepted)))
+
+
+async def test_d47_matched_jobs_are_summarised_ahead_of_time_best_match_first(session: Session) -> None:
+    _policy(session, Decimal("0.0015"))
+    best, other, unmatched = await _matched_jobs(session)
+    provider = _Provider()
+
+    report = await _batch(session, provider)
+
+    assert report.stopped_by == "budget"
+    assert _summarised(session) == {best.id}
+
+    _policy(session, Decimal("5"))
+    report = await _batch(session, provider)
+    assert report.stopped_by is None
+    assert _summarised(session) == {best.id, other.id}
+    assert unmatched.id not in _summarised(session)
+    assert provider.calls == 2
+
+
+async def test_d47_a_second_batch_pays_for_nothing_already_summarised(session: Session) -> None:
+    _policy(session, Decimal("5"))
+    await _matched_jobs(session)
+    provider = _Provider()
+    await _batch(session, provider)
+    await _batch(session, provider)
+    assert provider.calls == 2
+
+
+async def test_d47_the_batch_stops_at_the_days_token_cap(session: Session) -> None:
+    _policy(session, Decimal("5"))
+    await _matched_jobs(session)
+    provider = _Provider()
+    report = await _batch(session, provider, ai_summary_daily_token_cap=100)
+    assert (report.stopped_by, provider.calls) == ("daily token cap", 0)
+
+
+async def test_d47_without_an_api_key_the_batch_does_nothing(session: Session) -> None:
+    _policy(session, Decimal("5"))
+    await _matched_jobs(session)
+    provider = _Provider()
+    report = await _batch(session, provider, anthropic_api_key="")
+    assert (report.stopped_by, provider.calls) == ("not_configured", 0)

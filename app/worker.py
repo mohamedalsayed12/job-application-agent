@@ -20,12 +20,15 @@ from app.collection import (
     collect_due,
     register_verified_boards,
 )
+from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
+from app.matching import semantic
 from app.matching.match import match_all
 from app.quality import store_results
 from app.search.feedback import record_outcomes
 from app.skills.taxonomy import map_job_skills
+from app.summaries.generate import summarise_matches
 
 # Short enough for the first retry, one minute after a failed read, to happen on time.
 DEFAULT_POLL_SECONDS = 60
@@ -48,6 +51,11 @@ async def run_cycle(
         match_all(session, now=now)
         record_outcomes(session, now=now)
         save()
+    # Every cycle, not only after collection: a backlog stopped by the day's token cap carries on tomorrow.
+    await summarise_matches(session, gateway=gateway, settings=get_settings(), persist=save)
+    # After summaries, so a job's vector is made from its summary when it has one (D48).
+    semantic.embed_matches(session, semantic.local_embedder())
+    save()
     return registration, collection
 
 

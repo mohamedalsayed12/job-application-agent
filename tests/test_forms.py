@@ -65,7 +65,7 @@ async def _log_in_as_applicant_and_admin(client: httpx.AsyncClient) -> None:
 
 def test_no_route_changes_data_without_being_a_post() -> None:
     assert not [path for path, operations in ROUTES.items() if {"put", "patch", "delete"} & set(operations)]
-    assert len(POST_PATHS) == 15
+    assert len(POST_PATHS) == 16
 
 
 @pytest.mark.parametrize("path", POST_PATHS)

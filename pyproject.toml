@@ -16,12 +16,8 @@ dependencies = [
     "pwdlib[argon2]>=0.3.1",
     "itsdangerous>=2.2.0",
     "limits>=5.8.0",
-]
-
-[project.optional-dependencies]
-semantic = [
-    "fastembed>=0.7",
     "pypdf>=5",
+    "fastembed>=0.7",
 ]
 
 [dependency-groups]
