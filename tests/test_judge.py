@@ -225,3 +225,18 @@ async def test_d51_a_score_outside_1_to_5_is_not_used(session: Session) -> None:
 
     assert report.outcomes == {"unreadable": 1}
     assert session.scalars(select(JobVerdict)).all() == []
+
+
+async def test_d50_jobs_are_judged_in_batches_until_none_are_left(session: Session) -> None:
+    _policy(session, Decimal("1"))
+    titles = ("Backend Developer", "Python Developer", "Platform Developer")
+    await _jobs(session, *((title, "Manchester, UK") for title in titles))
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    judge = _Judge({title: (True, "mid", "It is a developer role.") for title in titles})
+
+    report = await _judge(session, judge, ai_judge_concurrency=2)
+
+    assert (report.stopped_by, report.outcomes) == (None, {"fits": 3})
+    assert len(judge.sent) == 3
+    spent = session.scalars(select(SpendLedger).where(SpendLedger.kind == "ai_job_judge")).all()
+    assert len(spent) == 3

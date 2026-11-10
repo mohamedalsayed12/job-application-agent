@@ -8,6 +8,7 @@ on the person's matches page and hides the ones it says don't.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -20,7 +21,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
+from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservation
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.extraction.ai_anthropic import send_anthropic_request
@@ -200,69 +201,105 @@ async def judge_jobs(
     model = settings.resolved_ai_judge_model()
     used = tokens_used_today(session, now)
     gate = BudgetGate(session, clock=lambda: now)
-    for item in _todo(session, now):
-        row = LeftoverResult(id=item.facts.job_id, url=item.facts.apply_url or "", title=item.facts.title, snippet=item.text)
-        if scan_suspicious([row]):
-            report.outcomes["suspicious"] += 1
-            continue
-        estimate = (len(item.text) + len(item.profile.text)) // _CHARS_PER_TOKEN + _PROMPT_OVERHEAD_TOKENS
-        if used + estimate + settings.ai_judge_max_output_tokens > settings.ai_judge_daily_token_cap:
-            report.stopped_by = "daily token cap"
-            break
-        cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_job_judge, units=Decimal(1), settings=settings)
-        try:
-            reservation = gate.reserve(
-                SpendEstimate(
-                    provider=settings.ai_provider,
-                    kind=SpendKind.ai_job_judge,
-                    units=Decimal(1),
-                    unit_label="job_verdict",
-                    estimated_cost=cost,
-                    related_item_id=item.facts.job_id,
+    todo = iter(_todo(session, now))
+    while report.stopped_by is None:
+        # Reserve a batch one at a time so the caps see every job in it, then ask the AI about all of them at once.
+        batch: list[tuple[_Work, SpendReservation, Decimal]] = []
+        planned = 0
+        for item in todo:
+            row = LeftoverResult(id=item.facts.job_id, url=item.facts.apply_url or "", title=item.facts.title, snippet=item.text)
+            if scan_suspicious([row]):
+                report.outcomes["suspicious"] += 1
+                continue
+            estimate = (len(item.text) + len(item.profile.text)) // _CHARS_PER_TOKEN + _PROMPT_OVERHEAD_TOKENS
+            estimate += settings.ai_judge_max_output_tokens
+            if used + planned + estimate > settings.ai_judge_daily_token_cap:
+                report.stopped_by = "daily token cap"
+                break
+            cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_job_judge, units=Decimal(1), settings=settings)
+            try:
+                reservation = gate.reserve(
+                    SpendEstimate(
+                        provider=settings.ai_provider,
+                        kind=SpendKind.ai_job_judge,
+                        units=Decimal(1),
+                        unit_label="job_verdict",
+                        estimated_cost=cost,
+                        related_item_id=item.facts.job_id,
+                    )
                 )
-            )
-        except BudgetWait:
-            report.stopped_by = "budget"
+            except BudgetWait:
+                report.stopped_by = "budget"
+                break
+            planned += estimate
+            batch.append((item, reservation, cost))
+            if len(batch) >= max(1, settings.ai_judge_concurrency):
+                break
+        if not batch:
             break
         persist()
-        body = build_body(item.profile.text, item.text, model=model, max_tokens=settings.ai_judge_max_output_tokens)
-        call = await send_anthropic_request(gateway, body, api_key=api_key, fallback_model=model)
-        if isinstance(call, AiCallFailure):
-            logger.warning("job verdict failed for %s: %s", item.facts.job_id, call.reason)
-            gate.settle(reservation, consumed=False)
-            persist()
-            report.outcomes["failed"] += 1
-            continue
-        gate.settle(reservation, actual_cost=cost, units=Decimal(1))
-        used += call.prompt_tokens + call.completion_tokens
-        level, read = call.payload.get("level"), _read(call.payload)
-        if level not in LEVELS or read is None:
-            persist()
-            report.outcomes["unreadable"] += 1
-            continue
-        score, ratings = read
-        fits = score >= APPLY_LINE
-        source = f"{item.text}\n{item.profile.text}"
-        reason = str(call.payload.get("reason", "")).strip()
-        checked = reason if reason and not unsupported(reason, source) else None
-        ratings["red_flags"] = [flag for flag in ratings["red_flags"] if not unsupported(flag, source)]
-        _save(
-            session,
-            item,
-            fits=fits,
-            level=level,
-            reason=checked,
-            score=score,
-            ratings=ratings,
-            model=call.model or model,
-            call=call,
-            cost=cost,
-            now=now,
+        calls = await asyncio.gather(
+            *(
+                send_anthropic_request(
+                    gateway,
+                    build_body(item.profile.text, item.text, model=model, max_tokens=settings.ai_judge_max_output_tokens),
+                    api_key=api_key,
+                    fallback_model=model,
+                )
+                for item, _, _ in batch
+            )
         )
-        persist()
-        report.outcomes["fits" if fits else "no_fit"] += 1
-        report.judged.add(item.profile.applicant_id)
+        for (item, reservation, cost), call in zip(batch, calls, strict=True):
+            used += _record(session, gate, report, item, reservation, cost, call, model=model, now=now)
+            persist()
     return report
+
+
+def _record(
+    session: Session,
+    gate: BudgetGate,
+    report: JudgeReport,
+    item: _Work,
+    reservation: SpendReservation,
+    cost: Decimal,
+    call: AiCallResponse | AiCallFailure,
+    *,
+    model: str,
+    now: datetime,
+) -> int:
+    """Settle one call's spend and save its verdict. Returns the tokens it used."""
+    if isinstance(call, AiCallFailure):
+        logger.warning("job verdict failed for %s: %s", item.facts.job_id, call.reason)
+        gate.settle(reservation, consumed=False)
+        report.outcomes["failed"] += 1
+        return 0
+    gate.settle(reservation, actual_cost=cost, units=Decimal(1))
+    level, read = call.payload.get("level"), _read(call.payload)
+    if level not in LEVELS or read is None:
+        report.outcomes["unreadable"] += 1
+        return call.prompt_tokens + call.completion_tokens
+    score, ratings = read
+    fits = score >= APPLY_LINE
+    source = f"{item.text}\n{item.profile.text}"
+    reason = str(call.payload.get("reason", "")).strip()
+    checked = reason if reason and not unsupported(reason, source) else None
+    ratings["red_flags"] = [flag for flag in ratings["red_flags"] if not unsupported(flag, source)]
+    _save(
+        session,
+        item,
+        fits=fits,
+        level=level,
+        reason=checked,
+        score=score,
+        ratings=ratings,
+        model=call.model or model,
+        call=call,
+        cost=cost,
+        now=now,
+    )
+    report.outcomes["fits" if fits else "no_fit"] += 1
+    report.judged.add(item.profile.applicant_id)
+    return call.prompt_tokens + call.completion_tokens
 
 
 def _save(

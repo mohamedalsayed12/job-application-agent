@@ -75,7 +75,10 @@ class Settings(BaseSettings):
     # D50: the AI judging whether each job fits each person. Blank model = provider default.
     ai_judge_model: str = ""
     ai_judge_max_output_tokens: int = 300
-    ai_judge_daily_token_cap: int = 1000000
+    # About 1,000 verdicts a day at ~4k tokens each; the money cap still bounds the month.
+    ai_judge_daily_token_cap: int = 4000000
+    # Calls sent to the AI at once; spending and saving stay one at a time.
+    ai_judge_concurrency: int = 5
 
     @field_validator(
         "search_request_unit_price",
