@@ -98,13 +98,13 @@ async def test_saving_a_profile_matches_at_once_and_lists_the_best_first(
 ) -> None:
     await _jobs(session)
     await _register_with_profile(client)
-    page = (await client.get("/listings")).text
+    page = (await client.get("/listings", params={"sort": "score"})).text
     assert sorted(_titles(page)) == ["Graduate Backend Developer", "Junior Backend Developer"]
     scores = [int(score) for score in re.findall(r"Match score</span><b>([0-9]+)</b><small>/100", page)]
     assert scores == sorted(scores, reverse=True)
     assert "Sales Manager" not in page
 
-    everywhere = _titles((await client.get("/listings", params={"everywhere": "1"})).text)
+    everywhere = _titles((await client.get("/listings", params={"everywhere": "1", "sort": "score"})).text)
     assert sorted(everywhere[:2]) == ["Graduate Backend Developer", "Junior Backend Developer"]
     assert everywhere[2:] == ["Backend Developer, Early Careers"]
 
@@ -278,3 +278,15 @@ async def test_d48_the_worker_makes_vectors_only_for_open_matched_jobs(
     made = set(session.scalars(select(JobEmbedding.job_id)))
     assert made == matched - {_job(session, 1).id}
     assert made
+
+
+async def test_the_listings_show_the_newest_jobs_first_by_default(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    page = (await client.get("/listings")).text
+
+    assert "Sorted by newest." in page
+    assert '<option value="newest" selected>Newest first</option>' in page
+    newest = (await client.get("/listings", params={"sort": "newest"})).text
+    assert _titles(page) == _titles(newest)
+

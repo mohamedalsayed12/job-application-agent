@@ -154,7 +154,7 @@ def load_listings(
     everywhere: bool,
     page_number: int,
     role: str = "",
-    sort: Sort = "score",
+    sort: Sort = "newest",
     show: Show = "roles",
     search: str = "",
     embedder: Embedder | None = None,
@@ -346,7 +346,7 @@ def render_listing(item: Listing) -> str:
 
 
 def _query(**params: object) -> str:
-    return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "score", "roles")}))
+    return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "newest", "roles")}))
 
 
 def _option(value: str, label: str, selected: str) -> str:
@@ -381,7 +381,7 @@ def _filters(
     {_option("0", "My locations", "1" if everywhere else "0")}{_option("1", "All locations", "1" if everywhere else "0")}
   </select></label>
   <label>Sort by<select name="sort" onchange="this.form.submit()">
-    {_option("score", "Match score", sort)}{_option("newest", "Newest first", sort)}
+    {_option("newest", "Newest first", sort)}{_option("score", "Match score", sort)}
   </select></label>
   <div><noscript><button type="submit">Apply filters</button></noscript>
     <p class="salary-note">{salary} · <a href="/profile">Edit</a></p></div>
@@ -438,7 +438,8 @@ def listings_page(
     page_number: int = Query(1, alias="page", ge=1),
     everywhere: bool = Query(False),
     role: str = Query("", max_length=200),
-    sort: Sort = Query("score"),
+    # Operator request (2026-11-10): newest jobs first unless the person picks match score.
+    sort: Sort = Query("newest"),
     show: Show = Query("roles"),
     q: str = Query("", max_length=200),
     embedder: Callable[[], Embedder] = Depends(search_embedder),
