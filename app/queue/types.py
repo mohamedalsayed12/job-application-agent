@@ -46,17 +46,11 @@ class DedupeResult:
     created: bool
     reason: DedupeReason
 
-    @property
-    def state(self) -> str:
-        return self.survivor.state
-
 
 @dataclass(frozen=True, slots=True)
 class RetrySchedule:
     state: RetryTerminal
-    attempt_count: int
     delay: timedelta | None
-    next_attempt_at_offset: timedelta | None
 
 
 def next_retry_schedule(attempt_count: int) -> RetrySchedule:
@@ -68,16 +62,8 @@ def next_retry_schedule(attempt_count: int) -> RetrySchedule:
     if attempt_count < 1:
         raise ValueError("attempt_count must be >= 1 after a claimed verification")
     if attempt_count <= len(VERIFICATION_RETRY_DELAYS):
-        delay = VERIFICATION_RETRY_DELAYS[attempt_count - 1]
         return RetrySchedule(
             state=CandidateState.retry_wait,
-            attempt_count=attempt_count,
-            delay=delay,
-            next_attempt_at_offset=delay,
+            delay=VERIFICATION_RETRY_DELAYS[attempt_count - 1],
         )
-    return RetrySchedule(
-        state=CandidateState.needs_review,
-        attempt_count=attempt_count,
-        delay=None,
-        next_attempt_at_offset=None,
-    )
+    return RetrySchedule(state=CandidateState.needs_review, delay=None)

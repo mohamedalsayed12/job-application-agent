@@ -12,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.extraction import (
-    clean_company_name,
     extract_and_persist_search_results,
     format_employer_snippet,
     parse_board_from_url,
@@ -29,6 +28,7 @@ from app.models import (
     SearchRunStatus,
     SearchTemplate,
 )
+from app.queue.names import clean_company_name
 from app.search.reed import search_reed
 from app.search.types import ProviderSuccess
 

@@ -188,26 +188,14 @@ def _resolve(
         live = _live_by_board(session, board)
         if live is not None:
             return _ResolveHit("existing", "board_live", candidate=live)
-        cached = _cache_lookup(
-            session,
+        board_match = (
             Candidate.board_system == board.system,
             Candidate.board_instance == board.instance,
             Candidate.board_id == board.board_id,
-            now=now,
-            due=False,
         )
-        if cached is not None:
-            return _ResolveHit("existing", "discovery_cache", candidate=cached)
-        due = _cache_lookup(
-            session,
-            Candidate.board_system == board.system,
-            Candidate.board_instance == board.instance,
-            Candidate.board_id == board.board_id,
-            now=now,
-            due=True,
-        )
-        if due is not None:
-            return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
+        hit = _discovery_cache_hit(session, *board_match, now=now)
+        if hit is not None:
+            return hit
 
     # 2. Official / primary domain — try each domain key (primary + candidates).
     for domain in domain_keys:
@@ -237,16 +225,16 @@ def _resolve(
         )
         if live is not None:
             return _ResolveHit("existing", "domain_live", candidate=live)
-        domain_match = or_(
-            Candidate.primary_domain == domain,
-            _array_has(Candidate.domain_candidates, domain),
+        hit = _discovery_cache_hit(
+            session,
+            or_(
+                Candidate.primary_domain == domain,
+                _array_has(Candidate.domain_candidates, domain),
+            ),
+            now=now,
         )
-        cached = _cache_lookup(session, domain_match, now=now, due=False)
-        if cached is not None:
-            return _ResolveHit("existing", "discovery_cache", candidate=cached)
-        due = _cache_lookup(session, domain_match, now=now, due=True)
-        if due is not None:
-            return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
+        if hit is not None:
+            return hit
 
     # 2b. CF3 target — the search ran for this row, so a same-name hit is its
     #     domain evidence. Only while the target still has no domain of its own.
@@ -256,18 +244,16 @@ def _resolve(
     # 3. Cleaned name — group only when both sides have no board and no domains.
     #    A matching name alone never merges across different domains.
     if primary is None and board is None and not domains:
-        name_match = (
+        hit = _discovery_cache_hit(
+            session,
             Candidate.cleaned_name == cleaned,
             Candidate.primary_domain.is_(None),
             Candidate.board_system.is_(None),
             func.cardinality(Candidate.domain_candidates) == 0,
+            now=now,
         )
-        cached = _cache_lookup(session, *name_match, now=now, due=False)
-        if cached is not None:
-            return _ResolveHit("existing", "discovery_cache", candidate=cached)
-        due = _cache_lookup(session, *name_match, now=now, due=True)
-        if due is not None:
-            return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
+        if hit is not None:
+            return hit
         grouped = _live_by_name_bare(session, cleaned)
         if grouped is not None:
             return _ResolveHit("existing", "name_group", candidate=grouped)
@@ -423,6 +409,20 @@ def _cache_lookup(
 ) -> Candidate | None:
     predicate = _due_unsupported_predicate(now) if due else _active_cache_predicate(now)
     return session.scalars(select(Candidate).where(*key_filters, predicate)).first()
+
+
+def _discovery_cache_hit(
+    session: Session,
+    *key_filters: ColumnElement[bool],
+    now: datetime,
+) -> _ResolveHit | None:
+    cached = _cache_lookup(session, *key_filters, now=now, due=False)
+    if cached is not None:
+        return _ResolveHit("existing", "discovery_cache", candidate=cached)
+    due = _cache_lookup(session, *key_filters, now=now, due=True)
+    if due is not None:
+        return _ResolveHit("requeue_cache", "discovery_cache", candidate=due)
+    return None
 
 
 def _enrich(

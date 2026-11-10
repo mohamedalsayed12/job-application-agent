@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -60,7 +60,10 @@ def parse_preference_input(
             raise PreferenceValidationError(
                 "salary requires amount, currency, and period together"
             )
-        amount = amount_raw if isinstance(amount_raw, Decimal) else Decimal(amount_raw)
+        try:
+            amount = amount_raw if isinstance(amount_raw, Decimal) else Decimal(amount_raw)
+        except InvalidOperation as exc:
+            raise PreferenceValidationError("salary amount must be a number") from exc
         if not amount.is_finite() or amount <= 0:
             raise PreferenceValidationError("salary amount must be a finite positive number")
         if period not in SALARY_PERIODS:

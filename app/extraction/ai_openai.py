@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Sequence
 
 from app.core.config import Settings, get_settings
 from app.extraction.ai_prompt import EXTRACTION_JSON_SCHEMA, build_messages
 from app.extraction.ai_types import AiCallFailure, AiCallResponse, LeftoverResult
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
-
-logger = logging.getLogger(__name__)
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 

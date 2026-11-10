@@ -6,8 +6,8 @@ from collections.abc import Iterable
 
 from sqlalchemy.orm import Session
 
+from app.extraction.leftovers import partition_search_results
 from app.extraction.persist import persist_code_hits
-from app.extraction.postings import extract_hit
 from app.extraction.types import CodeHit
 from app.models import Candidate, SearchResult
 
@@ -15,17 +15,7 @@ from app.models import Candidate, SearchResult
 def extract_hits_from_search_results(
     results: Iterable[SearchResult],
 ) -> list[CodeHit]:
-    hits: list[CodeHit] = []
-    for row in results:
-        hit = extract_hit(
-            url=row.url,
-            title=row.title,
-            snippet=row.snippet,
-            search_result_id=row.id,
-        )
-        if hit is not None:
-            hits.append(hit)
-    return hits
+    return partition_search_results(results)[0]
 
 
 def extract_and_persist_search_results(

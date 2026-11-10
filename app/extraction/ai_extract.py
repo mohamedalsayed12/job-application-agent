@@ -51,15 +51,16 @@ logger = logging.getLogger(__name__)
 
 AiExtractResult = AiExtractionOutcome | AiBudgetWait | AiTokenCapWait | AiInFlightWait
 _PENDING_OUTPUT: dict[str, Any] = {"status": "pending"}
-# Crash after commit of the pending marker can leave a permanent in-flight row.
+# shortcut: 15m pending steal, raise if live calls routinely exceed this
 _PENDING_STEAL_AFTER = timedelta(minutes=15)
 
 
 async def extract_ai_leftovers(
     session: Session,
     gateway: FetchGateway,
-    results: Iterable[SearchResult],
+    results: Iterable[SearchResult] | None = None,
     *,
+    leftovers: Sequence[LeftoverResult] | None = None,
     settings: Settings | None = None,
     related_run_id: uuid.UUID | None = None,
     persist: Callable[[], None] | None = None,
@@ -71,7 +72,8 @@ async def extract_ai_leftovers(
     enrich it instead of becoming new rows (Step 10 R1).
     """
     cfg = settings or get_settings()
-    leftovers = leftover_search_results(results)
+    if leftovers is None:
+        leftovers = leftover_search_results(results or ())
     if not leftovers:
         return AiExtractionOutcome(
             grounded=(),
@@ -152,24 +154,19 @@ async def _extract_chunk(
     cf3_target: Candidate | None = None,
 ) -> AiExtractResult:
     digest = input_hash(leftovers, model=model, prompt_version=PROMPT_VERSION)
+    cached = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
+    if cached is not None and not _is_pending(cached):
+        outcome = _outcome_from_cache(cached, leftovers, suspicious)
+        _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
+        return outcome
+
     estimated_in = estimate_input_tokens(leftovers)
     max_out = settings.ai_extraction_max_output_tokens
     estimated_total = estimated_in + max_out
     if estimated_total > settings.ai_extraction_per_item_token_cap:
-        # Still honour a finished cache hit when over the live-call token cap.
-        cached = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
-        if cached is not None and not _is_pending(cached):
-            outcome = _outcome_from_cache(cached, leftovers, suspicious)
-            _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
-            return outcome
         return AiTokenCapWait(cap="per_item")
     used_today = _tokens_used_today(session)
     if used_today + estimated_total > settings.ai_extraction_daily_token_cap:
-        cached = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
-        if cached is not None and not _is_pending(cached):
-            outcome = _outcome_from_cache(cached, leftovers, suspicious)
-            _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
-            return outcome
         return AiTokenCapWait(cap="per_day")
 
     claimed = _take_claim(
@@ -311,10 +308,7 @@ def _is_pending(row: AiExtraction) -> bool:
 
 def _pending_is_stale(row: AiExtraction, *, now: datetime | None = None) -> bool:
     moment = now or datetime.now(UTC)
-    created = row.created_at
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=UTC)
-    return created <= moment - _PENDING_STEAL_AFTER
+    return row.created_at <= moment - _PENDING_STEAL_AFTER
 
 
 def _new_pending_claim(*, digest: str, model: str) -> AiExtraction:
@@ -336,30 +330,26 @@ def _resolve_cached_row(
     suspicious: frozenset[uuid.UUID],
     cf3_target: Candidate | None,
 ) -> AiExtractionOutcome | AiInFlightWait | None:
-    """Return a finished outcome, an in-flight wait, or None after deleting a stale pending row."""
-    if _is_pending(row):
-        if not _pending_is_stale(row):
-            return AiInFlightWait()
-        # Lock before delete so a second pass waits instead of deleting a live claim.
-        locked = session.scalars(
-            select(AiExtraction)
-            .where(AiExtraction.id == row.id)
-            .with_for_update(skip_locked=True)
-        ).first()
-        if locked is None:
-            return AiInFlightWait()
-        if not _is_pending(locked):
-            outcome = _outcome_from_cache(locked, leftovers, suspicious)
-            _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
-            return outcome
-        if not _pending_is_stale(locked):
-            return AiInFlightWait()
-        session.delete(locked)
-        session.flush()
-        return None
-    outcome = _outcome_from_cache(row, leftovers, suspicious)
-    _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
-    return outcome
+    if not _is_pending(row):
+        outcome = _outcome_from_cache(row, leftovers, suspicious)
+        _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
+        return outcome
+    if not _pending_is_stale(row):
+        return AiInFlightWait()
+    locked = session.scalars(
+        select(AiExtraction)
+        .where(AiExtraction.id == row.id)
+        .with_for_update(skip_locked=True)
+    ).first()
+    if locked is None or (_is_pending(locked) and not _pending_is_stale(locked)):
+        return AiInFlightWait()
+    if not _is_pending(locked):
+        outcome = _outcome_from_cache(locked, leftovers, suspicious)
+        _persist_grounded_if_needed(session, outcome, leftovers, cf3_target)
+        return outcome
+    session.delete(locked)
+    session.flush()
+    return None
 
 
 def _take_claim(
@@ -371,20 +361,14 @@ def _take_claim(
     suspicious: frozenset[uuid.UUID],
     cf3_target: Candidate | None,
 ) -> AiExtraction | AiExtractionOutcome | AiInFlightWait:
-    """Claim the cache slot for a live call, or return a cache hit / in-flight wait.
-
-    Survives persist=commit. A stale pending row is deleted and the insert is
-    retried once so a crash cannot block the hash forever.
-    """
-    existing = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
-    if existing is not None:
-        resolved = _resolve_cached_row(
-            session, existing, leftovers, suspicious, cf3_target
-        )
-        if resolved is not None:
-            return resolved
-
     for _ in range(2):
+        existing = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
+        if existing is not None:
+            resolved = _resolve_cached_row(
+                session, existing, leftovers, suspicious, cf3_target
+            )
+            if resolved is not None:
+                return resolved
         claim = _new_pending_claim(digest=digest, model=model)
         try:
             with session.begin_nested():
@@ -392,14 +376,7 @@ def _take_claim(
                 session.flush()
             return claim
         except IntegrityError:
-            raced = lookup_cached(session, digest=digest, prompt_version=PROMPT_VERSION)
-            if raced is None:
-                return AiInFlightWait()
-            resolved = _resolve_cached_row(
-                session, raced, leftovers, suspicious, cf3_target
-            )
-            if resolved is not None:
-                return resolved
+            continue
     return AiInFlightWait()
 
 

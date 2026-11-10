@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.extraction.names import clean_company_name
 from app.models import (
     BoardStatus,
     Candidate,
@@ -27,6 +26,7 @@ from app.queue import (
     release_stale_claims,
     schedule_verification_failure,
 )
+from app.queue.names import clean_company_name
 
 
 def _evidence(n: int = 1) -> list[tuple[None, str, str]]:

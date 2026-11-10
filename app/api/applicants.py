@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import uuid
-from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form
@@ -141,16 +140,11 @@ def _save(
         submit_label=submit_label,
     )
     try:
-        amount: Decimal | str | None = form.salary_amount
-        if isinstance(amount, str) and not amount.strip():
-            amount = None
-        elif isinstance(amount, str):
-            amount = Decimal(amount.strip())
         pref = parse_preference_input(
             target_roles=_split_lines(form.target_roles),
             locations=_split_lines(form.locations),
             sector=form.sector,
-            salary_amount=amount,
+            salary_amount=form.salary_amount or None,
             salary_currency=form.salary_currency or None,
             salary_period=form.salary_period or None,
         )
@@ -170,8 +164,6 @@ def _save(
                 email=form.email,
             )
         db.commit()
-    except InvalidOperation:
-        return _page(title, _form(**form_kwargs, error="salary amount must be a number"))
     except ApplicantNotFoundError:
         db.rollback()
         return _page("Not found", "<p class='error'>applicant not found</p>")

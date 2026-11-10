@@ -19,7 +19,9 @@ from app.applicants.discovery import to_discovery_preference
 from app.core.config import Settings, get_settings
 from app.discovery.boards import attach_public_board
 from app.discovery.cf3 import search_official_domain
-from app.extraction import extract_ai_leftovers, extract_and_persist_search_results
+from app.extraction import extract_ai_leftovers
+from app.extraction.leftovers import partition_search_results
+from app.extraction.persist import persist_code_hits
 from app.fetch.gateway import FetchGateway
 from app.models import (
     CANDIDATE_LIVE_UNIQUE_EXCLUDES,
@@ -114,10 +116,16 @@ async def run_discovery(
         if run.status != SearchRunStatus.succeeded:
             continue
         rows = list(session.scalars(select(SearchResult).where(SearchResult.search_run_id == run.id)))
-        report.code_candidates += len(extract_and_persist_search_results(session, rows))
+        hits, leftovers = partition_search_results(rows)
+        report.code_candidates += len(persist_code_hits(session, hits))
         commit()
         outcome = await extract_ai_leftovers(
-            session, gateway, rows, settings=cfg, related_run_id=run.id, persist=commit
+            session,
+            gateway,
+            leftovers=leftovers,
+            settings=cfg,
+            related_run_id=run.id,
+            persist=commit,
         )
         commit()
         log(f"ai   {run.template_id:4} -> {type(outcome).__name__}")
