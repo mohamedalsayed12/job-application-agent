@@ -63,6 +63,7 @@ def _credentials_page(
     status_code: int = 200,
 ) -> HTMLResponse:
     other = (
+        '<p class="hint">We keep only what&#39;s needed to match you to jobs. Read the <a href="/privacy">privacy notice</a>.</p>'
         '<p>Already registered? <a href="/login">Log in</a></p>'
         if new_password
         else '<p>New here? <a href="/register">Register</a></p>'

@@ -76,6 +76,7 @@ th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
 .tag.blue { background: var(--primary-soft); color: var(--primary); }
 .tag.miss { background: #fff; border: 1px dashed #b9bfcb; }
 .tag.bad { background: var(--bad-soft); color: var(--bad); }
+.foot { max-width: 60rem; margin: 0 auto; padding: 0 1rem 2rem; font-size: 0.8rem; color: var(--muted); }
 """
 
 
@@ -93,6 +94,7 @@ def page(title: str, body: str, *, status_code: int = 200, header: str = "", nar
 <main{' class="narrow"' if narrow else ""}>
 {body}
 </main>
+<footer class="foot"><a href="/privacy">Privacy notice</a></footer>
 </body>
 </html>"""
     # Pages hold personal data and form tokens, so no browser or proxy should keep a copy.

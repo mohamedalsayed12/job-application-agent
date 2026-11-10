@@ -14,6 +14,7 @@ from app.api.forms import FormRefused, form_refused_page
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.listings import router as listings_router
+from app.api.privacy import router as privacy_router
 from app.api.profile import router as profile_router
 from app.api.quality import router as quality_router
 from app.api.review import router as review_router
@@ -43,6 +44,7 @@ app.add_middleware(
 )
 app.add_exception_handler(FormRefused, form_refused_page)
 app.include_router(health_router)
+app.include_router(privacy_router)
 app.include_router(accounts_router)
 app.include_router(profile_router)
 app.include_router(jobs_router)
