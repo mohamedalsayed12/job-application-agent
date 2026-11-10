@@ -1,5 +1,7 @@
-"""Write a job's summary the first time someone opens it, check it, and save it once (D24, D41).
+"""Write a job's summary, check it, and save it once (D24, D41, D47).
 
+Summaries are written ahead of time for every job in someone's matches, best match first, so the
+listings show them. A job opened before that still gets its summary on first view.
 AI drafts from the posting text only. Code checks the draft, enforces the token caps and the
 budget, and decides what is shown. When anything stops a summary, the page shows the description.
 """
@@ -9,8 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -25,7 +28,14 @@ from app.core.config import Settings
 from app.extraction.ai_anthropic import send_anthropic_request
 from app.extraction.ai_types import AiCallFailure, AiCallResponse
 from app.fetch.gateway import FetchGateway
-from app.models import Job, JobSummary, SpendKind, SummaryStatus
+from app.models import (
+    ApplicantJobMatch,
+    Job,
+    JobFreshness,
+    JobSummary,
+    SpendKind,
+    SummaryStatus,
+)
 from app.summaries.check import unsupported
 
 logger = logging.getLogger(__name__)
@@ -180,6 +190,52 @@ async def summary_for_view(
     row.updated_at = now
     persist()
     return Shown(None, Reason.rejected) if problems else Shown(draft, Reason.summary)
+
+
+@dataclass(slots=True)
+class BatchReport:
+    outcomes: Counter[str] = field(default_factory=Counter)
+    stopped_by: str | None = None
+
+
+async def summarise_matches(
+    session: Session,
+    *,
+    gateway: FetchGateway,
+    settings: Settings,
+    persist: Callable[[], None],
+    now: datetime | None = None,
+) -> BatchReport:
+    """Summaries for open jobs in anyone's matches that don't have one yet, best match first (D47).
+
+    Stops at the money cap or the day's token cap. The next run carries on from there.
+    """
+    report = BatchReport()
+    if settings.ai_provider.strip().lower() != "anthropic" or not settings.anthropic_api_key.strip():
+        report.stopped_by = "not_configured"
+        return report
+    done = select(JobSummary.job_id).where(
+        JobSummary.prompt_version == PROMPT_VERSION,
+        JobSummary.status.in_([SummaryStatus.accepted, SummaryStatus.rejected]),
+    )
+    jobs = session.scalars(
+        select(Job)
+        .join(ApplicantJobMatch, ApplicantJobMatch.job_id == Job.id)
+        .where(Job.freshness == JobFreshness.open, Job.description.is_not(None), Job.id.not_in(done))
+        .group_by(Job.id)
+        .order_by(func.max(ApplicantJobMatch.score).desc(), Job.id)
+    ).all()
+    for job in jobs:
+        shown = await summary_for_view(session, job, gateway=gateway, settings=settings, persist=persist, now=now)
+        report.outcomes[shown.reason] += 1
+        if shown.reason == Reason.budget:
+            report.stopped_by = "budget"
+            break
+        too_long = estimated_tokens(posting_text(job), settings) > settings.ai_summary_per_item_token_cap
+        if shown.reason == Reason.token_cap and not too_long:
+            report.stopped_by = "daily token cap"
+            break
+    return report
 
 
 def _claim(

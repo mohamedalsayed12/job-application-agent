@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -909,4 +910,17 @@ class JobSummary(_UuidPk, Base):
     completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
     created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class JobEmbedding(Base):
+    """D48: a job's meaning as a vector, for the search box on the listings page."""
+
+    __tablename__ = "job_embedding"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"), primary_key=True)
+    model: Mapped[str] = mapped_column(Text())
+    # The text the vector was made from. A new summary or description gets a new vector.
+    source_hash: Mapped[str] = mapped_column(Text())
+    vector: Mapped[list[float]] = mapped_column(ARRAY(Float()))
     updated_at: Mapped[datetime] = _updated()

@@ -33,10 +33,11 @@ def _fit(matched: int, missing: int) -> SkillFit:
 @pytest.mark.parametrize(
     ("title", "fit", "level", "expected"),
     [
-        ("Data Engineer", _fit(3, 1), ExperienceLevel.entry, "level not stated"),
+        ("Data Engineer", _fit(3, 1), ExperienceLevel.entry, None),
+        ("Data Engineer, Early Careers", _fit(3, 1), ExperienceLevel.entry, "entry level in the title"),
         ("Graduate Data Engineer", _fit(3, 0), ExperienceLevel.entry, "entry level in the title"),
-        ("Data Engineer", _fit(2, 0), ExperienceLevel.entry, None),
-        ("Data Engineer", _fit(3, 4), ExperienceLevel.entry, None),
+        ("Graduate Data Engineer", _fit(2, 0), ExperienceLevel.entry, None),
+        ("Graduate Data Engineer", _fit(3, 4), ExperienceLevel.entry, None),
         ("Senior Data Engineer", _fit(5, 0), ExperienceLevel.entry, None),
         ("Data Engineering Intern", _fit(4, 0), ExperienceLevel.entry, None),
         ("Senior Data Engineer", _fit(5, 0), ExperienceLevel.senior, ""),
@@ -55,7 +56,7 @@ def test_d44_a_job_is_found_by_skills_only_when_most_of_its_skills_are_held(
 
 
 def test_d44_years_of_experience_rule_out_an_entry_seeker() -> None:
-    advert = "You will need 5+ years of experience with Python."
+    advert = "Open to recent graduates. You will need 5+ years of experience with Python."
     assert match_by_skills("Data Engineer", advert, _fit(4, 0), level=ExperienceLevel.entry) is None
 
 
@@ -90,7 +91,7 @@ async def _jobs(session: Session) -> None:
         {
             "jobs": [
                 _gh(1, title="Junior Backend Developer", city="Manchester, UK", content=DATA_ADVERT),
-                _gh(2, title="Data Engineer", city="Manchester, UK", content=DATA_ADVERT),
+                _gh(2, title="Graduate Data Engineer", city="Manchester, UK", content=DATA_ADVERT),
                 _gh(3, title="Account Manager", city="Manchester, UK", content=SALES_ADVERT),
             ]
         },
@@ -125,13 +126,13 @@ async def test_d44_the_listings_point_to_jobs_the_skills_fit(client: httpx.Async
     assert 'href="/listings?show=skills"' in roles
 
     skills = (await client.get("/listings", params={"show": "skills"})).text
-    assert _titles(skills) == ["Data Engineer"]
+    assert _titles(skills) == ["Graduate Data Engineer"]
     assert "Fits your skills</span>" in skills
     assert "Role: not one of your target roles, but you have 4 of the 4 skills it names" in skills
     assert "more job" not in skills
 
     both = (await client.get("/listings", params={"show": "all"})).text
-    assert sorted(_titles(both)) == ["Data Engineer", "Junior Backend Developer"]
+    assert sorted(_titles(both)) == ["Graduate Data Engineer", "Junior Backend Developer"]
     assert "Account Manager" not in both
 
 

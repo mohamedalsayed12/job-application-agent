@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.matching.match import (
-    internship_seekers,
+    experience_levels,
     location_fit,
     match_role,
     wanted_locations,
@@ -25,6 +25,7 @@ from app.models import (
     Candidate,
     CandidateEvidence,
     EmployerBoard,
+    ExperienceLevel,
     JobFreshness,
     JobLink,
     JobPosting,
@@ -71,11 +72,18 @@ def first_finders(sightings: list[Sighting]) -> set[uuid.UUID]:
     return {s.run_id for s in sightings if s.run_id is not None and s.planned_at == first.planned_at}
 
 
-def _is_relevant(facts: JobFacts, quality: JobQuality, preference: ApplicantPreference, *, internship: bool) -> bool:
+def _is_relevant(facts: JobFacts, quality: JobQuality, preference: ApplicantPreference, *, level: str | None) -> bool:
     """Role and location only, whatever the job's state: closed jobs must lower freshness."""
     if not quality.unique or facts.sector != preference.sector:
         return False
-    if match_role(facts.title, facts.description, preference.target_roles, internship=internship) is None:
+    fit = match_role(
+        facts.title,
+        facts.description,
+        preference.target_roles,
+        internship=level == ExperienceLevel.internship,
+        entry=level == ExperienceLevel.entry,
+    )
+    if fit is None:
         return False
     fits, _ = location_fit(wanted_locations(preference.locations), facts.places, facts.remote_type)
     return fits
@@ -134,7 +142,7 @@ def _add_job_outcomes(
         jobs_on_board[board_id].add(job_id)
     results = {facts.job_id: (facts, quality) for facts, quality in check_all(session, now)}
     preferences = {p.applicant_id: p for p in session.scalars(select(ApplicantPreference))}
-    seekers = internship_seekers(session)
+    levels = experience_levels(session)
 
     for run in runs:
         preference = preferences.get(run.applicant_id)
@@ -143,7 +151,7 @@ def _add_job_outcomes(
         for board_id, share in credits.get(run.id, []):
             for job_id in jobs_on_board[board_id]:
                 facts, quality = results[job_id]
-                if not _is_relevant(facts, quality, preference, internship=run.applicant_id in seekers):
+                if not _is_relevant(facts, quality, preference, level=levels.get(run.applicant_id)):
                     continue
                 outcomes[run.id].relevant += share
                 if facts.freshness == JobFreshness.open and quality.recent:

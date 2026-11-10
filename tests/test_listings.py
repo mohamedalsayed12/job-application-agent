@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.accounts import throttle
@@ -19,8 +19,17 @@ from app.api.listings import Listing, render_listing, salary_text
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
-from app.models import ApplicantJobMatch, Job, JobFreshness, JobSummary, SummaryStatus
+from app.matching.semantic import embed_matches, vectors_for
+from app.models import (
+    ApplicantJobMatch,
+    Job,
+    JobEmbedding,
+    JobFreshness,
+    JobSummary,
+    SummaryStatus,
+)
 from app.skills.taxonomy import load_taxonomy, map_job_skills
+from tests.conftest import WordEmbedder
 from tests.test_cleaning import _board, _Collector, _job
 from tests.test_matching import _gh
 
@@ -53,9 +62,10 @@ async def _jobs(session: Session) -> None:
         {
             "jobs": [
                 _gh(1, title="Junior Backend Developer", city="Manchester, UK", content=ADVERT),
-                _gh(2, title="Backend Developer", city="Manchester, UK", content=ADVERT),
-                _gh(3, title="Backend Developer", city="London, UK", content=ADVERT),
+                _gh(2, title="Graduate Backend Developer", city="Manchester, UK", content=ADVERT),
+                _gh(3, title="Backend Developer, Early Careers", city="London, UK", content=ADVERT),
                 _gh(4, title="Sales Manager", city="Manchester, UK", content=ADVERT),
+                _gh(5, title="Backend Developer", city="Manchester, UK", content=ADVERT),
             ]
         },
     )
@@ -89,13 +99,23 @@ async def test_saving_a_profile_matches_at_once_and_lists_the_best_first(
     await _jobs(session)
     await _register_with_profile(client)
     page = (await client.get("/listings")).text
-    assert _titles(page) == ["Junior Backend Developer", "Backend Developer"]
+    assert sorted(_titles(page)) == ["Graduate Backend Developer", "Junior Backend Developer"]
     scores = [int(score) for score in re.findall(r"Match score</span><b>([0-9]+)</b><small>/100", page)]
     assert scores == sorted(scores, reverse=True)
     assert "Sales Manager" not in page
 
-    everywhere = (await client.get("/listings", params={"everywhere": "1"})).text
-    assert _titles(everywhere) == ["Junior Backend Developer", "Backend Developer", "Backend Developer"]
+    everywhere = _titles((await client.get("/listings", params={"everywhere": "1"})).text)
+    assert sorted(everywhere[:2]) == ["Graduate Backend Developer", "Junior Backend Developer"]
+    assert everywhere[2:] == ["Backend Developer, Early Careers"]
+
+
+async def test_d46_an_entry_level_seeker_sees_only_jobs_shown_to_be_entry_level(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    everywhere = _titles((await client.get("/listings", params={"everywhere": "1"})).text)
+    assert "Backend Developer" not in everywhere
 
 
 async def test_t36_each_listing_shows_its_source_apply_link_and_reasons(
@@ -199,3 +219,67 @@ def test_an_apply_link_that_is_not_a_web_link_is_not_rendered() -> None:
 def test_salary_text(job: dict, text: str) -> None:
     defaults = dict(salary_min=None, salary_max=None, salary_currency=None, salary_period=None)
     assert salary_text(Job(**{**defaults, **job})) == text
+
+
+def _summarise(session: Session, number: int, text: str) -> None:
+    session.add(
+        JobSummary(
+            job_id=_job(session, number).id,
+            status=SummaryStatus.accepted,
+            summary_text=text,
+            source_hash="h",
+            model="m",
+            prompt_version="v",
+        )
+    )
+    session.commit()
+
+
+async def test_d48_a_search_puts_the_jobs_closest_in_meaning_first(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    _summarise(session, 1, "Build the game engine and rendering tools for console games.")
+    _summarise(session, 2, "Build ledger and card payment services for a fintech bank.")
+    await _register_with_profile(client)
+
+    for words, first in (("fintech payments", "Graduate Backend Developer"), ("games", "Junior Backend Developer")):
+        page = (await client.get("/listings", params={"q": words})).text
+        assert _titles(page)[0] == first
+        assert f'value="{words}"' in page
+        assert "Closest in meaning to" in page
+    # A search orders the person's matches; it never adds a job the filters leave out.
+    assert "Backend Developer, Early Careers" not in _titles((await client.get("/listings", params={"q": "games"})).text)
+
+
+async def test_d48_a_vector_is_made_once_and_again_when_the_job_text_changes(session: Session) -> None:
+    await _jobs(session)
+    calls: list[int] = []
+
+    class Counting(WordEmbedder):
+        def passages(self, texts: list[str]) -> list[list[float]]:
+            calls.append(len(texts))
+            return super().passages(texts)
+
+    jobs = [_job(session, 1), _job(session, 2)]
+    vectors_for(session, jobs, Counting())
+    vectors_for(session, jobs, Counting())
+    assert calls == [2]
+
+    _summarise(session, 1, "Build the game engine.")
+    vectors_for(session, jobs, Counting())
+    assert calls == [2, 1]
+    assert session.scalar(select(func.count()).select_from(JobEmbedding)) == 2
+
+
+async def test_d48_the_worker_makes_vectors_only_for_open_matched_jobs(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    matched = set(session.scalars(select(ApplicantJobMatch.job_id)))
+    _job(session, 1).freshness = JobFreshness.closed
+    session.commit()
+
+    embed_matches(session, WordEmbedder())
+    made = set(session.scalars(select(JobEmbedding.job_id)))
+    assert made == matched - {_job(session, 1).id}
+    assert made

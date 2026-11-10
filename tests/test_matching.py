@@ -76,7 +76,7 @@ def _matches(session: Session, applicant_id: uuid.UUID) -> dict[uuid.UUID, Appli
         ("Software Engineer, New Grad", ENTRY_ROLES, RoleKind.exact),
         ("Graduate Software Engineer", ENTRY_ROLES, RoleKind.exact),
         ("Software Engineer", ["Backend Developer"], RoleKind.similar),
-        ("Full Stack Developer", ["Junior Backend Developer"], RoleKind.similar),
+        ("Junior Full Stack Developer", ["Junior Backend Developer"], RoleKind.similar),
         ("Backend Engineer", ["Software Engineer"], RoleKind.similar),
         ("Senior Backend Engineer", ["Backend Developer"], RoleKind.exact),
     ],
@@ -122,7 +122,7 @@ def test_an_internship_fits_only_when_the_applicant_asks_for_one() -> None:
 
 
 def test_an_exact_title_beats_a_similar_one_across_target_roles() -> None:
-    fit = match_role("Python Developer", ADVERT, ["Junior Backend Developer", "Junior Python Developer"])
+    fit = match_role("Junior Python Developer", ADVERT, ["Junior Backend Developer", "Junior Python Developer"])
     assert (fit.target, fit.kind) == ("Junior Python Developer", RoleKind.exact)
 
 
@@ -133,10 +133,30 @@ def test_an_entry_level_applicant_loses_jobs_asking_for_3_years() -> None:
     assert match_role("Graduate Backend Developer", advert, ENTRY_ROLES) is not None
 
 
-def test_a_plain_title_says_its_level_is_not_stated() -> None:
-    assert match_role("Backend Developer", ADVERT, ENTRY_ROLES).level == "level not stated"
+def test_d46_an_entry_level_seeker_gets_only_jobs_shown_to_be_entry_level() -> None:
+    assert match_role("Backend Developer", ADVERT, ENTRY_ROLES) is None
+    assert match_role("Backend Developer", ADVERT, ["Backend Developer"], entry=True) is None
     assert match_role("Junior Backend Developer", ADVERT, ENTRY_ROLES).level == "entry level in the title"
+    assert match_role("Software Engineer, Early Careers", ADVERT, ENTRY_ROLES).level == "entry level in the title"
     assert match_role("Backend Developer", ADVERT, ["Backend Developer"]).level is None
+
+
+@pytest.mark.parametrize(
+    ("advert", "level"),
+    [
+        ("This is an entry-level role on our payments team.", "entry level in the advert"),
+        ("We welcome recent graduates.", "entry level in the advert"),
+        ("Join our graduate programme in September.", "entry level in the advert"),
+        ("No prior experience is required.", "entry level in the advert"),
+        ("You will have 0-2 years of experience.", "entry level in the advert"),
+        ("This is not an entry-level role.", None),
+        ("You will mentor recent graduates and need 5+ years of experience.", None),
+        (ADVERT, None),
+    ],
+)
+def test_d46_an_untitled_job_counts_only_when_its_advert_says_entry_level(advert: str, level: str | None) -> None:
+    fit = match_role("Backend Developer", advert, ENTRY_ROLES)
+    assert (fit.level if fit else None) == level
 
 
 UK = {"city": None, "country": "GB"}
@@ -215,16 +235,21 @@ async def test_only_someone_whose_profile_chose_internship_is_matched_to_interns
     graduate = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     session.add(ApplicantProfile(applicant_id=graduate, experience_level=ExperienceLevel.entry))
     no_profile = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    jobs = [_gh(1, title="Backend Developer Intern"), _gh(2), _gh(3, title="Backend Developer Apprentice")]
+    jobs = [
+        _gh(1, title="Backend Developer Intern"),
+        _gh(2),
+        _gh(3, title="Backend Developer Apprentice"),
+        _gh(4, title="Graduate Backend Developer"),
+    ]
     await _Collector(session).read(200, {"jobs": jobs})
 
     match_all(session, now=SOON)
 
-    internship, ordinary = _job(session, 1).id, _job(session, 2).id
+    internship, ordinary, graduate_job = _job(session, 1).id, _job(session, 2).id, _job(session, 4).id
     assert set(_matches(session, seeker)) == {internship}
     assert _matches(session, seeker)[internship].reasons["role"]["level"] == "internship in the title"
-    assert set(_matches(session, graduate)) == {ordinary}
-    assert set(_matches(session, no_profile)) == {ordinary}
+    assert set(_matches(session, graduate)) == {graduate_job}
+    assert set(_matches(session, no_profile)) == {ordinary, graduate_job}
 
 
 async def test_t2_with_no_salary_given_no_job_is_excluded_for_salary(session: Session) -> None:
@@ -373,8 +398,13 @@ async def test_the_worker_matches_after_it_collects(session: Session) -> None:
 async def test_each_match_says_what_fitted_and_what_is_missing(session: Session) -> None:
     _board(session)
     applicant = _applicant(session, roles=ENTRY_ROLES, locations=["Manchester"])
-    await _Collector(session).read(200, {"jobs": [_gh(1, title="Software Engineer", city="London, UK")]})
+    advert = f"{ADVERT} Ideal for recent graduates."
+    await _Collector(session).read(200, {"jobs": [_gh(1, title="Software Engineer", city="London, UK", content=advert)]})
     match_all(session, now=SOON)
     row = _matches(session, applicant)[_job(session, 1).id]
-    assert row.reasons["role"] == {"target": "Graduate Software Engineer", "kind": "exact", "level": "level not stated"}
-    assert set(row.reasons["missing"]) == {"location", "stated entry level", "known salary", "skills on profile"}
+    assert row.reasons["role"] == {
+        "target": "Graduate Software Engineer",
+        "kind": "exact",
+        "level": "entry level in the advert",
+    }
+    assert set(row.reasons["missing"]) == {"location", "known salary", "skills on profile"}
