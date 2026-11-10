@@ -272,7 +272,7 @@ def _reasons(item: Listing) -> str:
         lines.append(f"Licences you don't list: {', '.join(item.missing_licences)}")
     ai = item.reasons.get("ai", {})
     if ai.get("score"):
-        lines.append(f"AI score: {ai['score']} out of 5 (added at 4.0 or more)")
+        lines.append(f"AI score: {ai['score']} out of 5 (added at 3.0 or more)")
     ratings = ai.get("ratings") or {}
     rated = [f"{label} {ratings[key]}/5" for key, label in _AI_AREAS if key in ratings]
     if rated:
@@ -297,6 +297,13 @@ _SKILLS_TAG = '<span class="tag blue">Fits your skills</span>'
 _AI_TAG = '<span class="tag blue" title="The AI read the advert and judged it fits you">AI match</span>'
 
 
+def _ai_score_tag(item: Listing) -> str:
+    score = item.reasons.get("ai", {}).get("score")
+    if not score:
+        return ""
+    return f'<span class="tag blue" title="How well the AI judged this job fits you, out of 5">AI score {_e(score)}/5</span>'
+
+
 def render_listing(item: Listing) -> str:
     if item.summary:
         about = f"<p>{_e(item.summary)}</p><p><small>AI summary, checked against the posting.</small></p>"
@@ -317,6 +324,7 @@ def render_listing(item: Listing) -> str:
       <span class="tag">Salary: {_e(item.salary)}</span>
       {_SKILLS_TAG if item.reasons.get("role", {}).get("kind") == _SKILLS_KIND else ""}
       {_AI_TAG if item.reasons.get("role", {}).get("kind") == _AI_KIND else ""}
+      {_ai_score_tag(item)}
       <span class="tag good">Open · confirmed {_e(seen)}</span>
       <span class="tag">{_e(_SOURCE_LABEL.get(item.source, item.source))}</span>
     </div>

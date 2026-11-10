@@ -121,8 +121,9 @@ async def test_d50_matches_follow_the_ai_verdict_over_the_rules(session: Session
     listing = load_listings(session, applicant, everywhere=False, page_number=1)[0][0]
     page = render_listing(listing)
     assert "AI match" in page
+    assert "AI score 4.3/5</span>" in page
     assert "AI&#x27;s reason: It builds payment services in Python, which matches your skills." in page
-    assert "AI score: 4.3 out of 5 (added at 4.0 or more)" in page
+    assert "AI score: 4.3 out of 5 (added at 3.0 or more)" in page
     assert "AI ratings: your profile 4/5, your target roles 5/5, pay 3/5, culture 4/5" in page
 
     spent = session.scalars(select(SpendLedger).where(SpendLedger.kind == "ai_job_judge")).all()
@@ -196,19 +197,19 @@ async def test_d50_titles_far_from_the_roles_cost_nothing(session: Session) -> N
     assert len(judge.sent) == 1
 
 
-async def test_d51_only_a_score_of_4_or_more_is_added(session: Session) -> None:
+async def test_d51_only_a_score_of_3_or_more_is_added(session: Session) -> None:
     _policy(session, Decimal("1"))
     await _jobs(session, ("Backend Developer", "Manchester, UK"))
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     judge = _Judge({"Backend Developer": (True, "mid", "It is a backend role.")})
 
-    judge.score = 3.9
+    judge.score = 2.9
     report = await _judge(session, judge)
     match_all(session, now=SOON)
 
     assert report.outcomes == {"no_fit": 1}
     verdict = session.scalars(select(JobVerdict)).one()
-    assert (verdict.fits, verdict.score) == (False, Decimal("3.9"))
+    assert (verdict.fits, verdict.score) == (False, Decimal("2.9"))
     assert verdict.ratings == {"cv_match": 4, "role_alignment": 5, "comp": 3, "culture": 4, "red_flags": []}
     assert _matches(session, applicant) == {}
 
