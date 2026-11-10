@@ -12,13 +12,13 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Any, Literal
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, func, select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
@@ -27,7 +27,6 @@ from app.api.chrome import applicant_bar
 from app.cleaning.linking import is_primary
 from app.core.db import get_db
 from app.matching import semantic
-from app.matching.match import MAX_SCORE
 from app.matching.semantic import Embedder, closeness, vectors_for
 from app.models import (
     Applicant,
@@ -131,8 +130,20 @@ def place_names(job: Job) -> str:
     return f"{text} (remote)" if job.remote_type == "remote" else text
 
 
-def score_out_of_100(score: Decimal) -> int:
-    return min(100, int((score / MAX_SCORE * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)))
+def ai_score(reasons: dict) -> Decimal | None:
+    """The score out of 5 shown for a job: the fit report's when there is one, else the quick AI score (D53)."""
+    for key in ("report", "ai"):
+        if score := (reasons.get(key) or {}).get("score"):
+            return Decimal(str(score))
+    return None
+
+
+# D53: the same score in SQL, for sorting. Jobs not scored yet sort last, by the rules score (never shown).
+_AI_SCORE_SQL = func.coalesce(
+    ApplicantJobMatch.reasons["report"]["score"].astext.cast(Numeric),
+    ApplicantJobMatch.reasons["ai"]["score"].astext.cast(Numeric),
+    0,
+)
 
 
 def _sources(session: Session, jobs: list[Job]) -> dict[uuid.UUID, str]:
@@ -178,7 +189,7 @@ def load_listings(
     if role and show != "skills":
         query = query.where(ApplicantJobMatch.reasons["role"]["target"].astext == role)
     total = session.scalar(select(func.count()).select_from(query.subquery()))
-    first = (Job.first_seen_at.desc(), ApplicantJobMatch.score.desc()) if sort == "newest" else (ApplicantJobMatch.score.desc(),)
+    first = (Job.first_seen_at.desc(), _AI_SCORE_SQL.desc()) if sort == "newest" else (_AI_SCORE_SQL.desc(), ApplicantJobMatch.score.desc(), Job.first_seen_at.desc())
     query = query.order_by(*first, Job.company_name, Job.title, Job.id)
     start = (page_number - 1) * PAGE_SIZE
     if search and embedder is not None:
@@ -301,16 +312,12 @@ _SKILLS_TAG = '<span class="tag blue">Fits your skills</span>'
 _AI_TAG = '<span class="tag blue" title="The AI read the advert and judged it fits you">AI match</span>'
 
 
-def _ai_score_tag(item: Listing) -> str:
-    report = item.reasons.get("report")
-    if report:
-        verdict, score = report.get("verdict", ""), report.get("score", "")
-        tone = "good" if verdict == "Apply" else "blue"
-        return f'<span class="tag {tone}" title="Verdict and score out of 5 from the AI fit report">{_e(verdict)} · {_e(score)}/5</span>'
-    score = item.reasons.get("ai", {}).get("score")
-    if not score:
+def _verdict_tag(item: Listing) -> str:
+    verdict = (item.reasons.get("report") or {}).get("verdict")
+    if not verdict:
         return ""
-    return f'<span class="tag blue" title="How well the AI judged this job fits you, out of 5">AI score {_e(score)}/5</span>'
+    tone = "good" if verdict == "Apply" else "blue"
+    return f'<span class="tag {tone}" title="The verdict from the AI fit report">{_e(verdict)}</span>'
 
 
 _REPORT_CRITERIA = (
@@ -373,7 +380,15 @@ def render_listing(item: Listing) -> str:
             f"{_e(item.description or 'No description was given.')}</div></details>"
         )
     seen = item.last_seen_at.strftime("%d %b %Y") if item.last_seen_at else "not recorded"
-    out_of_100 = score_out_of_100(item.score)
+    shown = ai_score(item.reasons)
+    if shown is None:
+        score_box = '<span class="label">AI score</span><b>–</b><small>Not scored yet</small>'
+    else:
+        width = int(shown / 5 * 100)
+        score_box = (
+            f'<span class="label">AI score</span><b>{_e(shown)}</b><small>/5</small>'
+            f'<div class="bar"><i style="width: {width}%"></i></div>'
+        )
     return f"""
 <article class="card job">
 <div class="job-head">
@@ -384,14 +399,13 @@ def render_listing(item: Listing) -> str:
       <span class="tag">Salary: {_e(item.salary)}</span>
       {_SKILLS_TAG if item.reasons.get("role", {}).get("kind") == _SKILLS_KIND else ""}
       {_AI_TAG if item.reasons.get("role", {}).get("kind") == _AI_KIND else ""}
-      {_ai_score_tag(item)}
+      {_verdict_tag(item)}
       <span class="tag good">Open · confirmed {_e(seen)}</span>
       <span class="tag">{_e(_SOURCE_LABEL.get(item.source, item.source))}</span>
     </div>
   </div>
-  <div class="score" title="Raw score {_e(item.score)} of {_e(MAX_SCORE)}">
-    <span class="label">Match score</span><b>{out_of_100}</b><small>/100</small>
-    <div class="bar"><i style="width: {out_of_100}%"></i></div>
+  <div class="score" title="How well the AI judged this job fits you, out of 5">
+    {score_box}
   </div>
 </div>
 <div class="about">{about}</div>
@@ -417,7 +431,7 @@ def _option(value: str, label: str, selected: str) -> str:
 def _order(search: str, sort: Sort) -> str:
     if search:
         return f"Closest in meaning to &ldquo;{_e(search)}&rdquo; first. <a href=\"/listings\">Clear search</a>"
-    return f"Sorted by {'newest' if sort == 'newest' else 'match score'}."
+    return f"Sorted by {'newest' if sort == 'newest' else 'AI score'}."
 
 
 def _filters(
@@ -442,7 +456,7 @@ def _filters(
     {_option("0", "My locations", "1" if everywhere else "0")}{_option("1", "All locations", "1" if everywhere else "0")}
   </select></label>
   <label>Sort by<select name="sort" onchange="this.form.submit()">
-    {_option("newest", "Newest first", sort)}{_option("score", "Match score", sort)}
+    {_option("newest", "Newest first", sort)}{_option("score", "AI score", sort)}
   </select></label>
   <div><noscript><button type="submit">Apply filters</button></noscript>
     <p class="salary-note">{salary} · <a href="/profile">Edit</a></p></div>

@@ -121,7 +121,7 @@ async def test_d50_matches_follow_the_ai_verdict_over_the_rules(session: Session
     listing = load_listings(session, applicant, everywhere=False, page_number=1)[0][0]
     page = render_listing(listing)
     assert "AI match" in page
-    assert "AI score 4.3/5</span>" in page
+    assert "<b>4.3</b><small>/5</small>" in page
     assert "AI&#x27;s reason: It builds payment services in Python, which matches your skills." in page
     assert "AI score: 4.3 out of 5 (added at 3.0 or more)" in page
     assert "AI ratings: your profile 4/5, your target roles 5/5, pay 3/5, culture 4/5" in page
@@ -265,3 +265,21 @@ async def test_d50_the_ai_can_be_limited_to_chosen_people(session: Session) -> N
     await _judge(session, judge, ai_applicant_ids=f" {chosen} ")
 
     assert [row.applicant_id for row in session.scalars(select(JobVerdict))] == [chosen]
+
+
+async def test_d53_sorting_by_ai_score_puts_the_highest_score_out_of_5_first(session: Session) -> None:
+    _policy(session, Decimal("1"))
+    titles = ("Backend Developer", "Python Developer")
+    await _jobs(session, *((title, "Manchester, UK") for title in titles))
+    applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    judge = _Judge({title: (True, "mid", "It is a developer role.") for title in titles})
+    for score in (3.5, 4.6):
+        judge.score = score
+        await _judge(session, judge, ai_judge_per_cycle=1)
+    match_all(session, now=SOON)
+
+    listings, _ = load_listings(session, applicant, everywhere=False, page_number=1, sort="score")
+
+    pages = [render_listing(listing) for listing in listings]
+    assert ["<b>4.6</b>" in page for page in pages] == [True, False]
+    assert "<b>3.5</b>" in pages[1]
