@@ -22,11 +22,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.ai.anthropic import AiCallFailure, AiCallResponse, send_anthropic_request
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
-from app.extraction.ai_anthropic import send_anthropic_request
-from app.extraction.ai_types import AiCallFailure, AiCallResponse
 from app.fetch.gateway import FetchGateway
 from app.models import (
     ApplicantJobMatch,

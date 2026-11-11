@@ -9,7 +9,6 @@ from app.api.accounts import admin_router as admin_accounts_router
 from app.api.accounts import admin_session_router
 from app.api.accounts import router as accounts_router
 from app.api.applicants import router as applicants_router
-from app.api.audit import router as audit_router
 from app.api.forms import FormRefused, form_refused_page
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
@@ -17,7 +16,6 @@ from app.api.listings import router as listings_router
 from app.api.privacy import router as privacy_router
 from app.api.profile import router as profile_router
 from app.api.quality import router as quality_router
-from app.api.review import router as review_router
 from app.core.config import get_settings
 
 SESSION_DAYS = 14
@@ -52,6 +50,4 @@ app.include_router(listings_router)
 app.include_router(admin_session_router)
 app.include_router(admin_accounts_router)
 app.include_router(applicants_router)
-app.include_router(review_router)
-app.include_router(audit_router)
 app.include_router(quality_router)

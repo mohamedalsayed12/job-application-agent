@@ -25,10 +25,10 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.ai.anthropic import AiCallResponse
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
-from app.extraction.ai_types import AiCallResponse
 from app.fetch.gateway import FetchGateway
 from app.matching.batches import Ask, Spend, ask_in_batches
 from app.matching.match import showable

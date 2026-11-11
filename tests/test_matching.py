@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import ast
-import ipaddress
 import uuid
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
-import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import worker
 from app.applicants.service import create_applicant, parse_preference_input
-from app.fetch.gateway import FetchGateway
+from app.cleaning import close_stale
+from app.core.config import Settings
 from app.matching.match import (
     RoleKind,
     location_fit,
@@ -26,6 +26,7 @@ from app.matching.match import (
 from app.models import (
     ApplicantJobMatch,
     ApplicantProfile,
+    BudgetPolicy,
     ExperienceLevel,
     FetchRun,
     JobFreshness,
@@ -34,22 +35,15 @@ from app.models import (
     SpendLedger,
 )
 from app.worker import run_cycle
-from tests.test_cleaning import DAY_1, _board, _Collector, _job
+from tests.jobs import DAY_1, _Apify, _job, _li, _store
 
 ADVERT = "Build and run backend services in Python for our payments platform. " * 10
 ENTRY_ROLES = ["Graduate Software Engineer", "Junior Python Developer", "Junior Backend Developer"]
 SOON = DAY_1 + timedelta(hours=1)
 
 
-def _gh(job_id: int, *, title: str = "Backend Developer", city: str = "Manchester, UK", content: str = ADVERT) -> dict:
-    return {
-        "id": job_id,
-        "title": title,
-        "absolute_url": f"https://job-boards.greenhouse.io/acme/jobs/{job_id}",
-        "location": {"name": city},
-        "first_published": "2026-11-01T10:00:00+00:00",
-        "content": f"{content} Advert {job_id}.",
-    }
+def _posting(job_id: int, *, title: str = "Backend Developer", city: str = "Manchester, UK", content: str = ADVERT) -> dict:
+    return _li(job_id, title=title, city=city, content=f"{content} Advert {job_id}.")
 
 
 def _applicant(session: Session, *, roles: list[str], locations: list[str], **salary: object) -> uuid.UUID:
@@ -208,10 +202,9 @@ def test_location_fit(wants: list[str], places: list[dict], remote_type: str | N
 
 
 async def test_t27_one_collection_is_matched_to_every_applicant(session: Session) -> None:
-    _board(session)
     first = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     second = _applicant(session, roles=["Backend Developer"], locations=["London"])
-    await _Collector(session).read(200, {"jobs": [_gh(1), _gh(2, title="Account Executive")]})
+    _store(session, [_posting(1), _posting(2, title="Account Executive")])
     fetches = session.scalar(select(func.count()).select_from(FetchRun))
     raws = session.scalar(select(func.count()).select_from(RawPayload))
 
@@ -229,19 +222,18 @@ async def test_t27_one_collection_is_matched_to_every_applicant(session: Session
 
 
 async def test_only_someone_whose_profile_chose_internship_is_matched_to_internships(session: Session) -> None:
-    _board(session)
     seeker = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     session.add(ApplicantProfile(applicant_id=seeker, experience_level=ExperienceLevel.internship))
     graduate = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     session.add(ApplicantProfile(applicant_id=graduate, experience_level=ExperienceLevel.entry))
     no_profile = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     jobs = [
-        _gh(1, title="Backend Developer Intern"),
-        _gh(2),
-        _gh(3, title="Backend Developer Apprentice"),
-        _gh(4, title="Graduate Backend Developer"),
+        _posting(1, title="Backend Developer Intern"),
+        _posting(2),
+        _posting(3, title="Backend Developer Apprentice"),
+        _posting(4, title="Graduate Backend Developer"),
     ]
-    await _Collector(session).read(200, {"jobs": jobs})
+    _store(session, jobs)
 
     match_all(session, now=SOON)
 
@@ -253,30 +245,15 @@ async def test_only_someone_whose_profile_chose_internship_is_matched_to_interns
 
 
 async def test_t2_with_no_salary_given_no_job_is_excluded_for_salary(session: Session) -> None:
-    _board(session)
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    await _Collector(session).read(200, {"jobs": [_gh(1)]})
+    _store(session, [_posting(1)])
     match_all(session, now=SOON)
     row = _matches(session, applicant)[_job(session, 1).id]
     assert row.salary_status == SalaryStatus.unknown
     assert "known salary" in row.reasons["missing"]
 
 
-def _lever_job(job_id: str, amount: int) -> dict:
-    return {
-        "id": job_id,
-        "text": "Backend Developer",
-        "applyUrl": f"https://jobs.lever.co/acme/{job_id}",
-        "categories": {"location": "Manchester (GB)"},
-        "descriptionPlain": ADVERT,
-        "description": f"{ADVERT} {job_id}",
-        "createdAt": 1793000000000,
-        "salaryRange": {"min": amount, "max": amount, "currency": "GBP", "interval": "per-year-salary"},
-    }
-
-
 async def test_a_job_below_the_expected_salary_is_left_out_and_one_that_meets_it_scores_higher(session: Session) -> None:
-    _board(session, system="lever")
     wants_pay = _applicant(
         session,
         roles=["Backend Developer"],
@@ -286,10 +263,16 @@ async def test_a_job_below_the_expected_salary_is_left_out_and_one_that_meets_it
         salary_period="year",
     )
     no_pay = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    await _Collector(session).read(200, [_lever_job("low", 30000), _lever_job("high", 60000)])
+    _store(session, [_posting(1), _posting(2)])
+    # LinkedIn rarely states pay, so the salary is set on the stored jobs.
+    for job_id, amount in ((1, 30000), (2, 60000)):
+        job = _job(session, job_id)
+        job.salary_min = job.salary_max = Decimal(amount)
+        job.salary_currency, job.salary_period, job.salary_known = "GBP", "year", True
+    session.flush()
     match_all(session, now=SOON)
 
-    low, high = _job(session, "low").id, _job(session, "high").id
+    low, high = _job(session, 1).id, _job(session, 2).id
     assert set(_matches(session, wants_pay)) == {high}
     assert _matches(session, wants_pay)[high].salary_status == SalaryStatus.meets
     assert set(_matches(session, no_pay)) == {low, high}
@@ -301,10 +284,10 @@ def test_t1_salary_is_not_read_by_search_ai_budget_or_collection_code() -> None:
     forbidden = {"salary_amount", "salary_currency", "salary_period", "ExpectedSalary", "expected_salary"}
     paths = [
         path
-        for package in ("budget", "fetch", "search", "extraction", "discovery", "collection")
+        for package in ("budget", "fetch", "ai")
         for path in (root / package).rglob("*.py")
     ]
-    paths.append(root / "matching" / "entry_level.py")
+    paths.append(root / "linkedin.py")
     assert len(paths) > 10
     for path in paths:
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -313,7 +296,6 @@ def test_t1_salary_is_not_read_by_search_ai_budget_or_collection_code() -> None:
 
 
 async def test_t1_matching_spends_nothing_and_stores_only_the_salary_status(session: Session) -> None:
-    _board(session)
     applicant = _applicant(
         session,
         roles=["Backend Developer"],
@@ -322,7 +304,7 @@ async def test_t1_matching_spends_nothing_and_stores_only_the_salary_status(sess
         salary_currency="GBP",
         salary_period="year",
     )
-    await _Collector(session).read(200, {"jobs": [_gh(1)]})
+    _store(session, [_posting(1)])
     before = session.scalar(select(func.count()).select_from(SpendLedger))
     match_all(session, now=SOON)
     assert session.scalar(select(func.count()).select_from(SpendLedger)) == before
@@ -331,9 +313,8 @@ async def test_t1_matching_spends_nothing_and_stores_only_the_salary_status(sess
 
 @pytest.mark.parametrize("freshness", [JobFreshness.closed, JobFreshness.unknown])
 async def test_only_open_jobs_match_and_a_match_goes_when_its_job_stops_being_open(session: Session, freshness: str) -> None:
-    _board(session)
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    await _Collector(session).read(200, {"jobs": [_gh(1)]})
+    _store(session, [_posting(1)])
     match_all(session, now=SOON)
     assert len(_matches(session, applicant)) == 1
 
@@ -345,61 +326,61 @@ async def test_only_open_jobs_match_and_a_match_goes_when_its_job_stops_being_op
     assert _matches(session, applicant) == {}
 
 
-async def test_a_job_not_seen_for_48_hours_does_not_match(session: Session) -> None:
-    _board(session)
+async def test_a_job_no_search_has_found_for_14_days_closes_and_does_not_match(session: Session) -> None:
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    await _Collector(session).read(200, {"jobs": [_gh(1)]})
-    match_all(session, now=DAY_1 + timedelta(hours=49))
+    _store(session, [_posting(1)])
+    assert close_stale(session, source="linkedin", now=DAY_1 + timedelta(days=13), after=timedelta(days=14)) == 0
+    assert close_stale(session, source="linkedin", now=DAY_1 + timedelta(days=15), after=timedelta(days=14)) == 1
+    session.expire_all()
+    match_all(session, now=DAY_1 + timedelta(days=15))
     assert _matches(session, applicant) == {}
+
+    _store(session, [_posting(1)], at=DAY_1 + timedelta(days=16))
+    assert _job(session, 1).freshness == JobFreshness.open
 
 
 async def test_one_advert_in_two_cities_gives_two_matches_and_a_duplicate_gives_one(session: Session) -> None:
-    _board(session)
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester", "London"])
     same = "The same advert. " * 30
-    await _Collector(session).read(
-        200,
-        {
-            "jobs": [
-                {**_gh(1, city="Manchester, UK"), "content": same},
-                {**_gh(2, city="London, UK"), "content": same},
-                {**_gh(3, city="London, UK; Leeds, UK"), "content": same},
-            ]
-        },
+    _store(
+        session,
+        [
+            {**_posting(1, city="Manchester, UK"), "description": same},
+            {**_posting(2, city="London, UK"), "description": same},
+            {**_posting(3, city="London, UK; Leeds, UK"), "description": same},
+        ],
     )
     match_all(session, now=SOON)
     assert len(_matches(session, applicant)) == 2
 
 
 async def test_a_job_listed_in_several_places_matches_each_of_them(session: Session) -> None:
-    _board(session)
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    await _Collector(session).read(200, {"jobs": [_gh(1, city="Birmingham, UK; Manchester, UK; Leeds, UK")]})
+    _store(session, [_posting(1, city="Birmingham, UK; Manchester, UK; Leeds, UK")])
     match_all(session, now=SOON)
     row = _matches(session, applicant)[_job(session, 1).id]
     assert row.location_fit is True
     assert row.reasons["location"] == "in Manchester"
 
 
-async def test_the_worker_matches_after_it_collects(session: Session) -> None:
-    _board(session)
+async def test_the_worker_matches_after_it_collects(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    gateway = FetchGateway(
-        user_agent="JobApplicationAgent-Test/0.1",
-        allowlist=frozenset({"boards-api.greenhouse.io"}),
-        resolve=lambda host: [ipaddress.IPv4Address("93.184.216.34")],
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"jobs": [_gh(1)]})),
+    session.add(
+        BudgetPolicy(provider="*", period="month", money_cap=Decimal("1"), currency="GBP", effective_from=DAY_1 - timedelta(days=30))
     )
+    session.flush()
+    monkeypatch.setattr(worker, "get_settings", lambda: Settings(apify_api_token="test-token"))
+    apify = _Apify([_posting(1)])
+    gateway = apify.gateway()
     await run_cycle(session, gateway)
     await gateway.aclose()
     assert set(_matches(session, applicant)) == {_job(session, 1).id}
 
 
 async def test_each_match_says_what_fitted_and_what_is_missing(session: Session) -> None:
-    _board(session)
     applicant = _applicant(session, roles=ENTRY_ROLES, locations=["Manchester"])
     advert = f"{ADVERT} Ideal for recent graduates."
-    await _Collector(session).read(200, {"jobs": [_gh(1, title="Software Engineer", city="London, UK", content=advert)]})
+    _store(session, [_posting(1, title="Software Engineer", city="London, UK", content=advert)])
     match_all(session, now=SOON)
     row = _matches(session, applicant)[_job(session, 1).id]
     assert row.reasons["role"] == {

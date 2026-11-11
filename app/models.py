@@ -154,6 +154,7 @@ class SpendKind(StrEnum):
     ai_cv_read = "ai_cv_read"
     ai_job_judge = "ai_job_judge"
     ai_fit_report = "ai_fit_report"
+    linkedin_jobs = "linkedin_jobs"
 
 
 CANDIDATE_CLAIMABLE = (CandidateState.queued, CandidateState.retry_wait)

@@ -1,4 +1,4 @@
-"""Turn one raw board job into the common job format. Pure: no database, no network."""
+"""Turn one raw job into the common job format. Pure: no database, no network."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
-from app.matching.entry_level import clean_html
+from app.matching.titles import clean_html
 
 _COUNTRIES = {
     "uk": "GB",
@@ -149,8 +149,6 @@ _REGIONS = {
 _REGION = re.compile(rf"\b({'|'.join(_REGIONS)})\b", re.IGNORECASE)
 
 _REMOTE_TYPES = {"remote": "remote", "hybrid": "hybrid", "onsite": "onsite"}
-_MONTHS_PER_PERIOD = {"year": 1, "month": 12, "week": 52}
-_SALARY_INTERVAL = re.compile(r"^per-(year|month|week|day|hour)-")
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +180,7 @@ class Place:
 @dataclass(frozen=True, slots=True)
 class NormalizedJob:
     title: str
+    company: str
     apply_url: str
     location: Location
     places: tuple[Place, ...]
@@ -194,74 +193,36 @@ class NormalizedJob:
 
 
 def normalize_job(source: str, raw: dict[str, Any]) -> NormalizedJob | None:
-    """None when a job has no title or apply link, or its fields are not the expected types."""
+    """None when a job has no title, company or link, or its fields are not the expected types."""
     try:
-        parsed = _greenhouse(raw) if source == "greenhouse" else _lever(raw) if source == "lever" else None
+        parsed = _linkedin(raw) if source == "linkedin" else None
     except (AttributeError, TypeError, ValueError):
         return None
-    return parsed if parsed and parsed.title and parsed.apply_url else None
+    return parsed if parsed and parsed.title and parsed.company and parsed.apply_url else None
 
 
-_OFFICE_SUFFIX = re.compile(r"\s+locations?$", re.IGNORECASE)
+# LinkedIn names regions like "Greater Manchester Area" and "London Area, United Kingdom".
+_LINKEDIN_AREA = re.compile(r"^greater\s+|\s+(?:metropolitan\s+)?area\b", re.IGNORECASE)
 
 
-def _greenhouse_where(raw: dict[str, Any]) -> tuple[Location, tuple[Place, ...]]:
-    """The location field, or the offices when it holds no place: "N/A", "In-person", the company's name."""
-    name = clean_html((raw.get("location") or {}).get("name"))
-    places = parse_places(name)
-    if places:
-        return parse_location(name), places
-    offices = [
-        _OFFICE_SUFFIX.sub("", clean_html(office.get("name")))
-        for office in raw.get("offices") or []
-        if isinstance(office, dict) and office.get("name")
-    ]
-    from_offices = tuple(dict.fromkeys(place for office in offices for place in parse_places(office)))
-    if not from_offices:
-        return parse_location(name), ()
-    first = from_offices[0]
-    return Location(city=first.city, country=first.country, remote_type=parse_location(name).remote_type), from_offices
-
-
-def _greenhouse(raw: dict[str, Any]) -> NormalizedJob:
-    location, places = _greenhouse_where(raw)
+def _linkedin(raw: dict[str, Any]) -> NormalizedJob:
+    """One item from the Apify LinkedIn job scraper. Easy Apply jobs have no outside link, so they keep LinkedIn's."""
+    where = _LINKEDIN_AREA.sub("", clean_html(raw.get("location")))
+    employment = (raw.get("employmentType") or "").lower()
+    apply_url = raw.get("applyUrl")
+    if not isinstance(apply_url, str) or not apply_url.startswith(("http://", "https://")):
+        apply_url = raw.get("jobUrl") or ""
     return NormalizedJob(
         title=clean_html(raw.get("title")),
-        apply_url=raw.get("absolute_url") or "",
-        location=location,
-        places=places,
+        company=clean_html(raw.get("company")),
+        apply_url=apply_url,
+        location=parse_location(where, workplace=raw.get("workplaceType") or raw.get("workType")),
+        places=parse_places(where),
         salary=Salary(),
-        description=clean_html(raw.get("content")) or None,
-        hours=None,
-        contract_type=None,
-        posted_at=_iso_date(raw.get("first_published")),
-        closes_at=_iso_date(raw.get("application_deadline")),
-    )
-
-
-def _lever(raw: dict[str, Any]) -> NormalizedJob:
-    categories = raw.get("categories") or {}
-    commitment = (categories.get("commitment") or "").lower()
-    # Lever's description is the opening plus the body, so it is used instead of them, not as well.
-    main = clean_html(raw.get("description")) or " ".join(
-        part for part in (clean_html(raw.get("opening")), clean_html(raw.get("descriptionBody"))) if part
-    )
-    sections = [main, *(clean_html(part.get("content")) for part in raw.get("lists") or [])]
-    sections.append(clean_html(raw.get("additional")))
-    return NormalizedJob(
-        title=clean_html(raw.get("text")),
-        apply_url=raw.get("applyUrl") or raw.get("hostedUrl") or "",
-        location=parse_location(
-            clean_html(categories.get("location")),
-            country=raw.get("country"),
-            workplace=raw.get("workplaceType"),
-        ),
-        places=_lever_places(raw, categories),
-        salary=parse_lever_salary(raw.get("salaryRange")),
-        description=" ".join(part for part in sections if part) or None,
-        hours=_hours(commitment),
-        contract_type=_contract_type(commitment),
-        posted_at=_epoch_ms(raw.get("createdAt")),
+        description=clean_html(raw.get("description")) or clean_html(raw.get("descriptionHtml")) or None,
+        hours=_hours(employment),
+        contract_type=_contract_type(employment),
+        posted_at=_iso_date(raw.get("postedAt")),
         closes_at=None,
     )
 
@@ -311,14 +272,6 @@ def parse_places(text: str, *, country: str | None = None) -> tuple[Place, ...]:
     else:
         found = [place for segment in segments for place in _segment_places(segment, None)]
     return _distinct(found)
-
-
-def _lever_places(raw: dict[str, Any], categories: dict[str, Any]) -> tuple[Place, ...]:
-    """Lever's raw country belongs to the main location only, so a list of locations does not use it."""
-    listed = categories.get("allLocations")
-    if isinstance(listed, list) and len(listed) > 1:
-        return _distinct(place for text in listed for place in parse_places(clean_html(text)))
-    return parse_places(clean_html(categories.get("location")), country=raw.get("country"))
 
 
 def _segment_places(segment: str, country: str | None) -> list[Place]:
@@ -436,31 +389,6 @@ def _mentioned_country(text: str) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
-def parse_lever_salary(raw: Any) -> Salary:
-    """Anything missing, zero or in an unrecognised format is unknown, never zero."""
-    if not isinstance(raw, dict):
-        return Salary()
-    interval = _SALARY_INTERVAL.match(str(raw.get("interval") or ""))
-    minimum, maximum = _positive(raw.get("min")), _positive(raw.get("max"))
-    if interval is None or (minimum is None and maximum is None):
-        return Salary()
-    period = interval.group(1)
-    factor = _MONTHS_PER_PERIOD.get(period)
-    if factor is not None:
-        minimum = minimum * factor if minimum is not None else None
-        maximum = maximum * factor if maximum is not None else None
-        period = "year"
-    return Salary(minimum=minimum, maximum=maximum, currency=raw.get("currency"), period=period)
-
-
-def _positive(value: Any) -> Decimal | None:
-    try:
-        number = Decimal(str(value))
-    except InvalidOperation:
-        return None
-    return number if number.is_finite() and number > 0 else None
-
-
 def _hours(commitment: str) -> str | None:
     if "full" in commitment:
         return "full_time"
@@ -487,12 +415,3 @@ def _iso_date(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
-def _epoch_ms(value: Any) -> datetime | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    try:
-        return datetime.fromtimestamp(value / 1000, tz=UTC)
-    except (OverflowError, OSError, ValueError):
-        return None

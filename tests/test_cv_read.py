@@ -36,7 +36,7 @@ from app.models import (
     SpendKind,
     SpendLedger,
 )
-from tests.test_ai_extraction import _public_resolve
+from tests.jobs import _public_resolve
 from tests.test_profile import PASSWORD, WORD_MAIN
 
 CV_LINES = [

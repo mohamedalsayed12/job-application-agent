@@ -20,11 +20,11 @@ from app.main import app
 ADMIN = "test-admin-key-step18"
 EMAIL = "person@example.com"
 PASSWORD = "correct horse battery"
-ADMIN_PAGES = ("/admin/applicants", "/admin/applicants/new", "/admin/review", "/admin/audit", "/admin/quality", "/admin/accounts/set-password-link")
-ADMIN_FORM_PAGES = ("/admin/applicants/new", "/admin/audit", "/admin/accounts/set-password-link")
+ADMIN_PAGES = ("/admin/applicants", "/admin/applicants/new", "/admin/quality", "/admin/accounts/set-password-link")
+ADMIN_FORM_PAGES = ("/admin/applicants/new", "/admin/accounts/set-password-link")
 ROUTES = app.openapi()["paths"]
 POST_PATHS = sorted(
-    path.replace("{review_item_id}", str(uuid.uuid4())).replace("{applicant_id}", str(uuid.uuid4()))
+    path.replace("{applicant_id}", str(uuid.uuid4()))
     for path, operations in ROUTES.items()
     if "post" in operations
 )
@@ -65,7 +65,7 @@ async def _log_in_as_applicant_and_admin(client: httpx.AsyncClient) -> None:
 
 def test_no_route_changes_data_without_being_a_post() -> None:
     assert not [path for path, operations in ROUTES.items() if {"put", "patch", "delete"} & set(operations)]
-    assert len(POST_PATHS) == 16
+    assert len(POST_PATHS) == 14
 
 
 @pytest.mark.parametrize("path", POST_PATHS)

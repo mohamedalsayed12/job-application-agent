@@ -17,10 +17,9 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from app.ai.anthropic import AiCallFailure, AiCallResponse, send_anthropic_request
+from app.ai.injection import looks_like_injection
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservation
-from app.extraction.ai_anthropic import send_anthropic_request
-from app.extraction.ai_injection import scan_suspicious
-from app.extraction.ai_types import AiCallFailure, AiCallResponse, LeftoverResult
 from app.fetch.gateway import FetchGateway
 from app.models import SpendKind
 
@@ -81,7 +80,7 @@ async def ask_in_batches[T](
         planned = 0
         stopped: str | None = None
         for ask in pending:
-            if scan_suspicious([LeftoverResult(id=ask.job_id, url=ask.url, title=ask.title, snippet=ask.text)]):
+            if looks_like_injection(f"{ask.title}\n{ask.text}\n{ask.url}"):
                 outcomes["suspicious"] += 1
                 continue
             estimate = len(ask.text) // _CHARS_PER_TOKEN + _PROMPT_OVERHEAD_TOKENS + max_output_tokens

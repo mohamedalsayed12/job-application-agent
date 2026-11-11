@@ -15,8 +15,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.db import get_db
+from app.linkedin import store_items
 from app.main import app
-from app.models import BoardStatus, Job, JobFreshness, SpendKind, SpendLedger
+from app.models import Job, JobFreshness, SpendKind, SpendLedger
 from app.quality import build_report, store_results
 from app.quality.checks import (
     Confidence,
@@ -28,23 +29,20 @@ from app.quality.checks import (
     check_recent,
     find_same_adverts,
 )
-from tests.test_budget_gate import _applicant_and_run
-from tests.test_cleaning import DAY_1, _board, _Collector, _job
+from tests.jobs import DAY_1, _job, _li, _store
 
 ADMIN = "test-admin-key-step13"
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
 ADVERT = "Build and run backend services in Python for our payments platform. " * 10
-EMPLOYER = uuid.uuid4()
 
 
 def _facts(**changes: object) -> JobFacts:
     base = JobFacts(
         job_id=uuid.uuid4(),
-        employer_id=EMPLOYER,
         company_name="Acme",
         title="Backend Developer",
         description=ADVERT,
-        apply_url="https://job-boards.greenhouse.io/acme/jobs/1",
+        apply_url="https://acme.example/careers/1",
         places=[{"city": "Manchester", "country": "GB"}],
         remote_type=None,
         freshness=JobFreshness.open,
@@ -52,37 +50,27 @@ def _facts(**changes: object) -> JobFacts:
         first_seen_at=NOW - timedelta(days=2),
         posted_at=NOW - timedelta(days=3),
         closes_at=None,
-        board_status=BoardStatus.verified,
-        official_domain="acme.com",
-        source="greenhouse",
+        source="linkedin",
         sector="tech",
     )
     return replace(base, **changes)
 
 
-def _gh(job_id: int, *, title: str = "Backend Developer", city: str | None = "Manchester, UK", content: str = ADVERT) -> dict:
-    return {
-        "id": job_id,
-        "title": title,
-        "absolute_url": f"https://job-boards.greenhouse.io/acme/jobs/{job_id}",
-        "location": {"name": city},
-        "first_published": "2026-11-01T10:00:00+00:00",
-        "content": content,
-    }
+def _posting(job_id: int, *, title: str = "Backend Developer", city: str = "Manchester, UK", content: str = ADVERT) -> dict:
+    return _li(job_id, title=title, city=city, content=content)
 
 
 @pytest.mark.parametrize(
     ("changes", "expected"),
     [
-        ({"last_seen_at": NOW - timedelta(hours=47)}, None),
-        ({"last_seen_at": NOW - timedelta(hours=49)}, NotRecent.not_seen_in_48_hours),
+        ({"last_seen_at": NOW - timedelta(days=10)}, None),
         ({"closes_at": NOW + timedelta(days=1)}, None),
         ({"closes_at": NOW - timedelta(minutes=1)}, NotRecent.past_closing_date),
         ({"freshness": JobFreshness.closed}, NotRecent.closed),
         ({"freshness": JobFreshness.unknown}, None),
     ],
 )
-def test_recent_means_listed_in_the_last_48_hours_and_before_closing(changes: dict, expected: NotRecent | None) -> None:
+def test_recent_means_still_open_and_before_closing(changes: dict, expected: NotRecent | None) -> None:
     assert check_recent(_facts(**changes), NOW) == expected
 
 
@@ -96,11 +84,7 @@ def test_a_listing_older_than_60_days_is_flagged_and_stays_recent() -> None:
 @pytest.mark.parametrize(
     ("changes", "expected", "reason"),
     [
-        ({}, Confidence.high, "verified official board"),
-        ({"apply_url": "https://careers.acme.com/jobs/1"}, Confidence.high, "apply link on the company's domain"),
-        ({"apply_url": "https://acme.com.evil.io/jobs/1"}, Confidence.medium, "not on the company's domain"),
-        ({"board_status": BoardStatus.needs_reverify}, Confidence.medium, "needs checking again"),
-        ({"board_status": None}, Confidence.low, "not from a verified official board"),
+        ({}, Confidence.medium, "listed on linkedin"),
         ({"title": "Join our Talent Community"}, Confidence.medium, "not a specific role"),
         ({"title": "Can't find anything that suits you?"}, Confidence.medium, "not a specific role"),
         ({"description": "You must pay a registration fee before you start."}, Confidence.low, "asks the applicant for money"),
@@ -115,7 +99,7 @@ def test_real_takes_the_lowest_signal_and_gives_its_reason(changes: dict, expect
 
 def test_payment_company_wording_is_not_a_scam_sign() -> None:
     advert = "We process payments and handle transaction fees. You will pay down technical debt in our deposit systems."
-    assert check_real(_facts(description=advert))[0] == Confidence.high
+    assert check_real(_facts(description=advert))[0] == Confidence.medium
 
 
 @pytest.mark.parametrize(
@@ -135,7 +119,7 @@ def test_complete_asks_for_title_location_apply_link_and_full_description(change
 
 
 def test_salary_and_employer_are_not_needed_for_complete() -> None:
-    assert check_job(_facts(employer_id=None, company_name=""), NOW).complete
+    assert check_job(_facts(company_name=""), NOW).complete
 
 
 LONDON = [{"city": "London", "country": "GB"}]
@@ -171,7 +155,7 @@ def test_a_later_job_is_matched_to_any_earlier_job_in_its_place_not_just_the_las
     "other",
     [
         {"posted_at": NOW + timedelta(days=28)},
-        {"employer_id": uuid.uuid4()},
+        {"company_name": "Other Ltd"},
         {"title": "Frontend Developer"},
         {"description": ADVERT + "A different team."},
     ],
@@ -187,28 +171,20 @@ def test_spacing_and_title_case_do_not_hide_a_duplicate() -> None:
 
 def test_jobs_with_no_description_or_employer_are_not_called_duplicates() -> None:
     assert find_same_adverts([_facts(description=None), _facts(description=None)]) == {}
-    assert find_same_adverts([_facts(employer_id=None), _facts(employer_id=None)]) == {}
+    assert find_same_adverts([_facts(company_name=""), _facts(company_name="")]) == {}
 
 
-@pytest.fixture
-def collector(session: Session) -> _Collector:
-    return _Collector(session)
-
-
-async def test_the_report_measures_real_collected_jobs_against_the_targets(session: Session, collector: _Collector) -> None:
-    _board(session)
-    jobs = [_gh(i, title=f"Backend Developer {i}") for i in range(1, 19)]
-    await collector.read(
-        200,
-        {
-            "jobs": [
-                *jobs,
-                _gh(19, city=""),
-                _gh(20, title="Same", city="Leeds, UK; York, UK"),
-                _gh(21, title="Same", city="York, UK"),
-                _gh(22, title="Same", city="Hull, UK"),
-            ]
-        },
+def test_the_report_measures_real_collected_jobs_against_the_targets(session: Session) -> None:
+    jobs = [_posting(i, title=f"Backend Developer {i}") for i in range(1, 19)]
+    _store(
+        session,
+        [
+            *jobs,
+            _posting(19, city=""),
+            _posting(20, title="Same", city="Leeds, UK; York, UK"),
+            _posting(21, title="Same", city="York, UK"),
+            _posting(22, title="Same", city="Hull, UK"),
+        ],
     )
 
     report = build_report(session, now=DAY_1 + timedelta(hours=1))
@@ -221,23 +197,14 @@ async def test_the_report_measures_real_collected_jobs_against_the_targets(sessi
     assert not targets["Duplicates"].met
     assert report.jobs.same_advert_elsewhere == 1
     assert report.jobs.missing_counts == {"location": 1}
-    assert report.jobs.real_levels == {"high": 22}
-    assert [row.label for row in report.jobs.by_source] == ["greenhouse"]
+    assert report.jobs.real_levels == {"medium": 22}
+    assert [row.label for row in report.jobs.by_source] == ["linkedin"]
     assert report.jobs.by_source[0].last_success == report.jobs.total.last_success is not None
     assert [row.label for row in report.jobs.by_sector] == ["tech"]
 
 
-async def test_open_jobs_not_seen_for_48_hours_count_as_expired_jobs_shown(session: Session, collector: _Collector) -> None:
-    _board(session)
-    await collector.read(200, {"jobs": [_gh(1)]})
-    expired = {t.name: t for t in build_report(session, now=DAY_1 + timedelta(hours=49)).jobs.targets}["Expired jobs shown"]
-    assert expired.value == "1"
-    assert not expired.met
-
-
-async def test_a_closed_job_is_not_shown_or_counted_as_a_duplicate(session: Session, collector: _Collector) -> None:
-    _board(session)
-    await collector.read(200, {"jobs": [_gh(1, city="Leeds, UK; York, UK"), _gh(2, city="York, UK")]})
+def test_a_closed_job_is_not_shown_or_counted_as_a_duplicate(session: Session) -> None:
+    _store(session, [_posting(1, city="Leeds, UK; York, UK"), _posting(2, city="York, UK")])
     _job(session, 1).freshness = JobFreshness.closed
     session.flush()
     report = build_report(session, now=DAY_1 + timedelta(hours=1))
@@ -247,16 +214,15 @@ async def test_a_closed_job_is_not_shown_or_counted_as_a_duplicate(session: Sess
     assert report.jobs.not_recent_counts == {"closed": 1}
 
 
-async def test_results_are_stored_on_each_job_and_can_be_run_again(session: Session, collector: _Collector) -> None:
-    _board(session)
-    await collector.read(200, {"jobs": [_gh(1, city="Leeds, UK; York, UK"), _gh(2, city="York, UK")]})
+def test_results_are_stored_on_each_job_and_can_be_run_again(session: Session) -> None:
+    _store(session, [_posting(1, city="Leeds, UK; York, UK"), _posting(2, city="York, UK")])
     assert store_results(session, now=DAY_1) == 2
     assert store_results(session, now=DAY_1 + timedelta(days=3)) == 2
     first, second = _job(session, 1), _job(session, 2)
-    assert first.quality_results["real"] == "high"
+    assert first.quality_results["real"] == "medium"
     assert first.quality_results["complete"] is True
-    assert first.quality_results["recent"] is False
-    assert first.quality_results["not_recent"] == "not_seen_in_48_hours"
+    assert first.quality_results["recent"] is True
+    assert first.quality_results["not_recent"] is None
     assert {first.quality_results["duplicate_of"], second.quality_results["duplicate_of"]} in (
         {None, str(first.id)},
         {None, str(second.id)},
@@ -264,52 +230,39 @@ async def test_results_are_stored_on_each_job_and_can_be_run_again(session: Sess
     assert [first.quality_results["unique"], second.quality_results["unique"]].count(False) == 1
 
 
-async def test_the_brake_shows_as_an_event_only_on_the_fetch_where_jobs_vanished(session: Session, collector: _Collector) -> None:
-    _board(session)
-    await collector.read(200, {"jobs": [_gh(i, title=f"Role {i}") for i in range(1, 7)]})
-    await collector.read(200, {"jobs": [_gh(1, title="Role 1"), _gh(2, title="Role 2")]})
-    await collector.read(200, {"jobs": [_gh(1, title="Role 1"), _gh(2, title="Role 2")]})
-    events = build_report(session, now=DAY_1 + timedelta(days=3)).collection.brake_events
-    assert [(name, gone, before) for name, _, gone, before in events] == [("Acme", 4, 6)]
+def test_failed_searches_show_in_the_outcomes(session: Session) -> None:
+    store_items(session, [], started_at=DAY_1, finished_at=DAY_1, ok=False)
+    _store(session, [_posting(1)])
+    collection = build_report(session, now=DAY_1).collection
+    assert collection.outcomes_by_source == {"linkedin": {"failed": 1, "complete": 1}}
 
 
-async def test_failed_reads_show_in_outcomes_and_repeated_failures(session: Session, collector: _Collector) -> None:
-    _board(session)
-    await collector.read(500, b"", on_next_day=False)
-    collector.at += timedelta(days=1)
-    await collector.read(500, b"")
-    collection = build_report(session, now=DAY_1 + timedelta(days=3)).collection
-    assert sum(collection.outcomes_by_source["greenhouse"].values()) >= 1
-    assert collection.repeated_failures and collection.repeated_failures[0][0] == "Acme"
-
-
-def test_template_cost_comes_from_the_spend_ledger(session: Session) -> None:
-    _, run_id = _applicant_and_run(session)
-    for actual, estimated in ((Decimal("0.01"), Decimal("0.5")), (None, Decimal("0.02"))):
+def test_spending_comes_from_the_spend_ledger(session: Session) -> None:
+    for kind, actual, estimated in (
+        (SpendKind.linkedin_jobs, Decimal("0.01"), Decimal("0.5")),
+        (SpendKind.ai_job_judge, None, Decimal("0.02")),
+    ):
         session.add(
             SpendLedger(
-                provider="anthropic",
-                kind=SpendKind.ai_extraction,
-                related_run_id=run_id,
+                provider="apify",
+                kind=kind,
                 estimated_cost=estimated,
                 actual_cost=actual,
                 units=Decimal("1"),
-                unit_label="call",
+                unit_label="job",
                 occurred_at=NOW,
             )
         )
     session.flush()
-    discovery = build_report(session, now=NOW).discovery
-    assert [(runs, spent) for _, runs, spent in discovery.searches_by_template] == [(1, Decimal("0.03"))]
-    assert discovery.spend_total == Decimal("0.03")
-    assert discovery.spend_this_month == Decimal("0.03")
+    spend = build_report(session, now=NOW).spend
+    assert (spend.total, spend.this_month) == (Decimal("0.03"), Decimal("0.03"))
+    assert spend.by_kind_this_month == {"ai_job_judge": Decimal("0.02"), "linkedin_jobs": Decimal("0.01")}
 
 
 def test_an_empty_database_gives_a_report_that_meets_nothing(session: Session) -> None:
     report = build_report(session, now=NOW)
     assert report.jobs.total.jobs == 0
     assert not any(target.met for target in report.jobs.targets)
-    assert report.audit.latest_day is None
 
 
 @pytest.fixture
@@ -329,16 +282,15 @@ async def test_the_admin_page_needs_the_key(client: httpx.AsyncClient) -> None:
 
 
 async def test_the_admin_page_shows_the_report_and_escapes_job_text(
-    client: httpx.AsyncClient, session: Session, collector: _Collector
+    client: httpx.AsyncClient, session: Session
 ) -> None:
-    _board(session)
-    await collector.read(200, {"jobs": [_gh(1, title="<script>alert(1)</script>", city=""), _gh(2, title="Other role")]})
+    _store(session, [_posting(1, title="<script>alert(1)</script>", city=""), _posting(2, title="Other role")])
     before = {job.id: job.quality_results for job in session.scalars(select(Job))}
 
     response = await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})
 
     assert response.status_code == 200
-    for heading in ("Targets", "Jobs", "Discovery", "Collection", "Audit", "What this report cannot show yet"):
+    for heading in ("Targets", "Jobs", "Spending", "Collection", "What this report cannot show yet"):
         assert f"<h2>{heading}</h2>" in response.text
     assert "<script>" not in response.text
     assert "<h2>Summaries</h2>" in response.text

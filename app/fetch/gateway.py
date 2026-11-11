@@ -34,7 +34,7 @@ RefusalReason = Literal[
 MAX_REDIRECTS = 3
 MAX_BODY_BYTES = 16 * 1024 * 1024
 DEFAULT_TIMEOUT_S = 10.0
-# A request may ask for longer, up to this: SerpAPI's Google Jobs engine often takes over 10 s.
+# A request may ask for longer, up to this: an Apify run check waits up to 25 s for the run to end.
 MAX_TIMEOUT_S = 30.0
 ALLOWED_CONTENT_TYPES = frozenset(
     {

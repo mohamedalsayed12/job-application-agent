@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from app.cleaning.clean import (
     completeness,
     link_method_counts,
@@ -15,13 +13,11 @@ from app.core.db import SessionLocal
 
 def main() -> None:
     with SessionLocal() as session:
-        report = reclean_all(session, now=datetime.now(UTC))
+        report = reclean_all(session)
         session.commit()
         print(
             f"postings new {report.postings_new}, updated {report.postings_updated}, "
-            f"unusable {report.unusable}, closed {report.freshness.closed}, "
-            f"reopened {report.freshness.reopened}, unknown {report.freshness.unknown}, "
-            f"errors {report.errors}"
+            f"unusable {report.unusable}, errors {report.errors}"
         )
         print(f"jobs by freshness: {master_job_counts(session)}")
         print(f"links by method: {link_method_counts(session)}")

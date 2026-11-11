@@ -30,8 +30,8 @@ from app.models import (
 )
 from app.skills.taxonomy import load_taxonomy, map_job_skills
 from tests.conftest import WordEmbedder
-from tests.test_cleaning import _board, _Collector, _job
-from tests.test_matching import _gh
+from tests.jobs import _job, _store
+from tests.test_matching import _posting
 
 PASSWORD = "correct horse battery"
 ADVERT = "Build payment services in Python and PostgreSQL for our platform team. " * 6
@@ -56,18 +56,15 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def _jobs(session: Session) -> None:
-    _board(session)
-    await _Collector(session).read(
-        200,
-        {
-            "jobs": [
-                _gh(1, title="Junior Backend Developer", city="Manchester, UK", content=ADVERT),
-                _gh(2, title="Graduate Backend Developer", city="Manchester, UK", content=ADVERT),
-                _gh(3, title="Backend Developer, Early Careers", city="London, UK", content=ADVERT),
-                _gh(4, title="Sales Manager", city="Manchester, UK", content=ADVERT),
-                _gh(5, title="Backend Developer", city="Manchester, UK", content=ADVERT),
-            ]
-        },
+    _store(
+        session,
+        [
+        _posting(1, title="Junior Backend Developer", city="Manchester, UK", content=ADVERT),
+        _posting(2, title="Graduate Backend Developer", city="Manchester, UK", content=ADVERT),
+        _posting(3, title="Backend Developer, Early Careers", city="London, UK", content=ADVERT),
+        _posting(4, title="Sales Manager", city="Manchester, UK", content=ADVERT),
+        _posting(5, title="Backend Developer", city="Manchester, UK", content=ADVERT),
+        ],
     )
     load_taxonomy(session)
     map_job_skills(session)
@@ -125,8 +122,8 @@ async def test_t36_each_listing_shows_its_source_apply_link_and_reasons(
     await _jobs(session)
     await _register_with_profile(client)
     page = (await client.get("/listings")).text
-    assert "Source: greenhouse." in page
-    assert 'href="https://job-boards.greenhouse.io/acme/jobs/1"' in page
+    assert "Source: linkedin." in page
+    assert 'href="https://acme.example/careers/1"' in page
     assert "Salary: Not stated</span>" in page
     assert "Location: in Manchester" in page
     assert "Skills you have: Python" in page
@@ -199,7 +196,7 @@ def _listing(source: str, **job: object) -> Listing:
 
 
 def test_an_apply_link_that_is_not_a_web_link_is_not_rendered() -> None:
-    page = render_listing(_listing("lever", apply_url="javascript:alert(1)"))
+    page = render_listing(_listing("linkedin", apply_url="javascript:alert(1)"))
     assert "javascript:" not in page
     assert "No usable apply link" in page
 

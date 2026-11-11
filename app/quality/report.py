@@ -10,27 +10,18 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.cleaning.freshness import BRAKE_MIN_JOBS, FULL_READS
+from app.cleaning.clean import FULL_READS
 from app.cleaning.linking import is_primary
 from app.models import (
-    AiExtraction,
     ApplicantJobMatch,
     ApplicantPreference,
-    AuditSample,
-    BoardStatus,
     BudgetPolicy,
-    Candidate,
-    Employer,
-    EmployerBoard,
     FetchRun,
     Job,
     JobFreshness,
     JobLink,
     JobPosting,
     JobSummary,
-    RawPayload,
-    ReviewItem,
-    SearchRun,
     SpendLedger,
 )
 from app.quality.checks import (
@@ -44,7 +35,6 @@ from app.quality.checks import (
 
 COMPLETE_TARGET = 95.0
 DUPLICATE_TARGET = 2.0
-REPEATED_FAILURES = 2
 EXAMPLES = 5
 
 
@@ -94,36 +84,17 @@ class JobsSection:
 
 
 @dataclass(slots=True)
-class DiscoverySection:
-    searches_by_template: list[tuple[str, int, Decimal]]
-    candidates: int
-    candidates_by_state: dict[str, int]
-    review_backlog: int
-    oldest_review_days: int | None
-    ungrounded_pct: float | None
-    boards: int
-    spend_total: Decimal
-    boards_per_pound: float | None
-    spend_this_month: Decimal
+class SpendSection:
+    total: Decimal
+    this_month: Decimal
+    by_kind_this_month: dict[str, Decimal]
     caps: list[tuple[str, str, Decimal | None, int | None, str]]
 
 
 @dataclass(slots=True)
 class CollectionSection:
     outcomes_by_source: dict[str, dict[str, int]]
-    repeated_failures: list[tuple[str, int]]
-    brake_events: list[tuple[str, datetime, int, int]]
     jobs_by_freshness: dict[str, int]
-
-
-@dataclass(slots=True)
-class AuditSection:
-    sampled: int
-    latest_day: str | None
-    judged: int
-    correct: int
-    useful_judged: int
-    useful: int
 
 
 @dataclass(slots=True)
@@ -152,17 +123,14 @@ class SummariesSection:
 class QualityReport:
     generated_at: datetime
     jobs: JobsSection
-    discovery: DiscoverySection
+    spend: SpendSection
     collection: CollectionSection
-    audit: AuditSection
     relevance: RelevanceSection
     summaries: SummariesSection
     gaps: list[str] = field(default_factory=list)
 
 
 def load_job_facts(session: Session) -> list[JobFacts]:
-    domains = dict(session.execute(select(Employer.id, Employer.official_domain)).all())
-    board_status = dict(session.execute(select(EmployerBoard.id, EmployerBoard.status)).all())
     postings: dict = defaultdict(list)
     for job_id, posting in session.execute(
         select(JobLink.job_id, JobPosting).join(JobPosting, JobPosting.id == JobLink.job_posting_id)
@@ -176,7 +144,6 @@ def load_job_facts(session: Session) -> list[JobFacts]:
         facts.append(
             JobFacts(
                 job_id=job.id,
-                employer_id=job.employer_id,
                 company_name=job.company_name,
                 title=job.title,
                 description=job.description,
@@ -188,8 +155,6 @@ def load_job_facts(session: Session) -> list[JobFacts]:
                 first_seen_at=job.first_seen_at,
                 posted_at=primary.posted_at if primary else None,
                 closes_at=primary.closes_at if primary else None,
-                board_status=board_status.get(primary.employer_board_id) if primary else None,
-                official_domain=domains.get(job.employer_id),
                 source=primary.source if primary else "unknown",
                 sector=job.sector,
             )
@@ -218,18 +183,14 @@ def build_report(session: Session, *, now: datetime | None = None) -> QualityRep
     return QualityReport(
         generated_at=now,
         jobs=_jobs_section(session, check_all(session, now)),
-        discovery=_discovery_section(session, now),
+        spend=_spend_section(session, now),
         collection=_collection_section(session),
-        audit=_audit_section(session),
         relevance=_relevance_section(session),
         summaries=_summaries_section(session),
         gaps=[
             "Real: Companies House is not connected, so it is not one of the signals.",
-            "Unique: no employer is on two sources yet, so every duplicate found is within one source.",
-            "Expired jobs shown: job search does not read stored jobs yet, so this counts jobs it would show.",
-            "Safety-brake events are worked out from stored fetches. Nothing records them when they happen.",
-            "Duplicate candidates removed: they are folded in when found and not counted anywhere.",
-            "Verified boards per £: the current boards came from the seed list, so this flatters search.",
+            "Unique: LinkedIn is the only source, so every duplicate found is within it.",
+            "Closed: LinkedIn does not say when a job closes, so a job closes when no search has found it for a while.",
             "Relevance: skills are those an advert names, which includes skills it mentions without requiring.",
         ],
     )
@@ -276,15 +237,6 @@ def _jobs_section(session: Session, results: list[tuple[JobFacts, JobQuality]]) 
             .group_by(FetchRun.source)
         ).all()
     )
-    success_by_sector = dict(
-        session.execute(
-            select(Employer.sector, func.max(FetchRun.finished_at))
-            .join(EmployerBoard, EmployerBoard.employer_id == Employer.id)
-            .join(FetchRun, FetchRun.employer_board_id == EmployerBoard.id)
-            .where(FetchRun.outcome.in_(FULL_READS))
-            .group_by(Employer.sector)
-        ).all()
-    )
     live = [(job, quality) for job, quality in results if job.freshness != JobFreshness.closed]
     total = _row("All jobs", results, max(success_by_source.values(), default=None))
     expired_shown = sum(1 for job, quality in live if job.freshness == JobFreshness.open and not quality.recent)
@@ -307,7 +259,7 @@ def _jobs_section(session: Session, results: list[tuple[JobFacts, JobQuality]]) 
         ],
         total=total,
         by_source=_rows_by(results, "source", success_by_source),
-        by_sector=_rows_by(results, "sector", success_by_sector),
+        by_sector=_rows_by(results, "sector", {}),
         same_advert_elsewhere=sum(1 for _, q in live if q.same_advert and q.unique),
         older_than_60_days=sum(1 for _, q in live if q.older_than_60_days),
         real_levels=dict(Counter(str(q.confidence) for _, q in live)),
@@ -337,20 +289,9 @@ def _place_names(job: JobFacts) -> str:
     return ", ".join(place["city"] or place["country"] or place.get("region") or "" for place in job.places) or "no place"
 
 
-def _discovery_section(session: Session, now: datetime) -> DiscoverySection:
-    grounded, ungrounded = session.execute(
-        select(
-            func.coalesce(func.sum(AiExtraction.grounded_count), 0),
-            func.coalesce(func.sum(AiExtraction.ungrounded_count), 0),
-        )
-    ).one()
-    oldest_review = session.scalar(select(func.min(ReviewItem.created_at)).where(ReviewItem.decided_at.is_(None)))
+def _spend_section(session: Session, now: datetime) -> SpendSection:
     cost = func.coalesce(SpendLedger.actual_cost, SpendLedger.estimated_cost)
-    spend_total = Decimal(session.scalar(select(func.coalesce(func.sum(cost), 0))))
     month_start = datetime(now.year, now.month, 1, tzinfo=UTC)
-    boards = session.scalar(
-        select(func.count()).select_from(EmployerBoard).where(EmployerBoard.status != BoardStatus.retired)
-    )
     policies = session.scalars(
         select(BudgetPolicy)
         .where(
@@ -359,33 +300,15 @@ def _discovery_section(session: Session, now: datetime) -> DiscoverySection:
         )
         .order_by(BudgetPolicy.provider, BudgetPolicy.period)
     ).all()
-    spent_by_template = dict(
-        session.execute(
-            select(SearchRun.template_id, func.sum(cost))
-            .join(SpendLedger, SpendLedger.related_run_id == SearchRun.id)
-            .group_by(SearchRun.template_id)
-        ).all()
-    )
-    return DiscoverySection(
-        searches_by_template=[
-            (template, runs, Decimal(spent_by_template.get(template, 0)))
-            for template, runs in session.execute(
-                select(SearchRun.template_id, func.count())
-                .group_by(SearchRun.template_id)
-                .order_by(SearchRun.template_id)
-            ).all()
-        ],
-        candidates=session.scalar(select(func.count()).select_from(Candidate)),
-        candidates_by_state=dict(session.execute(select(Candidate.state, func.count()).group_by(Candidate.state)).all()),
-        review_backlog=session.scalar(
-            select(func.count()).select_from(ReviewItem).where(ReviewItem.decided_at.is_(None))
+    by_kind = session.execute(
+        select(SpendLedger.kind, func.sum(cost)).where(SpendLedger.occurred_at >= month_start).group_by(SpendLedger.kind)
+    ).all()
+    return SpendSection(
+        total=Decimal(session.scalar(select(func.coalesce(func.sum(cost), 0)))),
+        this_month=Decimal(
+            session.scalar(select(func.coalesce(func.sum(cost), 0)).where(SpendLedger.occurred_at >= month_start))
         ),
-        oldest_review_days=(now - oldest_review).days if oldest_review else None,
-        ungrounded_pct=_pct(ungrounded, grounded + ungrounded) if grounded + ungrounded else None,
-        boards=boards,
-        spend_total=spend_total,
-        boards_per_pound=round(boards / float(spend_total), 1) if spend_total else None,
-        spend_this_month=Decimal(session.scalar(select(func.coalesce(func.sum(cost), 0)).where(SpendLedger.occurred_at >= month_start))),
+        by_kind_this_month={kind: Decimal(amount) for kind, amount in sorted(by_kind)},
         caps=[(row.provider, row.period, row.money_cap, row.request_cap, row.currency) for row in policies],
     )
 
@@ -396,48 +319,10 @@ def _collection_section(session: Session) -> CollectionSection:
         select(FetchRun.source, FetchRun.outcome, func.count()).group_by(FetchRun.source, FetchRun.outcome)
     ).all():
         outcomes[source][outcome] = count
-    names = dict(session.execute(select(Employer.id, Employer.name)).all())
-    boards = session.scalars(select(EmployerBoard)).all()
     return CollectionSection(
         outcomes_by_source=dict(outcomes),
-        repeated_failures=[
-            (names.get(board.employer_id, board.board_id), board.consecutive_failures)
-            for board in boards
-            if board.consecutive_failures >= REPEATED_FAILURES
-        ],
-        brake_events=[
-            event
-            for board in boards
-            for event in _brake_events(session, board, names.get(board.employer_id, board.board_id))
-        ],
         jobs_by_freshness=dict(session.execute(select(Job.freshness, func.count()).group_by(Job.freshness)).all()),
     )
-
-
-def _brake_events(session: Session, board: EmployerBoard, name: str) -> list[tuple[str, datetime, int, int]]:
-    """Every complete fetch where more than half of the jobs on the fetch before it had gone."""
-    runs = session.execute(
-        select(FetchRun.id, FetchRun.finished_at)
-        .where(FetchRun.employer_board_id == board.id, FetchRun.outcome.in_(FULL_READS))
-        .order_by(FetchRun.finished_at, FetchRun.id)
-    ).all()
-    if len(runs) < 2:
-        return []
-    listed: dict = defaultdict(set)
-    for run_id, job_id in session.execute(
-        select(RawPayload.fetch_run_id, RawPayload.source_job_id).where(
-            RawPayload.fetch_run_id.in_([run.id for run in runs]),
-            RawPayload.source_job_id.is_not(None),
-        )
-    ).all():
-        listed[run_id].add(job_id)
-    events = []
-    for earlier, later in zip(runs, runs[1:], strict=False):
-        before = listed[earlier.id]
-        vanished = before - listed[later.id]
-        if len(before) >= BRAKE_MIN_JOBS and len(vanished) * 2 > len(before):
-            events.append((name, later.finished_at, len(vanished), len(before)))
-    return events
 
 
 def _relevance_section(session: Session) -> RelevanceSection:
@@ -469,22 +354,4 @@ def _summaries_section(session: Session) -> SummariesSection:
         rejected=counts.get("rejected", 0),
         in_progress=counts.get("pending", 0),
         cost=Decimal(session.scalar(select(func.coalesce(func.sum(JobSummary.cost_amount), 0)))),
-    )
-
-
-def _audit_section(session: Session) -> AuditSection:
-    rows = session.scalars(select(AuditSample)).all()
-    if not rows:
-        return AuditSection(0, None, 0, 0, 0, 0)
-    latest = max(row.created_at.date() for row in rows)
-    newest = [row for row in rows if row.created_at.date() == latest]
-    judged = [row for row in newest if row.is_correct is not None]
-    useful = [row for row in newest if row.is_useful is not None]
-    return AuditSection(
-        sampled=len(newest),
-        latest_day=latest.isoformat(),
-        judged=len(judged),
-        correct=sum(1 for row in judged if row.is_correct),
-        useful_judged=len(useful),
-        useful=sum(1 for row in useful if row.is_useful),
     )

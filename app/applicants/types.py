@@ -16,15 +16,6 @@ class ExpectedSalary:
 
 
 @dataclass(frozen=True, slots=True)
-class DiscoveryPreference:
-    """Roles/locations/sector for search planning. Intentionally has no salary fields."""
-
-    target_roles: tuple[str, ...]
-    locations: tuple[str, ...]
-    sector: str
-
-
-@dataclass(frozen=True, slots=True)
 class PreferenceInput:
     """Validated create/edit payload for applicant_preference."""
 

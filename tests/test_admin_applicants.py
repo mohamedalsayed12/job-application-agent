@@ -13,7 +13,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.applicants.discovery import to_discovery_preference
 from app.applicants.salary import job_excluded_for_salary, salary_match_status
 from app.applicants.service import (
     PreferenceValidationError,
@@ -22,7 +21,7 @@ from app.applicants.service import (
     parse_preference_input,
     update_applicant,
 )
-from app.applicants.types import DiscoveryPreference, ExpectedSalary
+from app.applicants.types import ExpectedSalary
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
@@ -187,34 +186,6 @@ def test_salary_status_meets_and_below() -> None:
     )
     assert job_excluded_for_salary(SalaryStatus.below) is True
     assert job_excluded_for_salary(SalaryStatus.meets) is False
-
-
-def test_discovery_preference_has_no_salary_fields(session: Session) -> None:
-    pref_in = parse_preference_input(
-        target_roles=["Backend"],
-        locations=["London"],
-        salary_amount=Decimal("90000"),
-        salary_currency="GBP",
-        salary_period="year",
-    )
-    applicant = create_applicant(
-        session, email="iso@example.com", preference=pref_in, display_name="Iso"
-    )
-    session.flush()
-    pair = get_applicant_with_preference(session, applicant.id)
-    assert pair is not None
-    _, row = pair
-    discovery = to_discovery_preference(row)
-    assert set(DiscoveryPreference.__dataclass_fields__) == {
-        "target_roles",
-        "locations",
-        "sector",
-    }
-    assert discovery.target_roles == ("Backend",)
-    assert discovery.locations == ("London",)
-    assert discovery.sector == "tech"
-    assert not hasattr(discovery, "salary_amount")
-    assert not hasattr(discovery, "expected_salary")
 
 
 def test_parse_blank_amount_ignores_currency_defaults() -> None:

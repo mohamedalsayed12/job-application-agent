@@ -17,8 +17,8 @@ from app.main import app
 from app.matching.match import RoleKind, SkillFit, match_by_skills
 from app.models import ExperienceLevel
 from app.skills.taxonomy import load_taxonomy, map_job_skills
-from tests.test_cleaning import _board, _Collector
-from tests.test_matching import _gh
+from tests.jobs import _store
+from tests.test_matching import _posting
 
 PASSWORD = "correct horse battery"
 DATA_ADVERT = "Build data pipelines in Python with PostgreSQL, Docker and SQL for our analytics team. " * 6
@@ -85,16 +85,13 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def _jobs(session: Session) -> None:
-    _board(session)
-    await _Collector(session).read(
-        200,
-        {
-            "jobs": [
-                _gh(1, title="Junior Backend Developer", city="Manchester, UK", content=DATA_ADVERT),
-                _gh(2, title="Graduate Data Engineer", city="Manchester, UK", content=DATA_ADVERT),
-                _gh(3, title="Account Manager", city="Manchester, UK", content=SALES_ADVERT),
-            ]
-        },
+    _store(
+        session,
+        [
+        _posting(1, title="Junior Backend Developer", city="Manchester, UK", content=DATA_ADVERT),
+        _posting(2, title="Graduate Data Engineer", city="Manchester, UK", content=DATA_ADVERT),
+        _posting(3, title="Account Manager", city="Manchester, UK", content=SALES_ADVERT),
+        ],
     )
     load_taxonomy(session)
     map_job_skills(session)

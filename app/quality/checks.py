@@ -9,12 +9,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from urllib.parse import urlsplit
 
 from app.cleaning.linking import title_key
-from app.models import BoardStatus, JobFreshness
+from app.models import JobFreshness
 
-LISTED_WITHIN = timedelta(hours=48)
 FLAG_OLDER_THAN = timedelta(days=60)
 REPOST_WINDOW = timedelta(days=30)
 # Search snippets run to about 300 characters. The shortest real advert stored so far has 605.
@@ -39,7 +37,6 @@ _NOT_A_ROLE = re.compile(
     r"talent (?:community|pool|network|pipeline)|can.t find|general application|speculative|expression of interest",
     re.IGNORECASE,
 )
-_BOARD_HOST_SUFFIXES = (".greenhouse.io", ".lever.co")
 
 
 class Confidence(StrEnum):
@@ -54,13 +51,11 @@ _RANK = {Confidence.low: 0, Confidence.medium: 1, Confidence.high: 2}
 class NotRecent(StrEnum):
     closed = "closed"
     past_closing_date = "past_closing_date"
-    not_seen_in_48_hours = "not_seen_in_48_hours"
 
 
 @dataclass(frozen=True, slots=True)
 class JobFacts:
     job_id: uuid.UUID
-    employer_id: uuid.UUID | None
     company_name: str
     title: str
     description: str | None
@@ -72,8 +67,6 @@ class JobFacts:
     first_seen_at: datetime
     posted_at: datetime | None
     closes_at: datetime | None
-    board_status: str | None
-    official_domain: str | None
     source: str
     sector: str
 
@@ -133,14 +126,15 @@ def check_recent(job: JobFacts, now: datetime) -> NotRecent | None:
         return NotRecent.closed
     if job.closes_at is not None and job.closes_at <= now:
         return NotRecent.past_closing_date
-    if now - job.last_seen_at > LISTED_WITHIN:
-        return NotRecent.not_seen_in_48_hours
     return None
 
 
 def check_real(job: JobFacts) -> tuple[Confidence, tuple[str, ...]]:
-    """The confidence is the lowest any signal allows. Companies House is not connected yet."""
-    signals = [_board_signal(job), _apply_link_signal(job)]
+    """The confidence is the lowest any signal allows. Companies House is not connected yet.
+
+    LinkedIn checks who posts, but anyone can post there, so a job starts at medium.
+    """
+    signals = [(Confidence.medium, f"listed on {job.source}")]
     if _NOT_A_ROLE.search(job.title):
         signals.append((Confidence.medium, "a general sign-up, not a specific role"))
     signals.extend(
@@ -150,24 +144,6 @@ def check_real(job: JobFacts) -> tuple[Confidence, tuple[str, ...]]:
         min((level for level, _ in signals), key=_RANK.__getitem__),
         tuple(reason for _, reason in signals),
     )
-
-
-def _board_signal(job: JobFacts) -> tuple[Confidence, str]:
-    if job.board_status == BoardStatus.verified:
-        return Confidence.high, "verified official board"
-    if job.board_status == BoardStatus.needs_reverify:
-        return Confidence.medium, "official board needs checking again"
-    return Confidence.low, "not from a verified official board"
-
-
-def _apply_link_signal(job: JobFacts) -> tuple[Confidence, str]:
-    host = (urlsplit(job.apply_url or "").hostname or "").lower()
-    domain = (job.official_domain or "").lower()
-    if domain and (host == domain or host.endswith(f".{domain}")):
-        return Confidence.high, "apply link on the company's domain"
-    if job.board_status == BoardStatus.verified and host.endswith(_BOARD_HOST_SUFFIXES):
-        return Confidence.high, "apply link on the company's board"
-    return Confidence.medium, "apply link is not on the company's domain or board"
 
 
 def check_complete(job: JobFacts) -> tuple[str, ...]:
@@ -192,8 +168,8 @@ def find_same_adverts(jobs: Iterable[JobFacts]) -> dict[uuid.UUID, SameAdvert]:
     """
     adverts: dict[tuple, list[JobFacts]] = defaultdict(list)
     for job in jobs:
-        if job.employer_id is not None and job.description:
-            adverts[(job.employer_id, title_key(job.title), " ".join(job.description.split()))].append(job)
+        if job.company_name.strip() and job.description:
+            adverts[(job.company_name.lower(), title_key(job.title), " ".join(job.description.split()))].append(job)
 
     found: dict[uuid.UUID, SameAdvert] = {}
     for group in adverts.values():
