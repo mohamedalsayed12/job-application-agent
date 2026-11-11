@@ -23,6 +23,7 @@ from enum import StrEnum
 
 from sqlalchemy.orm import Session
 
+from app.ai.anthropic import AiCallFailure, send_anthropic_request
 from app.applicants.profile import (
     MAX_CERTIFICATIONS,
     MAX_DEGREES,
@@ -33,8 +34,6 @@ from app.applicants.profile import (
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
-from app.extraction.ai_anthropic import send_anthropic_request
-from app.extraction.ai_types import AiCallFailure
 from app.fetch.gateway import FetchGateway
 from app.models import CvFileType, ExperienceLevel, SpendKind
 

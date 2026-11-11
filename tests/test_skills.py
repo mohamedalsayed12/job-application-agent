@@ -27,8 +27,8 @@ from app.skills.taxonomy import (
     skill_for_text,
     suggest_skills,
 )
-from tests.test_cleaning import _board, _Collector, _job
-from tests.test_matching import _gh
+from tests.jobs import _job, _store
+from tests.test_matching import _posting
 
 PASSWORD = "correct horse battery"
 
@@ -156,8 +156,7 @@ def test_how_each_skill_matched_is_recorded(loaded: dict[str, LabelEntry]) -> No
 
 
 async def test_t33_job_skills_are_stored_and_a_repeat_changes_nothing(session: Session, loaded: dict[str, LabelEntry]) -> None:
-    _board(session)
-    await _Collector(session).read(200, {"jobs": [_gh(1, content="We run Postgres, Docker and Python. " * 20)]})
+    _store(session, [_posting(1, content="We run Postgres, Docker and Python. " * 20)])
     assert map_job_skills(session) == 3
     job = _job(session, 1)
     rows = session.scalars(select(JobSkill).where(JobSkill.job_id == job.id)).all()
@@ -171,8 +170,7 @@ async def test_t33_job_skills_are_stored_and_a_repeat_changes_nothing(session: S
 
 
 async def test_a_skill_no_longer_in_the_advert_is_removed(session: Session, loaded: dict[str, LabelEntry]) -> None:
-    _board(session)
-    await _Collector(session).read(200, {"jobs": [_gh(1, content="We run Docker and Python. " * 20)]})
+    _store(session, [_posting(1, content="We run Docker and Python. " * 20)])
     map_job_skills(session)
     _job(session, 1).description = "We run Docker only."
     session.flush()
@@ -180,9 +178,8 @@ async def test_a_skill_no_longer_in_the_advert_is_removed(session: Session, load
 
 
 async def test_a12_the_report_separates_esco_from_our_own_list(session: Session, loaded: dict[str, LabelEntry]) -> None:
-    _board(session)
-    jobs = [_gh(1, content="We run Postgres and Docker. " * 20), _gh(2, content="Nothing technical here at all. " * 20)]
-    await _Collector(session).read(200, {"jobs": jobs})
+    jobs = [_posting(1, content="We run Postgres and Docker. " * 20), _posting(2, content="Nothing technical here at all. " * 20)]
+    _store(session, jobs)
     map_job_skills(session)
     report = coverage_report(session)
     assert report.open_jobs == 2

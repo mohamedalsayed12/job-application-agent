@@ -15,8 +15,8 @@ from app.matching.degrees import (
 )
 from app.matching.match import match_all
 from app.models import ApplicantProfile, ExperienceLevel
-from tests.test_cleaning import _board, _Collector, _job
-from tests.test_matching import SOON, _applicant, _gh, _matches
+from tests.jobs import _job, _store
+from tests.test_matching import SOON, _applicant, _matches, _posting
 
 BUSINESS = ["BSc Business Management"]
 FILLER = "Build and run backend services in Python for our payments platform. " * 4
@@ -96,15 +96,12 @@ def test_d45_a_job_is_hidden_only_when_no_degree_covers_its_subject(advert: str,
 
 
 async def test_d45_matching_leaves_out_jobs_needing_another_subject(session: Session) -> None:
-    _board(session)
-    await _Collector(session).read(
-        200,
-        {
-            "jobs": [
-                _gh(1, title="Junior Backend Developer", content=f"{FILLER} You have a degree in Computer Science or STEM."),
-                _gh(2, title="Junior Backend Developer", content=f"{FILLER} Any degree, or none, is welcome."),
-            ]
-        },
+    _store(
+        session,
+        [
+        _posting(1, title="Junior Backend Developer", content=f"{FILLER} You have a degree in Computer Science or STEM."),
+        _posting(2, title="Junior Backend Developer", content=f"{FILLER} Any degree, or none, is welcome."),
+        ],
     )
     business = _applicant(session, roles=["Junior Backend Developer"], locations=["Manchester"])
     unstated = _applicant(session, roles=["Junior Backend Developer"], locations=["Manchester"])

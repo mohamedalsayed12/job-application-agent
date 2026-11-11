@@ -24,7 +24,7 @@ from app.applicants.types import ExpectedSalary
 from app.cleaning.normalize import Place, parse_location, parse_places
 from app.matching.credentials import Held, held_groups, required_in_advert
 from app.matching.degrees import degree_shuts_out, required_fields
-from app.matching.entry_level import (
+from app.matching.titles import (
     ENTRY_TITLE,
     NOT_ENTRY_TITLE,
     UK_PLACE,

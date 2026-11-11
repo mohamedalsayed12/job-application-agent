@@ -102,9 +102,7 @@ def _targets(targets: Iterable[Target]) -> str:
 
 
 def _render(report: QualityReport) -> str:
-    jobs, discovery, collection, audit = report.jobs, report.discovery, report.collection, report.audit
-    relevance = report.relevance
-    backlog_age = "" if discovery.oldest_review_days is None else f", oldest {discovery.oldest_review_days} days"
+    jobs, spend, collection, relevance = report.jobs, report.spend, report.collection, report.relevance
     return f"""
 {_STYLE}
 <div class="page-head"><div>
@@ -113,10 +111,6 @@ def _render(report: QualityReport) -> str:
 </div></div>
 <h2>Targets</h2>
 {_targets(jobs.targets)}
-<div class="card queue">
-  <span><b>Review queue:</b> {discovery.review_backlog} open{html.escape(backlog_age)}</span>
-  <a class="button primary" href="/admin/review">Open the review queue</a>
-</div>
 <h2>Jobs</h2>
 <p>Percentages are of live jobs, which are all jobs except closed ones. Expired % is of all jobs.</p>
 {_job_rows([jobs.total])}
@@ -134,37 +128,17 @@ def _render(report: QualityReport) -> str:
 {_examples("Incomplete jobs", jobs.incomplete_examples)}
 {_examples("Duplicate jobs", jobs.duplicate_examples)}
 {_examples("Jobs below high confidence", jobs.lower_confidence_examples)}
-<section id="discovery">
-<h2>Discovery</h2>
+<h2>Spending</h2>
 <div class="stats">
-  {_stat("Candidates found", discovery.candidates)}
-  {_stat("Verified boards", discovery.boards)}
-  {_stat("Review backlog", discovery.review_backlog, backlog_age.lstrip(", "))}
-  {_stat("AI ungrounded rate", "none" if discovery.ungrounded_pct is None else f"{discovery.ungrounded_pct}%")}
-  {_stat("Spent this month", f"£{discovery.spend_this_month:.2f}")}
-  {_stat("Verified boards per £", discovery.boards_per_pound)}
+  {_stat("Spent this month", f"£{spend.this_month:.2f}")}
+  {_stat("Spent in total", f"£{spend.total:.2f}")}
 </div>
-{_table(("Template", "Searches", "Cost £"), discovery.searches_by_template, empty="No searches yet.")}
-<p>Candidates found: {discovery.candidates}.</p>
-{_counts(discovery.candidates_by_state)}
-<p>Review backlog: {discovery.review_backlog}{backlog_age}.
-AI ungrounded rate: {html.escape(_text(discovery.ungrounded_pct))}%.
-Verified boards: {discovery.boards}. Spent in total: £{discovery.spend_total:.4f}, including AI work not tied to one search.
-Verified boards per £: {html.escape(_text(discovery.boards_per_pound))}.
-Spent this month: £{discovery.spend_this_month:.4f}.</p>
-{_table(("Provider", "Period", "Money cap", "Request cap", "Currency"), discovery.caps, empty="No budget caps set.")}
-</section>
+{_table(("Kind", "This month £"), ((kind, f"{amount:.4f}") for kind, amount in spend.by_kind_this_month.items()), empty="Nothing spent this month.")}
+{_table(("Provider", "Period", "Money cap", "Request cap", "Currency"), spend.caps, empty="No budget caps set.")}
 <h2>Collection</h2>
-{_table(("Source", "Outcomes"), ((source, ", ".join(f"{name} {count}" for name, count in sorted(found.items()))) for source, found in sorted(collection.outcomes_by_source.items())), empty="No fetches yet.")}
-<h3>Boards with repeated failures</h3>
-{_table(("Company", "Failures in a row"), collection.repeated_failures)}
-<h3>Safety-brake events</h3>
-{_table(("Company", "Fetch finished", "Jobs gone", "Jobs before"), collection.brake_events)}
+{_table(("Source", "Outcomes"), ((source, ", ".join(f"{name} {count}" for name, count in sorted(found.items()))) for source, found in sorted(collection.outcomes_by_source.items())), empty="No searches yet.")}
 <h3>Jobs by freshness</h3>
 {_counts(collection.jobs_by_freshness)}
-<h2>Audit</h2>
-<p>Latest audit day: {html.escape(_text(audit.latest_day))}. Rows: {audit.sampled}.
-Correct: {audit.correct} of {audit.judged} judged. Useful: {audit.useful} of {audit.useful_judged} judged.</p>
 <h2>Summaries</h2>
 <p>Written: {report.summaries.accepted}. Rejected by the check: {report.summaries.rejected}. Being written: {report.summaries.in_progress}. AI cost: £{report.summaries.cost:.4f}.</p>
 <h2 id="relevance">Relevance</h2>

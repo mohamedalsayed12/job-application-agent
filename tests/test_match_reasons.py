@@ -20,8 +20,8 @@ from app.skills.taxonomy import (
     map_job_skills,
     skill_for_text,
 )
-from tests.test_cleaning import _board, _Collector, _job
-from tests.test_matching import SOON, _applicant, _gh, _matches
+from tests.jobs import _job, _store
+from tests.test_matching import SOON, _applicant, _matches, _posting
 
 DRIVING = "UK driving licence"
 
@@ -73,14 +73,13 @@ async def _job_and_applicant(
 ) -> tuple[uuid.UUID, uuid.UUID]:
     load_taxonomy(session)
     index = label_index(session)
-    _board(session)
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     session.add_all(
         ApplicantSkill(applicant_id=applicant, text_as_typed=typed, skill_id=skill_for_text(index, typed))
         for typed in skills
     )
     session.add_all(ApplicantCertification(applicant_id=applicant, name=name) for name in certifications)
-    await _Collector(session).read(200, {"jobs": [_gh(1, content=content)]})
+    _store(session, [_posting(1, content=content)])
     map_job_skills(session)
     match_all(session, now=SOON)
     return applicant, _job(session, 1).id

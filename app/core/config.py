@@ -29,33 +29,26 @@ class Settings(BaseSettings):
     fetch_user_agent: str = (
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
-    api_allowlist: str = (
-        "boards-api.greenhouse.io,"
-        "api.lever.co,api.eu.lever.co,jobs.lever.co,jobs.eu.lever.co,"
-        "www.reed.co.uk,"
-        "serpapi.com,"
-        "api.anthropic.com"
-    )
+    api_allowlist: str = "api.apify.com,api.anthropic.com"
 
-    # D29, D49: SerpAPI is the only web search; it also runs Google Jobs for CF1b.
-    serpapi_api_key: str = ""
-    reed_api_key: str = ""
+    # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
+    apify_api_token: str = ""
+    linkedin_actor: str = "blackfalcondata/linkedin-job-scraper"
+    linkedin_max_results: int = 50
+    linkedin_every_hours: int = 24
+    # Daily searches cover the last 3 days, so a missed day or two is caught up.
+    linkedin_posted_within_days: int = 3
+    linkedin_stale_days: int = 14
+    linkedin_wait_minutes: int = 15
+    # The scraper charges $0.00027 a job and $0.0005 a run, and Apify adds compute; these ceilings cover all three.
+    linkedin_unit_price: Decimal = Decimal("0.001")
+    linkedin_run_price: Decimal = Decimal("0.02")
+    usd_to_gbp: Decimal = Decimal("0.80")
 
-    # D30: leftover AI extraction (Anthropic Claude Haiku 5.5 + JSON Schema outputs).
     # Blank model = provider default.
     ai_provider: str = "anthropic"
-    ai_extraction_model: str = ""
     anthropic_api_key: str = ""
-    # B4 seed: Haiku 5.5 ≈ $0.00035 per leftover batch (1.5k in × $0.10/M + 0.4k out × $0.50/M);
-    # the £0.0005 unit price below stays a conservative ceiling for either provider.
-    # Step 10 audit C5: 500 output tokens truncated batches (stop_reason max_tokens).
-    # The per-call cap covers input + output, so it rises with the output limit.
-    ai_extraction_per_item_token_cap: int = 4000
-    ai_extraction_max_output_tokens: int = 1500
 
-    # Only for a paid search provider; SerpAPI's free plan and Reed are £0 via FREE_MONEY_PROVIDERS.
-    search_request_unit_price: Decimal = Decimal("0.003")
-    ai_extraction_unit_price: Decimal = Decimal("0.0005")
     ai_summary_unit_price: Decimal = Decimal("0.001")
     # D43: about 6k tokens in and 0.5k out on Haiku 5.5 is under £0.002; this is a ceiling.
     ai_cv_unit_price: Decimal = Decimal("0.005")
@@ -95,8 +88,9 @@ class Settings(BaseSettings):
     ai_report_cv_chars: int = 12000
 
     @field_validator(
-        "search_request_unit_price",
-        "ai_extraction_unit_price",
+        "linkedin_unit_price",
+        "linkedin_run_price",
+        "usd_to_gbp",
         "ai_summary_unit_price",
         "ai_cv_unit_price",
         "ai_judge_unit_price",
@@ -117,12 +111,6 @@ class Settings(BaseSettings):
         if self.admin_key in ("", "change-me"):
             problems.append("ADMIN_KEY must be set to a private value")
         return problems
-
-    def resolved_ai_extraction_model(self) -> str:
-        explicit = self.ai_extraction_model.strip()
-        if explicit:
-            return explicit
-        return _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def resolved_ai_summary_model(self) -> str:
         return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")

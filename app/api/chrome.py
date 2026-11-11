@@ -9,10 +9,7 @@ from app.api.forms import csrf_field
 _APPLICANT_LINKS = (("matches", "Matches", "/listings"), ("profile", "Profile", "/profile"), ("account", "Account", "/account"))
 _ADMIN_LINKS = (
     ("quality", "Quality", "/admin/quality"),
-    ("discovery", "Discovery", "/admin/quality#discovery"),
-    ("review", "Review queue", "/admin/review"),
     ("applicants", "Applicants", "/admin/applicants"),
-    ("audit", "Audit", "/admin/audit"),
 )
 
 

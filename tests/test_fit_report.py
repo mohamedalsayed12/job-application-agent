@@ -16,7 +16,7 @@ from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.matching.report import write_reports
 from app.models import JobReport, SpendLedger
-from tests.test_ai_extraction import _public_resolve
+from tests.jobs import _public_resolve
 from tests.test_cv_read import _docx
 from tests.test_judge import _jobs, _policy, _settings
 from tests.test_matching import SOON, _applicant, _job, _matches

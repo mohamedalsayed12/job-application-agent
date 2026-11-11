@@ -16,9 +16,8 @@ from app.fetch.gateway import FetchGateway
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.models import ApplicantSkill, BudgetPolicy, JobVerdict, SpendLedger
-from tests.test_ai_extraction import _public_resolve
-from tests.test_cleaning import _board, _Collector, _job
-from tests.test_matching import SOON, _applicant, _gh, _matches
+from tests.jobs import _job, _public_resolve, _store
+from tests.test_matching import SOON, _applicant, _matches, _posting
 
 ADVERT = "Build payment services in Python and PostgreSQL for our platform team. " * 4
 
@@ -89,9 +88,8 @@ async def _judge(session: Session, judge: _Judge, **settings: object):
 
 
 async def _jobs(session: Session, *titles_and_cities: tuple[str, str]) -> None:
-    _board(session)
-    jobs = [_gh(n, title=title, city=city, content=ADVERT) for n, (title, city) in enumerate(titles_and_cities, start=1)]
-    await _Collector(session).read(200, {"jobs": jobs})
+    jobs = [_posting(n, title=title, city=city, content=ADVERT) for n, (title, city) in enumerate(titles_and_cities, start=1)]
+    _store(session, jobs)
 
 
 async def test_d50_matches_follow_the_ai_verdict_over_the_rules(session: Session) -> None:

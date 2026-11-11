@@ -37,9 +37,8 @@ from app.summaries.generate import (
     summarise_matches,
     summary_for_view,
 )
-from tests.test_ai_extraction import _public_resolve
-from tests.test_cleaning import _board, _Collector, _job
-from tests.test_matching import SOON, _applicant, _gh
+from tests.jobs import _job, _public_resolve, _store
+from tests.test_matching import SOON, _applicant, _posting
 
 POSTING = (
     "Junior Backend Developer at Acme in Manchester. You will build payment services in Python and "
@@ -149,8 +148,7 @@ def _policy(session: Session, money_cap: Decimal) -> None:
 
 
 async def _open_job(session: Session, content: str = POSTING) -> Job:
-    _board(session)
-    await _Collector(session).read(200, {"jobs": [_gh(1, content=content)]})
+    _store(session, [_posting(1, content=content)])
     return _job(session, 1)
 
 
@@ -292,7 +290,7 @@ async def test_the_job_page_needs_a_login_and_shows_the_checked_summary(client: 
     page = (await client.get(f"/jobs/{job.id}")).text
     assert GOOD in page
     assert "checked against it" in page
-    assert 'href="https://job-boards.greenhouse.io/acme/jobs/1"' in page
+    assert 'href="https://acme.example/careers/1"' in page
 
 
 async def test_t37_with_the_budget_used_up_the_job_page_shows_the_description(
@@ -317,13 +315,12 @@ async def test_a_job_that_is_not_open_is_not_shown(client: httpx.AsyncClient, se
 
 async def _matched_jobs(session: Session) -> tuple[Job, Job, Job]:
     """A Manchester job, the same job in London, which scores lower, and a job nobody matches."""
-    _board(session)
     jobs = [
-        _gh(1, title="Backend Developer", city="Manchester, UK", content=POSTING),
-        _gh(2, title="Backend Developer", city="London, UK", content=POSTING),
-        _gh(3, title="Sales Manager", city="Manchester, UK", content=POSTING),
+        _posting(1, title="Backend Developer", city="Manchester, UK", content=POSTING),
+        _posting(2, title="Backend Developer", city="London, UK", content=POSTING),
+        _posting(3, title="Sales Manager", city="Manchester, UK", content=POSTING),
     ]
-    await _Collector(session).read(200, {"jobs": jobs})
+    _store(session, jobs)
     _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     match_all(session, now=SOON)
     return _job(session, 1), _job(session, 2), _job(session, 3)

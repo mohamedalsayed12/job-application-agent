@@ -17,7 +17,6 @@ from app.budget.gate import (
     SpendEstimate,
     SpendReservation,
 )
-from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.models import (
     Applicant,
@@ -279,18 +278,3 @@ def test_reserve_then_settle_records_actual(session: Session) -> None:
     row = session.scalars(select(SpendLedger)).one()
     assert row.estimated_cost == Decimal("0.50")
     assert row.actual_cost == Decimal("0.40")
-
-
-def test_reed_zero_cost_allowed_when_money_cap_zero(session: Session) -> None:
-    now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
-    _policy(session, Decimal("0"), now)
-    _, run_id = _applicant_and_run(session)
-    gate = _gate(session, now)
-    cost = estimate_cost(
-        provider="reed",
-        kind=SpendKind.search,
-        units=Decimal("1"),
-        settings=_settings(),
-    )
-    reservation = gate.reserve(_search(cost=cost, run_id=run_id, provider="reed"))
-    assert reservation.estimated_cost == Decimal("0")
