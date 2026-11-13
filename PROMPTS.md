@@ -1,5 +1,7 @@
 # Cursor Prompts — MVP
 
+> **Current job source (11 November 2026, decision D54).** The app collects job listings only from LinkedIn, once a day, through an Apify scraper. Set `APIFY_API_TOKEN`. The prompts below are the original build steps and are not how jobs are collected now. See the README and MVP.md decision D54.
+
 Prompts for every step in `MVP.md` section 19, in order. They split the kickoff prompt at the end of `MVP.md` into smaller steps.
 
 ## How to use this file

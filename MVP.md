@@ -1,5 +1,7 @@
 # MVP — Job Discovery with Data Quality
 
+> **Current job source (11 November 2026, decision D54).** Job listings come only from LinkedIn, scraped once a day through Apify's Black Falcon Data scraper (`blackfalcondata/linkedin-job-scraper`). The worker will not search without `APIFY_API_TOKEN`, and each run is reserved against the monthly money cap in `budget_policy`. How that works is in the README and in `app/linkedin.py`. The source list, pipeline and collection steps below are the plan from before that decision. D54, at the end of section 20, is the note that replaced them.
+
 > **MVP only. Standalone plan, starting from zero (4 Nov 2026).** Nothing is built yet, and this file doesn't depend on any other file. Anything not described here is outside the MVP.
 
 ## Contents
@@ -42,7 +44,7 @@ Give each user the highest-quality job listings for the roles they target, with 
 ## 3. User flow
 1. **Register and log in** (Milestone 2). In Milestone 1, applicants are created through a simple admin form.
 2. **Profile:** target role(s), location(s), optional expected salary, skills, certifications and licences, experience level, travel distance, and a CV upload (stored; read by AI only when the person asks, to fill the form, D43). Milestone 1 uses only roles, locations and salary.
-3. **Behind the scenes:** the system discovers employers, verifies their job boards, adds them to a shared directory and collects their jobs.
+3. **Behind the scenes:** once a day the worker searches LinkedIn through Apify for each target role and location, and stores the jobs it finds (D54).
 4. **Listings:** open, real, complete, de-duplicated jobs matched to the applicant, each with a summary and a match score showing what matched and what's missing.
 
 ## 4. Scope
@@ -50,22 +52,16 @@ Give each user the highest-quality job listings for the roles they target, with 
 - Every job and search carries a sector tag, and sectors are set in configuration, not code. The MVP builds only the tech sector, but this tag keeps it sector-ready.
 
 ## 5. Sources
+
+Job listings come only from LinkedIn, scraped once a day through Apify. Decision D54 (11 November 2026) replaced the earlier source list. The worker and the tests are `app/linkedin.py` and `tests/test_linkedin.py`.
+
 | Source | Used for | When |
 |---|---|---|
-| Search API (one permitted provider) | Finding employers and Greenhouse/Lever boards | Milestone 1, within budget |
-| Reed API | Employer names, apply links that point to boards, job postings | Milestone 1 |
-| SerpAPI Google Jobs | Employer names, apply links that sometimes point to boards (replaced Adzuna, D49) | Milestone 2 |
-| Greenhouse job board API | Verifying boards, collecting jobs | Milestone 1 |
-| Lever postings API (global and EU instances) | Verifying boards, collecting jobs | Milestone 1 |
+| LinkedIn, via the Black Falcon Data scraper on Apify | Entry-level jobs for each target role and location | Once a day, within the monthly money cap |
 
-**A "permitted" search API** is an official API whose terms allow programmatic searching and keeping the result URLs and short evidence snippets this pipeline needs. No scraping of search engines.
-- **Candidate to evaluate:** Brave Search API. Its pricing page lists $5 per 1,000 searches with $5 of free monthly credit (about 1,000 searches), though the page header mentions up to $20 free. Storing results needs a plan that includes storage rights. See V1–V3.
-- **Not available:** Bing Search APIs (Microsoft retired them on 11 August 2025). Google's Custom Search JSON API (closed to new customers since 20 January 2026; shuts down 1 January 2027).
-- **SerpAPI exception (D29):** operator chose SerpAPI as the default web-search API despite Google litigation risk noted historically; JobSpy and LinkedIn/Indeed/Glassdoor scraping remain forbidden.
+Set `APIFY_API_TOKEN` (the Apify API token). Without it, nothing is searched. Each search is one Apify run. It is reserved against the monthly money cap in `budget_policy` before it starts, and the recorded cost is what Apify reports.
 
-**Terms that affect the MVP:**
-- **Adzuna** limits commercial use to a 14-day trial, needs a licence for products that generate revenue or leads, requires an "Adzuna" label linking back on every listing, and needs written consent for published aggregated stats.
-- **Reed, Greenhouse and Lever:** terms for showing their jobs still need checking (V4, V5).
+The pipeline and collection steps in the following sections are the plan from before D54. They are not how jobs are collected now.
 
 ---
 

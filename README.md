@@ -28,6 +28,13 @@ This starts `postgres:16` on port `5432` with user/password/db `jaa` / `jaa` / `
 cp .env.example .env
 ```
 
+Job listings come only from LinkedIn, scraped once a day through Apify. Set `APIFY_API_TOKEN`
+in `.env` to the API token from
+[Apify integrations](https://console.apify.com/settings/integrations). Without that token the
+worker does not search. Each search is a paid Apify run, so it also needs a monthly money cap
+in `budget_policy`. Until that cap is set, paid calls stay blocked. The scraper and the search
+limits have defaults; see `.env.example`.
+
 ### 3. Install dependencies
 
 ```bash
@@ -87,42 +94,21 @@ Before the site is public:
 uv run pytest
 ```
 
-### 7. Classification audit sheet (Step 10)
-
-Sample classified companies (`verified` / `needs_review` / `unsupported`) into
-`audit_sample` rows and download an operator-fillable CSV (auditor columns stay
-empty — do not auto-judge):
-
-```bash
-# Live DB after discovery/verification (--commit required so CSV ids match rows)
-uv run python -m app.audit --commit --out step10-audit-sample.csv
-
-# Offline template when Reed/SerpAPI keys are missing (£0 path; money_cap may stay unset).
-# Writes ephemeral ids only — does not insert fake candidates into the DB.
-uv run python -m app.audit --from-fixtures --out step10-audit-sample.csv
-```
-
-Admin UI: `GET /admin/audit` (after logging in at `/admin/login`). One open sheet:
-a second download re-exports unfilled `audit_sample` rows. Offline fixture JSON:
-`app/audit/data/classified_companies.json`.
-
-### 8. Audit usefulness sheet (Step 16)
-
-List the open matching jobs on each audited company's verified board, and write a sheet
-with a blank `usefulness` column for the operator. This only reads the database, and it
-needs `python -m app.matching` to have run first.
-
-```bash
-uv run python -m app.audit.usefulness --sheet docs/step10-audit-sample-4.csv \
-  --out-sheet docs/step16-audit-usefulness.csv --out-jobs docs/step16-audit-jobs.csv
-```
-
 ## Daily collection
 
-The worker moves verified companies into the shared board directory, then reads each
-Greenhouse and Lever board that is due. It stores every fetch run and every raw job.
-A board is due once a day. A failed read retries after 1, 5 and 30 minutes, then waits
-for the next daily read. The worker catches up after the machine has been off.
+Jobs come only from LinkedIn. Once a day the worker runs one search for each target role
+and location on people's profiles. The same role and place is searched once, however many
+people want it. Each search is one run of the Black Falcon Data LinkedIn job scraper on
+Apify (`blackfalcondata/linkedin-job-scraper`). By default it asks for entry-level jobs
+posted in the last 3 days, newest first, up to 50 jobs, with the full description. The
+worker stores every run and every raw job, then cleans them into postings.
+
+A search is due 24 hours after the last one, so a machine that was off catches up the next
+time the worker runs. A search that fails is recorded, and the next attempt waits until
+the following day. A run that does not finish within 15 minutes is stopped.
+
+Set `APIFY_API_TOKEN` first. Each run is reserved against the monthly money cap before it
+starts, and the recorded cost is what Apify reports.
 
 ```bash
 uv run python -m app.worker          # runs until stopped
@@ -131,10 +117,10 @@ uv run python -m app.worker --once   # one cycle
 
 ## Cleaning
 
-The worker cleans each fetch as it stores it. Cleaning turns raw jobs into postings,
-links duplicates to one master job, and sets each job to `open`, `closed` or `unknown`.
-A job closes only after 2 consecutive complete fetches of its board do not list it and
-the board then confirms that the listing has gone.
+The worker cleans each search as it stores it. Cleaning turns raw jobs into postings,
+links duplicates to one master job, and sets each job to `open` or `closed`. LinkedIn
+does not say when a job closes. A job closes when no search has found it for 14 days,
+and opens again when a later search finds it.
 
 To replay every stored fetch and print job counts and completeness per field, run:
 
@@ -146,9 +132,9 @@ Replaying is safe to repeat. Use it after a cleaning error or a parser change.
 
 ## Quality report
 
-The worker checks every job for Recent, Real, Complete and Unique after each cycle that
-reads a board, and stores the results on the job. To run the check now and print where
-things stand against the targets, run:
+The worker checks every job for Recent, Real, Complete and Unique after a cycle that
+collects LinkedIn jobs or closes stale ones, and stores the results on the job. To run
+the check now and print where things stand against the targets, run:
 
 ```bash
 uv run python -m app.quality
@@ -156,12 +142,12 @@ uv run python -m app.quality
 
 The full report is at `/admin/quality`, after logging in at `/admin/login`. Opening it changes nothing.
 Relevance, meaning how well matches fit each applicant, has its own section, so poor matching
-can be told apart from poor data.
-The latest results and their causes are in `docs/step13-quality-round2.md`.
+can be told apart from poor data. LinkedIn listings start at medium confidence for Real,
+because anyone can post there.
 
 ## Matching
 
-After each cycle that reads a board, the worker matches stored jobs to every applicant
+After a cycle that collects LinkedIn jobs or closes stale ones, the worker matches stored jobs to every applicant
 on role, location, salary status, skills and required licences. Each match lists the skills
 the applicant has, the skills they don't, and any licence the advert requires that they don't
 hold. This uses rules only, so it costs nothing and makes no requests. The rules are in
@@ -174,19 +160,11 @@ uv run python -m app.matching
 
 Running it again is safe. Afterwards the table holds only the current matches.
 
-## Search feedback
-
-After matching, and before each discovery pass plans its searches, the worker measures
-what every finished search run led to: new candidates, new verified boards, relevant jobs,
-freshness and cost. Each run keeps its own figures, and `template_stats` holds the totals.
-The planner gives templates with 5 or more runs a share of the searches by score, and keeps
-20% for exploration. The rules are in `MVP.md` section 8 and decision D36.
-
 ## Listings
 
 Logged-in people see their matched jobs at `/listings`, best match first, with the reasons for each
-score, the source and the apply link. Saving a profile matches that person straight away. The rules
-are in `MVP.md` decision D42.
+score, LinkedIn as the source, and the apply link. Saving a profile matches that person straight away.
+The rules are in `MVP.md` decision D42.
 
 ## Job summaries
 
@@ -207,7 +185,7 @@ much of it ESCO covers, run:
 uv run python -m app.skills
 ```
 
-Running it again is safe. Afterwards, the worker maps job skills in each cycle that reads a board. The
+Running it again is safe. Afterwards, the worker maps job skills in each cycle that collects LinkedIn jobs or closes stale ones. The
 rules and results are in `MVP.md` decision D39. This service uses the ESCO classification of the
 European Commission. Our list is an adapted version of it.
 
@@ -226,9 +204,7 @@ European Commission. Our list is an adapted version of it.
 
 ## Notes
 
-- Monthly budget is unset until B1; paid calls stay blocked (stubs in `.env.example`).
+- Monthly budget is unset until B1; paid calls, including Apify searches, stay blocked (stubs in `.env.example`).
 - Milestone 1 tables land in revision `0002_milestone1_schema` (`app/models.py`). Unique-key proofs are in `tests/test_unique_keys.py`.
-- Leftover AI extraction (D30 / Step 7) uses Anthropic Claude Haiku 5.5 through the fetch gateway. Set `ANTHROPIC_API_KEY` in `.env` and a monthly `money_cap` in `budget_policy` for live runs; CI mocks the provider (T11/T12, `tests/test_ai_anthropic.py`).
-- Tests assume an empty database. Once you have run live discovery, point tests at a separate one: `DATABASE_URL=postgresql+psycopg://…/job_app_agent_test uv run pytest`.
-- Step 6 code extraction: `app/extraction/` (Greenhouse/Lever board IDs from URLs; Reed and Google Jobs employer + apply). T10 fixtures under `tests/fixtures/extraction/`.
+- Tests assume an empty database. Once jobs have been collected, point tests at a separate one: `DATABASE_URL=postgresql+psycopg://…/job_app_agent_test uv run pytest`.
 - Admin applicants (Milestone 1): set `ADMIN_KEY`, log in at `/admin/login`, then open `/admin/applicants` (or send header `X-Admin-Key`). Expected salary is a matching preference only (D3).
