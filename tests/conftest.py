@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 from alembic import command
 
 from app.core.config import Settings, get_settings
-from app.matching import semantic
 from tests.isolation import (
     OVERRIDE_ENV,
     assert_safe_database_name,
@@ -29,7 +28,8 @@ _TEST_DB_NAME = resolve_test_database_name(
     _REPO_ROOT.name, override=os.environ.get(OVERRIDE_ENV)
 )
 
-# Swap DATABASE_URL to the per-worktree test DB before app.core.db builds its engine.
+# Swap DATABASE_URL to the per-worktree test DB before any import that builds
+# app.core.db.engine (including app.matching → semantic).
 _source_url = os.environ.get("DATABASE_URL") or Settings(
     _env_file=str(_ENV_FILE) if _ENV_FILE.is_file() else None
 ).database_url
@@ -42,6 +42,7 @@ os.environ.setdefault("SESSION_SECRET", "s" * 40)
 get_settings.cache_clear()
 
 from app.core import db as app_db  # noqa: E402
+from app.matching import semantic  # noqa: E402
 
 
 def _ensure_database(name: str) -> None:
