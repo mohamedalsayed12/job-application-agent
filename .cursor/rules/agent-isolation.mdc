@@ -1,0 +1,27 @@
+---
+description: Isolate parallel coding agents with git worktrees and per-agent DBs
+alwaysApply: true
+---
+
+# Agent isolation (parallel coding)
+
+Parallel coding agents must not share a working tree, branch tip they both rewrite, or pytest database. Instructions are not locks — isolation is structural.
+
+## Required
+
+1. **Own worktree.** Before writing product code while another agent may also be coding, create or reuse a sibling worktree: `../jaa-<slug>` on branch `feat/<slug>` (or `fix/<slug>`). Use `scripts/new-agent-worktree.ps1 -Slug <slug>` (writes `.env` with `job_app_agent_<slug>` via `tests/isolation.py`).
+2. **Own branch.** Never commit, amend, or force-push another agent's branch. Do not check out a branch that is already checked out in another worktree.
+3. **Stay in your tree.** All edits, tests, and shell `working_directory` paths must be that worktree. Do not write feature files into `job-application-agent` when your task was assigned a `jaa-*` tree.
+4. **Own audit files.** Write trails under `.audit/<task-slug>.*` inside your worktree only.
+5. **Own DBs.** Live: `job_app_agent_<slug>`. Pytest: `job_app_agent_test_<slug>` (both from `tests/isolation.py`). Never migrate another agent's database.
+6. **Read-only fan-out is fine.** Explore / review subagents may share a tree if they do not write. Any writer needs its own worktree.
+
+## Forbidden
+
+- Two writers editing the same checkout at once
+- Copying WIP files between worktrees to "sync" mid-task
+- Migrating or truncating a shared live database from a parallel agent
+
+## Merge
+
+Land via PR into the integration branch. Resolve conflicts at merge time, not by overwriting another agent's tree.

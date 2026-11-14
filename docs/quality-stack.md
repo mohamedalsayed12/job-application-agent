@@ -18,6 +18,10 @@ Always-on for this Project’s `job-application-agent` work.
 
 Cloud agents for this Project get the same rules from the repo and the Project Context preferences/workflow even when plugins are not installed.
 
+## Parallel agents
+
+Coding agents that might run at the same time must not share a working tree. Use sibling worktrees (`scripts/new-agent-worktree.ps1 -Slug <name>` → `../jaa-<name>`) and the always-on rule `.cursor/rules/agent-isolation.mdc`. Live and pytest DB names come from `tests/isolation.py`.
+
 ## Gate
 
 See [code-quality-gate.md](./code-quality-gate.md).

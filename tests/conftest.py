@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import os
 import re
 import zlib
 from collections.abc import Iterator
@@ -6,28 +9,73 @@ from pathlib import Path
 import pytest
 from alembic.config import Config
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.core.config import get_settings
-from app.matching import semantic
 
-_ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
+from app.core.config import Settings, get_settings
+from app.matching import semantic
+from tests.isolation import (
+    OVERRIDE_ENV,
+    assert_safe_database_name,
+    resolve_test_database_name,
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
+_ENV_FILE = _REPO_ROOT / ".env"
+_TEST_DB_NAME = resolve_test_database_name(
+    _REPO_ROOT.name, override=os.environ.get(OVERRIDE_ENV)
+)
+
+# Swap DATABASE_URL to the per-worktree test DB before app.core.db builds its engine.
+_source_url = os.environ.get("DATABASE_URL") or Settings(
+    _env_file=str(_ENV_FILE) if _ENV_FILE.is_file() else None
+).database_url
+os.environ["DATABASE_URL"] = (
+    make_url(_source_url)
+    .set(database=_TEST_DB_NAME)
+    .render_as_string(hide_password=False)
+)
+os.environ.setdefault("SESSION_SECRET", "s" * 40)
+get_settings.cache_clear()
+
+from app.core import db as app_db  # noqa: E402
+
+
+def _ensure_database(name: str) -> None:
+    source_db = make_url(_source_url).database
+    assert_safe_database_name(name, source_database=source_db)
+    maint = make_url(os.environ["DATABASE_URL"]).set(database="postgres")
+    engine = create_engine(
+        maint.render_as_string(hide_password=False),
+        isolation_level="AUTOCOMMIT",
+        pool_pre_ping=True,
+    )
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :n"),
+                {"n": name},
+            ).scalar()
+            if not exists:
+                conn.execute(text(f'CREATE DATABASE "{name}"'))
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture(scope="session")
 def migrated_engine() -> Iterator[Engine]:
-    engine = create_engine(get_settings().database_url, pool_pre_ping=True)
+    _ensure_database(_TEST_DB_NAME)
+    engine = app_db.engine
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception as exc:
-        engine.dispose()
-        pytest.skip(f"Postgres not available for unique-key checks: {exc}")
+        pytest.fail(f"Pytest database {_TEST_DB_NAME!r} is unreachable: {exc}")
     command.upgrade(Config(str(_ALEMBIC_INI)), "head")
     yield engine
-    engine.dispose()
 
 
 @pytest.fixture

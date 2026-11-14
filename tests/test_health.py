@@ -5,10 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
-from app.core.config import get_settings
 from app.main import app
 
 
@@ -20,17 +19,11 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 
 @pytest.mark.asyncio
-async def test_health_ok_when_db_reachable(client: httpx.AsyncClient) -> None:
-    """Prefer a real Postgres check; skip if DATABASE_URL is unreachable."""
-    settings = get_settings()
-    try:
-        engine = create_engine(settings.database_url)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        engine.dispose()
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"Postgres not available for integration check: {exc}")
-
+async def test_health_ok_when_db_reachable(
+    client: httpx.AsyncClient, migrated_engine: Engine
+) -> None:
+    """migrated_engine creates the per-worktree test DB before this connects."""
+    assert migrated_engine is not None
     response = await client.get("/health")
     assert response.status_code == 200
     body = response.json()
