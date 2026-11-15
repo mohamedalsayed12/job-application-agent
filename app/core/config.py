@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     fetch_user_agent: str = (
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
-    api_allowlist: str = "api.apify.com,api.anthropic.com"
+    api_allowlist: str = "api.apify.com,api.anthropic.com,boards-api.greenhouse.io"
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
     apify_api_token: str = ""
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     indeed_country: str = "uk"  # actor enum uses uk, not ISO gb
     indeed_unit_price: Decimal = Decimal("0.0002")
     indeed_run_price: Decimal = Decimal("0.01")
-    # Post-MVP apply agent: Apify form-schema extraction for any apply URL.
+    # Post-MVP apply agent: Greenhouse boards API first, else Apify form-schema actor.
     apply_form_actor: str = ""
     apply_form_unit_price: Decimal = Decimal("0.01")
     apply_form_run_price: Decimal = Decimal("0.02")

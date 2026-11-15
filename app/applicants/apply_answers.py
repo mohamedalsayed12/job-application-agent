@@ -104,10 +104,8 @@ def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -
     row.right_to_work_uk = _boolish(raw.right_to_work_uk, label="right to work in the UK")
     row.needs_visa_sponsorship = _boolish(raw.needs_visa_sponsorship, label="visa sponsorship")
     row.nationality = _trim(raw.nationality)
-    row.heard_about = _trim(raw.heard_about) or "Job board"
+    row.heard_about = _trim(raw.heard_about)
     row.previously_employed = _boolish(raw.previously_employed, label="previously employed")
-    if row.previously_employed is None:
-        row.previously_employed = False
     row.free_school_meals = _demo(raw.free_school_meals)
     row.gender = _demo(raw.gender)
     row.ethnicity = _demo(raw.ethnicity)
@@ -135,8 +133,8 @@ def answers_as_map(row: ApplicationAnswers | None, *, email: str) -> dict[str, s
         "right_to_work_uk": None,
         "needs_visa_sponsorship": None,
         "nationality": None,
-        "heard_about": "Job board",
-        "previously_employed": False,
+        "heard_about": None,
+        "previously_employed": None,
         "cv": "upload_cv",
         **{key: PREFER_NOT for key in _DEMO_KEYS},
     }
@@ -160,8 +158,8 @@ def answers_as_map(row: ApplicationAnswers | None, *, email: str) -> dict[str, s
             "right_to_work_uk": row.right_to_work_uk,
             "needs_visa_sponsorship": row.needs_visa_sponsorship,
             "nationality": row.nationality,
-            "heard_about": row.heard_about or "Job board",
-            "previously_employed": row.previously_employed if row.previously_employed is not None else False,
+            "heard_about": row.heard_about,
+            "previously_employed": row.previously_employed,
             "free_school_meals": row.free_school_meals,
             "gender": row.gender,
             "ethnicity": row.ethnicity,
