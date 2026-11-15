@@ -2,7 +2,7 @@
 
 **Status:** design for approval. No application code in this step.
 
-**Sources:** MVP.md sections 11 and 12, acceptance tests T3 / T19 / T20 / T21, D3, D14, D15, D18, D19, D22, B1. Schema for `budget_policy` and `spend_ledger` from the approved Step 1 design (PR #2 / `docs/step1-data-model.md`).
+**Sources:** MVP.md sections 11 and 12, acceptance tests T3 / T19 / T20 / T21, D3, D14, D15, D19, D22, B1. Schema for `budget_policy` and `spend_ledger` from the approved Step 1 data model.
 
 **Goal:** one door for every outside request, and one gate for every paid call, so safety and spending rules are written once.
 
@@ -31,9 +31,9 @@ Name these before Build. Callers pass them in. The gateway and gate own the rule
 | `FetchRequest` | `url`, `method`, `kind` (`api` \| `page`), `headers`, `timeout_s`, optional `official_domain` for page mode | Input to the gateway |
 | `FetchResponse` | `url` (final), `status_code`, `content_type`, `body` (bytes, capped), `fetched_at` | Output on success |
 | `FetchRefusal` | `reason` (`blocked_host` \| `robots` \| `private_address` \| `allowlist` \| `size` \| `redirect_limit` \| `timeout` \| `scheme` \| …) | Soft failure for callers. Not a budget wait. |
-| `SpendEstimate` | `provider`, `kind` (`linkedin_jobs` \| `indeed_jobs` \| `ai_summary` \| `ai_cv_read` \| `ai_job_judge` \| `ai_fit_report`, plus legacy `search` / `ai_extraction`), `units`, `unit_label`, `estimated_cost`, optional `related_run_id` / `related_item_id`, optional `applicant_id` | Input to the gate before a paid call |
+| `SpendEstimate` | `provider`, `kind` (`linkedin_jobs` \| `ai_summary` \| `ai_cv_read` \| `ai_job_judge` \| `ai_fit_report`), `units`, `unit_label`, `estimated_cost`, optional `related_run_id` / `related_item_id`, optional `applicant_id` | Input to the gate before a paid call |
 | `SpendReservation` | `ledger_id`, `estimated_cost` | Hold created before the call |
-| `BudgetWait` | which cap tripped (`monthly` \| `per_run` \| `per_applicant`) | Caller leaves work queued. Never marks it failed (T3). |
+| `BudgetWait` | which cap tripped (`monthly`) | Caller leaves the work waiting. Never marks it failed (T3). |
 
 `budget_policy` and `spend_ledger` stay as Step 1 defined them. No schema change in this step unless Build finds a missing index while writing T3.
 
@@ -80,14 +80,14 @@ Manual redirects (max 3) are required for T19. Auto-follow would skip the privat
 | **A. `urllib.robotparser` + in-process TTL cache** | Stdlib; enough for one worker; easy to mock | Cache is per process | **Choose** |
 | B. `protego` | Strict parser | New dependency for little MVP gain | Reject |
 | C. Postgres `robots_cache` table | Shared across processes | Extra table before a second worker exists | Defer |
-| D. Skip robots for everything allowlisted | Simpler | Breaks §12 item 4 for verification pages | Reject |
+| D. Skip robots for everything allowlisted | Simpler | Breaks §12 item 3 for page fetches | Reject |
 
 **Rules.**
 
 - `kind=page`: GET `{origin}/robots.txt` through the same gateway path that already applies SSRF and rate limits, parse with `RobotFileParser`, cache allow/deny for that origin for 24 hours, then ask whether our User-Agent may fetch the target path.
-- `kind=api`: skip robots. Allowlisted board and search APIs are not "web pages" in §12.
+- `kind=api`: skip robots. Allowlisted APIs are not "web pages" in §12.
 - Cache miss that fails to fetch robots.txt: treat as allow for that request, do not cache a long allow on transport failure (fail open once, retry next time). Record the miss in logs. shortcut: fail-open on robots transport errors until we have evidence sites need fail-closed; revisit after the first audit.
-- User-Agent names the crawler and links the GitHub repo (§12 item 5).
+- User-Agent names the crawler and links the GitHub repo (§12 item 4).
 
 ### 3. Per-host rate limiting (1 req/s)
 
@@ -102,7 +102,7 @@ Manual redirects (max 3) are required for T19. Auto-follow would skip the privat
 - Key by hostname (lowercased).
 - At most one in-flight request per host.
 - At least 1.0 s between request starts for that host (T21).
-- On `429` / `503` with `Retry-After`, sleep that long (cap at a small maximum, e.g. 60 s) before the next attempt. Callers own retry/backoff policy for verification (D12). The gateway only spaces and waits when told to retry the same host.
+- On `429` / `503` with `Retry-After`, sleep that long (cap at a small maximum, e.g. 60 s) before the next attempt. Callers own their own retry/backoff policy. The gateway only spaces and waits when told to retry the same host.
 
 ### 4. Blocking private and internal addresses (including redirects)
 
@@ -118,12 +118,12 @@ Manual redirects (max 3) are required for T19. Auto-follow would skip the privat
 2. Host is a name, not an IP literal.
 3. No userinfo in the URL.
 4. Host is not on the block list: `linkedin.com`, `indeed.com`, `glassdoor.com` and any subdomain of those (T20, D19).
-5. `kind=api`: host (or parent) is on the allowlist (search provider, Reed, Adzuna when enabled, Greenhouse, Lever global/EU, AI provider).
-6. `kind=page`: host equals the candidate `official_domain` or is a subdomain of it. Off-domain links are evidence only, never fetched (§12 item 2).
+5. `kind=api`: host (or parent) is on the allowlist (Apify and the AI provider).
+6. `kind=page`: host equals the given `official_domain` or is a subdomain of it. Off-domain links are never fetched.
 7. `getaddrinfo` for the host. Refuse if any returned address is in private, loopback, link-local (includes `169.254.169.254`), shared CGNAT (`100.64.0.0/10`), IPv6 ULA, multicast or unspecified.
-8. Enforce 10 s timeout, 16 MiB max body, HTML, JSON or JavaScript `Content-Type` only (JavaScript is read as text and never run), at most 3 redirects (§12 item 7).
+8. Enforce 10 s timeout, 16 MiB max body, HTML, JSON or JavaScript `Content-Type` only (JavaScript is read as text and never run), at most 3 redirects (§12 item 6).
 
-**Not in scope for the gateway (already decided elsewhere).** No login, cookies, CAPTCHA, proxy rotation, JS or headless browser (D14, §12 items 8–9). Fetched bodies are untrusted input to later stages (§12 item 11). Web page storage stays snippets + hash, not full HTML (D15).
+**Not in scope for the gateway (already decided elsewhere).** No login, cookies, CAPTCHA, proxy rotation, JS or headless browser (D14, §12 items 7–8). Fetched bodies are untrusted input to later stages (§12 item 10). Web page storage stays snippets + hash, not full HTML (D15).
 
 ### 5. Budget gate: estimate before, record after
 
@@ -135,8 +135,8 @@ Manual redirects (max 3) are required for T19. Auto-follow would skip the privat
 
 **Paid vs free.**
 
-- Paid (must pass the gate): search API requests, AI extraction, AI summaries (later).
-- Free of money caps, still through the fetch gateway: Greenhouse, Lever, official-domain page fetches. Reed and Adzuna use provider quotas in the gateway / client, not the monthly money cap (§11 CF1 / CF1b notes). They still count toward per-run / per-applicant request caps when used as search requests.
+- Paid (must pass the gate): Apify LinkedIn runs and AI calls (summaries, CV reads, job judging, fit reports).
+- Free of money caps, still through the fetch gateway: page fetches.
 
 **Default until B1.**
 
@@ -147,16 +147,14 @@ Manual redirects (max 3) are required for T19. Auto-follow would skip the privat
 **Algorithm (paid call).**
 
 1. Build `SpendEstimate` from `pricing.py` (conservative unit price × units). Never read `applicant_preference` salary fields (D3, T1).
-2. In one short DB transaction, sum `spend_ledger` rows that count toward each cap (use `coalesce(actual_cost, estimated_cost)` so open holds count). Compare against monthly, per-run (max 10 search requests) and per-applicant-per-day (max 50 search requests).
-3. If any cap would be exceeded, raise `BudgetWait`. Caller leaves the work queued / planned. Do not mark failed (T3, §11).
+2. In one short DB transaction, sum `spend_ledger` rows that count toward each cap (use `coalesce(actual_cost, estimated_cost)` so open holds count). Compare against the monthly cap.
+3. If the cap would be exceeded, raise `BudgetWait`. Caller leaves the work waiting. Do not mark failed (T3, §11).
 4. Else insert `spend_ledger` with `estimated_cost`, `actual_cost=NULL`, `units`, `occurred_at=now()`, and return `SpendReservation`.
 5. Perform the call through the fetch gateway (or AI client later).
 6. Settle: set `actual_cost` (provider-reported if present, else estimated) and final `units`. On hard failure after reserve, set `actual_cost=0` or keep estimate per provider rules, but keep the row so audits see the attempt. Prefer `actual_cost=0` when no billable units were consumed.
-7. Warn (log / admin signal) when spend crosses 80% of any cap. No stop at 80%.
+7. Warn (log / admin signal) when spend crosses 80% of the cap. No stop at 80%.
 
-**£0 / free-credit path (§11).** With money cap 0, Reed/Adzuna and free board collection still run. Board-direct and other paid search stop. Summaries stop. Exploration share (20%) is a planner concern in a later step, not a second ledger.
-
-**Priority order when money is tight (D18)** is enforced by the planner / worker that asks the gate, not by the gate itself. The gate only answers yes, wait, or (for free work) n/a.
+**£0 path (§11).** With money cap 0, every paid call waits: Apify searches and AI calls stop, while cleaning and matching keep running on stored jobs.
 
 ---
 
@@ -176,7 +174,7 @@ caller
        └─ budget.gate.settle(reservation, actual)
 ```
 
-Every Greenhouse, Lever, Reed, search and page client in later steps calls this path. No raw `httpx` outside `app/fetch`.
+Every Apify, AI and page client calls this path. No raw `httpx` outside `app/fetch`.
 
 ---
 
@@ -186,7 +184,7 @@ No real network. Use `httpx.MockTransport` (or a test double for the transport h
 
 | Test | Behaviour |
 |---|---|
-| T3 | Paid reserve refused when monthly / per-run / per-applicant would exceed. Work stays non-failed. Cap 0 blocks paid calls. |
+| T3 | Paid reserve refused when the monthly cap would be exceeded. Work stays non-failed. Cap 0 blocks paid calls. |
 | T19 | `http://…`, IP-literal hosts, and names that resolve to private / loopback addresses are refused. A redirect `Location` to a private address is refused and the private hop is never requested. |
 | T20 | robots.txt `Disallow` prevents the page fetch. LinkedIn / Indeed / Glassdoor hosts are refused before connect. |
 | T21 | Two fetches to the same host are at least 1.0 s apart (fake clock or measured monotonic time under the rate limiter). |
@@ -198,9 +196,7 @@ Also add thin unit checks for allowlist vs page-domain mode and for ledger reser
 ## Out of scope for this Decide
 
 - Implementation code and tests (Step 2 Build, after approval)
-- Greenhouse / Lever clients (Step 3)
-- Search provider choice and planner (Step 5 Decide / Build)
-- AI extraction and token caps beyond the gate hooks (Step 7)
+- The Apify client and token caps beyond the gate hooks
 - Multi-process rate limiting and shared robots cache
 - Setting the real monthly pound/dollar amount (B1, operator)
 

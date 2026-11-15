@@ -66,7 +66,7 @@ def test_employer_official_domain_unique(session: Session) -> None:
             name="Acme",
             cleaned_name="acme",
             official_domain="acme.example",
-            careers_system="greenhouse",
+            careers_system="ats-one",
         )
     )
     session.flush()
@@ -75,7 +75,7 @@ def test_employer_official_domain_unique(session: Session) -> None:
             name="Acme Hiring",
             cleaned_name="acme hiring",
             official_domain="acme.example",
-            careers_system="lever",
+            careers_system="ats-two",
         )
     )
     with pytest.raises(IntegrityError) as raised:
@@ -90,20 +90,20 @@ def test_employer_board_system_instance_board_id_unique(session: Session) -> Non
         name="Acme",
         cleaned_name="acme",
         official_domain="acme.example",
-        careers_system="greenhouse",
+        careers_system="ats-one",
     )
     second = Employer(
         name="Other",
         cleaned_name="other",
         official_domain="other.example",
-        careers_system="lever",
+        careers_system="ats-two",
     )
     session.add_all([first, second])
     session.flush()
     session.add(
         EmployerBoard(
             employer_id=first.id,
-            system="greenhouse",
+            system="ats-one",
             instance="global",
             board_id="acme",
             evidence_level=EvidenceLevel.strong,
@@ -114,7 +114,7 @@ def test_employer_board_system_instance_board_id_unique(session: Session) -> Non
     session.add(
         EmployerBoard(
             employer_id=second.id,
-            system="greenhouse",
+            system="ats-one",
             instance="global",
             board_id="acme",
             evidence_level=EvidenceLevel.medium,
@@ -131,7 +131,7 @@ def test_employer_board_system_instance_board_id_unique(session: Session) -> Non
 def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
     now = datetime.now(UTC)
     fetch = FetchRun(
-        source="greenhouse",
+        source="ats-one",
         outcome=FetchOutcome.complete,
         jobs_returned=1,
         request_count=1,
@@ -142,7 +142,7 @@ def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
     session.flush()
     raw = RawPayload(
         fetch_run_id=fetch.id,
-        source="greenhouse",
+        source="ats-one",
         payload={"id": "gh-1"},
         payload_hash="hash-1",
         fetched_at=now,
@@ -151,7 +151,7 @@ def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
     session.flush()
     session.add(
         JobPosting(
-            source="greenhouse",
+            source="ats-one",
             source_job_id="gh-1",
             raw_payload_id=raw.id,
             title="Engineer",
@@ -166,7 +166,7 @@ def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
     session.flush()
     session.add(
         JobPosting(
-            source="greenhouse",
+            source="ats-one",
             source_job_id="gh-1",
             raw_payload_id=raw.id,
             title="Engineer II",
