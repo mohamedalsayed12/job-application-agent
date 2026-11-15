@@ -96,14 +96,14 @@ uv run pytest
 
 ## Daily collection
 
-Jobs come from LinkedIn and Indeed. Once a day the worker runs one LinkedIn search and one
-Indeed search for each target role and location on people's profiles. The same role and
-place is searched once per source, however many people want it. LinkedIn uses the Black
-Falcon Data scraper (`blackfalcondata/linkedin-job-scraper`): entry-level, last 3 days,
-newest first, up to 50 jobs. Indeed uses `valig/indeed-jobs-scraper` with country `uk` and
-the same role, place, 3-day window and limit; graduate/entry filtering is applied when
-matching (D46). The worker stores every run and every raw job, then cleans them into
-postings.
+Jobs come from LinkedIn and Indeed. Once a day the worker runs one LinkedIn search per
+target role and location, and Indeed searches for the graduate, junior and entry-level
+forms of each role in each location. The same query is searched once per source, however
+many people want it. LinkedIn uses the Black Falcon Data scraper
+(`blackfalcondata/linkedin-job-scraper`): entry-level, last 3 days, newest first, up to
+50 jobs. Indeed uses `valig/indeed-jobs-scraper` with country `uk`, those entry title
+forms, a 3-day window and the same limit; D46 still filters on the match side. The
+worker stores every run and every raw job, then cleans them into postings.
 
 A search is due 24 hours after the last one for that source, so a machine that was off
 catches up the next time the worker runs. A search that fails is recorded, and the next
