@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
 from app.main import app
@@ -19,11 +18,8 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 
 @pytest.mark.asyncio
-async def test_health_ok_when_db_reachable(
-    client: httpx.AsyncClient, migrated_engine: Engine
-) -> None:
-    """migrated_engine creates the per-worktree test DB before this connects."""
-    assert migrated_engine is not None
+@pytest.mark.usefixtures("migrated_engine")
+async def test_health_ok_when_db_reachable(client: httpx.AsyncClient) -> None:
     response = await client.get("/health")
     assert response.status_code == 200
     body = response.json()
@@ -33,7 +29,6 @@ async def test_health_ok_when_db_reachable(
 
 @pytest.mark.asyncio
 async def test_health_unhealthy_when_db_unreachable(client: httpx.AsyncClient) -> None:
-    """Force DB failure via mocked engine.connect to keep the test reliable."""
     mock_conn_cm = MagicMock()
     mock_conn_cm.__enter__.side_effect = OperationalError(
         "SELECT 1",

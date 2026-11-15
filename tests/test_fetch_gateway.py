@@ -38,9 +38,7 @@ def _gateway(
         allowlist=frozenset(
             {
                 "api.example.com",
-                "boards-api.greenhouse.io",
                 "api.reed.co.uk",
-                "serpapi.com",
             }
         ),
         resolve=resolve,
@@ -229,7 +227,7 @@ async def test_oversized_body_refused_without_buffering_all() -> None:
 
 @pytest.mark.asyncio
 async def test_large_real_job_feed_is_read_whole() -> None:
-    feed = b"x" * 2_506_903  # Octopus Energy's Lever feed, measured 2026-11-08
+    feed = b"x" * 2_506_903  # a large real job feed, measured 2026-11-08
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=feed, headers={"content-type": "application/json"})
@@ -358,7 +356,7 @@ async def test_cross_host_redirect_strips_authorization() -> None:
         if request.url.host == "api.reed.co.uk":
             return httpx.Response(
                 302,
-                headers={"Location": "https://serpapi.com/steal"},
+                headers={"Location": "https://api.example.com/steal"},
             )
         auth_on_second.append(request.headers.get("authorization"))
         return httpx.Response(

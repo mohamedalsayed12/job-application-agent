@@ -10,11 +10,7 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from app.models import (
-    BoardStatus,
-    Employer,
-    EmployerBoard,
     EmployerType,
-    EvidenceLevel,
     FetchOutcome,
     FetchRun,
     JobPosting,
@@ -60,78 +56,10 @@ def test_models_match_applied_revision(migrated_engine: Engine) -> None:
     assert ext == "citext"
 
 
-def test_employer_official_domain_unique(session: Session) -> None:
-    session.add(
-        Employer(
-            name="Acme",
-            cleaned_name="acme",
-            official_domain="acme.example",
-            careers_system="greenhouse",
-        )
-    )
-    session.flush()
-    session.add(
-        Employer(
-            name="Acme Hiring",
-            cleaned_name="acme hiring",
-            official_domain="acme.example",
-            careers_system="lever",
-        )
-    )
-    with pytest.raises(IntegrityError) as raised:
-        session.flush()
-    assert _constraint_name(raised.value) == _declared_unique(
-        Employer, ("official_domain",)
-    )
-
-
-def test_employer_board_system_instance_board_id_unique(session: Session) -> None:
-    first = Employer(
-        name="Acme",
-        cleaned_name="acme",
-        official_domain="acme.example",
-        careers_system="greenhouse",
-    )
-    second = Employer(
-        name="Other",
-        cleaned_name="other",
-        official_domain="other.example",
-        careers_system="lever",
-    )
-    session.add_all([first, second])
-    session.flush()
-    session.add(
-        EmployerBoard(
-            employer_id=first.id,
-            system="greenhouse",
-            instance="global",
-            board_id="acme",
-            evidence_level=EvidenceLevel.strong,
-            status=BoardStatus.verified,
-        )
-    )
-    session.flush()
-    session.add(
-        EmployerBoard(
-            employer_id=second.id,
-            system="greenhouse",
-            instance="global",
-            board_id="acme",
-            evidence_level=EvidenceLevel.medium,
-            status=BoardStatus.verified,
-        )
-    )
-    with pytest.raises(IntegrityError) as raised:
-        session.flush()
-    assert _constraint_name(raised.value) == _declared_unique(
-        EmployerBoard, ("system", "instance", "board_id")
-    )
-
-
 def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
     now = datetime.now(UTC)
     fetch = FetchRun(
-        source="greenhouse",
+        source="ats-one",
         outcome=FetchOutcome.complete,
         jobs_returned=1,
         request_count=1,
@@ -142,7 +70,7 @@ def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
     session.flush()
     raw = RawPayload(
         fetch_run_id=fetch.id,
-        source="greenhouse",
+        source="ats-one",
         payload={"id": "gh-1"},
         payload_hash="hash-1",
         fetched_at=now,
@@ -151,7 +79,7 @@ def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
     session.flush()
     session.add(
         JobPosting(
-            source="greenhouse",
+            source="ats-one",
             source_job_id="gh-1",
             raw_payload_id=raw.id,
             title="Engineer",
@@ -166,7 +94,7 @@ def test_job_posting_source_and_source_job_id_unique(session: Session) -> None:
     session.flush()
     session.add(
         JobPosting(
-            source="greenhouse",
+            source="ats-one",
             source_job_id="gh-1",
             raw_payload_id=raw.id,
             title="Engineer II",

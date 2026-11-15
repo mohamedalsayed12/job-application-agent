@@ -48,7 +48,6 @@ def link_posting(session: Session, posting: JobPosting) -> JobLink:
         return _link(session, posting, strong, JobLinkMethod.strong_match, Decimal("0.9"), reason)
 
     job = Job(
-        employer_id=posting.employer_id,
         sector=MILESTONE1_SECTOR,
         freshness=JobFreshness.open,
         field_provenance={},
