@@ -154,10 +154,17 @@ def reclean_all(session: Session) -> CleanReport:
 
 def close_stale(session: Session, *, source: str, now: datetime, after: timedelta) -> int:
     """A search shows only recent jobs, so a job no search has found for a while is taken as closed."""
-    stale = (
+    # Only jobs this source has ever posted; last-seen is across every source so one fresh
+    # LinkedIn hit is not undone by an older Indeed posting on the same master job.
+    seen_here = (
         select(JobLink.job_id)
         .join(JobPosting, JobPosting.id == JobLink.job_posting_id)
         .where(JobPosting.source == source)
+    )
+    stale = (
+        select(JobLink.job_id)
+        .join(JobPosting, JobPosting.id == JobLink.job_posting_id)
+        .where(JobLink.job_id.in_(seen_here))
         .group_by(JobLink.job_id)
         .having(func.max(JobPosting.last_seen_at) < now - after)
     )
