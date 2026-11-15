@@ -95,6 +95,15 @@ def test_indeed_searches_expand_each_role_once_per_location(session: Session) ->
     ]
 
 
+def test_backend_and_junior_backend_collapse_to_three_searches(session: Session) -> None:
+    _applicant(session, roles=["Backend Developer", "Junior Backend Developer"], locations=["Manchester"])
+    assert indeed_searches(session, None) == [
+        Search("Entry Level Backend Developer", "Manchester"),
+        Search("Graduate Backend Developer", "Manchester"),
+        Search("Junior Backend Developer", "Manchester"),
+    ]
+
+
 async def test_a_search_starts_a_run_waits_for_it_and_stores_what_it_found(session: Session) -> None:
     _policy(session)
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])

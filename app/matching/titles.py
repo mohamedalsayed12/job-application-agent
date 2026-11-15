@@ -17,7 +17,19 @@ NOT_ENTRY_TITLE = re.compile(
     r"intern|interns|internship|placement|apprentice|apprenticeship)\b",
     re.IGNORECASE,
 )
-ENTRY_TITLE = re.compile(r"\b(graduate|grad|junior|jr\.?|entry.level|early.careers?)\b", re.IGNORECASE)
+# One list for match detection and for stripping a leading level from Indeed search titles.
+ENTRY_LEVEL_TOKENS = (
+    "graduate",
+    "grad",
+    "junior",
+    r"jr\.?",
+    r"entry[- ]level",
+    "entry",
+    r"early[- ]careers?",
+)
+_ENTRY_LEVEL_ALT = "|".join(ENTRY_LEVEL_TOKENS)
+ENTRY_TITLE = re.compile(rf"\b(?:{_ENTRY_LEVEL_ALT})\b", re.IGNORECASE)
+LEADING_ENTRY_LEVEL = re.compile(rf"^(?:{_ENTRY_LEVEL_ALT})\s+", re.IGNORECASE)
 YEARS_REQUIRED = re.compile(
     r"\b([3-9]|1\d)\s*\+?\s*(?:(?:-|–|to)\s*\d+\s*)?(?:years?|yrs?)\b[^.]{0,60}\bexperience",
     re.IGNORECASE,
