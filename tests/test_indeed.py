@@ -16,9 +16,9 @@ from tests.jobs import DAY_1, _Apify, _indeed, _job
 from tests.test_matching import _applicant
 
 _ENTRY_BACKEND = [
-    Search("Entry Level Backend Developer", "Manchester"),
     Search("Graduate Backend Developer", "Manchester"),
     Search("Junior Backend Developer", "Manchester"),
+    Search("Entry Level Backend Developer", "Manchester"),
 ]
 
 
@@ -68,6 +68,11 @@ def test_each_role_becomes_graduate_junior_and_entry_level_titles() -> None:
         "Junior Software Engineer",
         "Entry Level Software Engineer",
     ]
+    assert entry_titles("Graduate Junior Software Engineer") == [
+        "Graduate Software Engineer",
+        "Junior Software Engineer",
+        "Entry Level Software Engineer",
+    ]
 
 
 def test_indeed_searches_expand_each_role_once_per_location(session: Session) -> None:
@@ -75,33 +80,29 @@ def test_indeed_searches_expand_each_role_once_per_location(session: Session) ->
     _applicant(session, roles=["backend developer"], locations=["Manchester", "Leeds"])
 
     assert indeed_searches(session, None) == [
-        Search("Entry Level Backend Developer", "Leeds"),
-        Search("Entry Level Backend Developer", "Manchester"),
-        Search("Entry Level Python Developer", "Manchester"),
         Search("Graduate Backend Developer", "Leeds"),
         Search("Graduate Backend Developer", "Manchester"),
         Search("Graduate Python Developer", "Manchester"),
         Search("Junior Backend Developer", "Leeds"),
         Search("Junior Backend Developer", "Manchester"),
         Search("Junior Python Developer", "Manchester"),
-    ]
-    assert indeed_searches(session, {first}) == [
+        Search("Entry Level Backend Developer", "Leeds"),
         Search("Entry Level Backend Developer", "Manchester"),
         Search("Entry Level Python Developer", "Manchester"),
+    ]
+    assert indeed_searches(session, {first}) == [
         Search("Graduate Backend Developer", "Manchester"),
         Search("Graduate Python Developer", "Manchester"),
         Search("Junior Backend Developer", "Manchester"),
         Search("Junior Python Developer", "Manchester"),
+        Search("Entry Level Backend Developer", "Manchester"),
+        Search("Entry Level Python Developer", "Manchester"),
     ]
 
 
 def test_backend_and_junior_backend_collapse_to_three_searches(session: Session) -> None:
     _applicant(session, roles=["Backend Developer", "Junior Backend Developer"], locations=["Manchester"])
-    assert indeed_searches(session, None) == [
-        Search("Entry Level Backend Developer", "Manchester"),
-        Search("Graduate Backend Developer", "Manchester"),
-        Search("Junior Backend Developer", "Manchester"),
-    ]
+    assert indeed_searches(session, None) == _ENTRY_BACKEND
 
 
 async def test_a_search_starts_a_run_waits_for_it_and_stores_what_it_found(session: Session) -> None:
@@ -120,7 +121,7 @@ async def test_a_search_starts_a_run_waits_for_it_and_stores_what_it_found(sessi
     assert [body["title"] for body in apify.bodies()] == [search.role for search in _ENTRY_BACKEND]
     assert apify.bodies()[0] == {
         "country": "uk",
-        "title": "Entry Level Backend Developer",
+        "title": "Graduate Backend Developer",
         "location": "Manchester",
         "limit": 50,
         "datePosted": "3",
