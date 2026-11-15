@@ -339,7 +339,7 @@ def _same_place(first: Place, second: Place) -> bool:
 
 
 def _tidy(place: Place) -> Place:
-    """Turn board shorthand such as 'US-SF-HQ' or 'CA-Toronto' into the city and country it means."""
+    """Turn place shorthand such as 'US-SF-HQ' or 'CA-Toronto' into the city and country it means."""
     if place.city is None:
         return place
     city, country = _CITY_SUFFIX.sub("", place.city).strip(" ()"), place.country
