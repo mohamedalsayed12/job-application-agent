@@ -25,6 +25,7 @@ from app.matching.report import write_reports
 from app.quality import store_results
 from app.skills.taxonomy import map_job_skills
 from app.summaries.generate import summarise_matches
+from app.tailor import write_tailored_cvs
 
 # Searches run once a day; the short poll keeps AI work on the backlog moving.
 DEFAULT_POLL_SECONDS = 60
@@ -56,6 +57,8 @@ async def run_cycle(
     if reported.written:
         match_all(session, now=datetime.now(UTC), applicant_ids=reported.written)
         save()
+    # D55: tailor a CV for Apply / Consider reports; budget waits leave packages pending.
+    await write_tailored_cvs(session, gateway=gateway, settings=get_settings(), persist=save)
     # Every cycle, not only after collection: a backlog stopped by the day's token cap carries on tomorrow.
     await summarise_matches(session, gateway=gateway, settings=get_settings(), persist=save)
     # After summaries, so a job's vector is made from its summary when it has one (D48).

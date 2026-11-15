@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     ai_judge_unit_price: Decimal = Decimal("0.0005")
     # D52: about 6k tokens in (advert and CV) and 1.5k out, ~$0.0014 at the prices above; this is a ceiling.
     ai_report_unit_price: Decimal = Decimal("0.0015")
+    # D55: keyword extract / tailor / ATS revise each reserve this ceiling once.
+    ai_tailor_unit_price: Decimal = Decimal("0.003")
 
     # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
     ai_summary_model: str = ""
@@ -87,6 +89,12 @@ class Settings(BaseSettings):
     ai_report_daily_token_cap: int = 3000000
     ai_report_cv_chars: int = 12000
 
+    # D55: tailored CV for Apply / Consider jobs. Blank model = provider default.
+    ai_tailor_model: str = ""
+    ai_tailor_max_output_tokens: int = 3500
+    ai_tailor_cv_chars: int = 12000
+    ai_tailor_per_cycle: int = 5
+
     @field_validator(
         "linkedin_unit_price",
         "linkedin_run_price",
@@ -95,6 +103,7 @@ class Settings(BaseSettings):
         "ai_cv_unit_price",
         "ai_judge_unit_price",
         "ai_report_unit_price",
+        "ai_tailor_unit_price",
         mode="before",
     )
     @classmethod
@@ -128,6 +137,9 @@ class Settings(BaseSettings):
 
     def resolved_ai_cv_model(self) -> str:
         return self.ai_cv_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_tailor_model(self) -> str:
+        return self.ai_tailor_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def api_allowlist_hosts(self) -> frozenset[str]:
         return frozenset(

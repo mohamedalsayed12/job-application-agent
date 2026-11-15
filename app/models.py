@@ -94,9 +94,23 @@ class SpendKind(StrEnum):
     ai_cv_read = "ai_cv_read"
     ai_job_judge = "ai_job_judge"
     ai_fit_report = "ai_fit_report"
+    ai_cv_tailor = "ai_cv_tailor"
     linkedin_jobs = "linkedin_jobs"
     # Spend recorded under kinds that no longer exist. Kept so the monthly cap still counts it.
     retired = "retired"
+
+
+class TailoredCvStatus(StrEnum):
+    pending = "pending"
+    waiting_budget = "waiting_budget"
+    ready = "ready"
+    skipped = "skipped"
+    failed = "failed"
+
+
+class CompanyResearchStatus(StrEnum):
+    ready = "ready"
+    unavailable = "unavailable"
 
 
 
@@ -563,6 +577,69 @@ class JobReport(_UuidPk, Base):
     # Hash of the job text and everything sent about the person, CV included; a change means a new report.
     input_hash: Mapped[str] = mapped_column(Text())
     model: Mapped[str] = mapped_column(Text())
+    prompt_version: Mapped[str] = mapped_column(Text())
+    prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class CompanyResearch(_UuidPk, Base):
+    """Cached public mission / vision / values for one employer name (D55)."""
+
+    __tablename__ = "company_research"
+    __table_args__ = (
+        UniqueConstraint("company_key", name="uq_company_research_company_key"),
+        _text_in("status", CompanyResearchStatus),
+    )
+
+    company_key: Mapped[str] = mapped_column(Text())
+    company_name: Mapped[str] = mapped_column(Text())
+    status: Mapped[str] = mapped_column(Text())
+    # Mission, vision, goals, values, evidence quotes and source URLs when status is ready.
+    research: Mapped[dict[str, Any]] = mapped_column(JSONB())
+    official_domain: Mapped[str | None] = mapped_column(Text())
+    fetched_at: Mapped[datetime] = mapped_column(TZ)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class TailoredCv(_UuidPk, Base):
+    """D55: one tailored CV package per person and Apply/Consider job."""
+
+    __tablename__ = "tailored_cv"
+    __table_args__ = (
+        UniqueConstraint("applicant_id", "job_id", name="uq_tailored_cv_applicant_job"),
+        _text_in("status", TailoredCvStatus),
+        CheckConstraint(
+            "pdf_size_bytes IS NULL OR (pdf_size_bytes BETWEEN 1 AND 5242880)",
+            name="pdf_size_bytes",
+        ),
+        CheckConstraint(
+            "docx_size_bytes IS NULL OR (docx_size_bytes BETWEEN 1 AND 5242880)",
+            name="docx_size_bytes",
+        ),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(Text())
+    # Hash of advert, CV bytes, profile and company-research input; a change means a new package.
+    input_hash: Mapped[str] = mapped_column(Text())
+    # Structured draft after grounding, keywords list, ATS coverage table.
+    draft: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
+    keywords: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
+    ats_report: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
+    company_research_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("company_research.id", ondelete="SET NULL")
+    )
+    company_research_available: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
+    pdf_content: Mapped[bytes | None] = mapped_column(LargeBinary(), deferred=True)
+    docx_content: Mapped[bytes | None] = mapped_column(LargeBinary(), deferred=True)
+    pdf_size_bytes: Mapped[int | None] = mapped_column(Integer())
+    docx_size_bytes: Mapped[int | None] = mapped_column(Integer())
+    model: Mapped[str | None] = mapped_column(Text())
     prompt_version: Mapped[str] = mapped_column(Text())
     prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))

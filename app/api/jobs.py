@@ -7,7 +7,8 @@ import uuid
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
@@ -17,10 +18,13 @@ from app.api.listings import place_names
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
-from app.models import Applicant, Job, JobFreshness
+from app.models import Applicant, Job, JobFreshness, TailoredCv, TailoredCvStatus
 from app.summaries.generate import Shown, summary_for_view
+from app.tailor.ui import tailored_block
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+_DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 async def get_gateway() -> AsyncIterator[FetchGateway]:
@@ -31,7 +35,7 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         await gateway.aclose()
 
 
-def _body(job: Job, shown: Shown) -> str:
+def _body(job: Job, shown: Shown, tailored: TailoredCv | None) -> str:
     if shown.summary:
         about = (
             f"<p>{html.escape(shown.summary)}</p>"
@@ -48,6 +52,7 @@ def _body(job: Job, shown: Shown) -> str:
 <p>{html.escape(job.company_name)}. {html.escape(place_names(job))}.</p>
 {about}
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
+{tailored_block(job.id, tailored)}
 {_apply_link(job.apply_url)}
 </div>
 """
@@ -60,11 +65,17 @@ def _apply_link(url: str) -> str:
     return f'<p><a class="button primary" href="{html.escape(url, quote=True)}" rel="noopener noreferrer">Apply on the employer&#39;s site</a></p>'
 
 
+def _tailored_for(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> TailoredCv | None:
+    return db.scalars(
+        select(TailoredCv).where(TailoredCv.applicant_id == applicant_id, TailoredCv.job_id == job_id)
+    ).first()
+
+
 @router.get("/{job_id}", response_class=HTMLResponse)
 async def job_page(
     request: Request,
     job_id: uuid.UUID,
-    _applicant: Applicant = Depends(require_login),
+    applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
     gateway: FetchGateway = Depends(get_gateway),
 ) -> HTMLResponse:
@@ -73,4 +84,48 @@ async def job_page(
     if job is None or job.freshness != JobFreshness.open:
         raise HTTPException(status_code=404)
     shown = await summary_for_view(db, job, gateway=gateway, settings=get_settings(), persist=db.commit)
-    return page(job.title, _body(job, shown), header=applicant_bar(request, "matches"), narrow=True)
+    tailored = _tailored_for(db, applicant.id, job_id)
+    return page(job.title, _body(job, shown, tailored), header=applicant_bar(request, "matches"), narrow=True)
+
+
+@router.get("/{job_id}/tailored.pdf")
+def tailored_pdf(
+    job_id: uuid.UUID,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> Response:
+    return _download(db, applicant.id, job_id, kind="pdf")
+
+
+@router.get("/{job_id}/tailored.docx")
+def tailored_docx(
+    job_id: uuid.UUID,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> Response:
+    return _download(db, applicant.id, job_id, kind="docx")
+
+
+def _download(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID, *, kind: str) -> Response:
+    row = _tailored_for(db, applicant_id, job_id)
+    if row is None or row.status != TailoredCvStatus.ready.value:
+        raise HTTPException(status_code=404)
+    if kind == "pdf":
+        content = row.pdf_content
+        media = "application/pdf"
+        name = "tailored-cv.pdf"
+    else:
+        content = row.docx_content
+        media = _DOCX_TYPE
+        name = "tailored-cv.docx"
+    if not content:
+        raise HTTPException(status_code=404)
+    return Response(
+        content,
+        media_type=media,
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
