@@ -54,18 +54,38 @@ def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
     return last is None or now - last >= timedelta(hours=settings.indeed_every_hours)
 
 
+def _core_role(role: str) -> str:
+    """Strip every leading level word, then Title Case the job core."""
+    core = role
+    while True:
+        stripped = LEADING_ENTRY_LEVEL.sub("", core).strip()
+        if stripped == core:
+            break
+        core = stripped
+    if not core:
+        return ""
+    return " ".join(word[:1].upper() + word[1:] for word in core.split())
+
+
 def entry_titles(role: str) -> list[str]:
     """Graduate, junior and entry-level title queries for one target role (Indeed has no f_E filter)."""
     cleaned = " ".join(role.split())
     if not cleaned:
         return []
     # shortcut: a role that is only a level word ("Graduate") is not stripped and gets prefixed again
-    core = LEADING_ENTRY_LEVEL.sub("", cleaned).strip()
+    core = _core_role(cleaned)
     if not core:
         return []
-    # Prefs may store "backend developer"; Indeed queries stay readable Title Case.
-    core = " ".join(word[:1].upper() + word[1:] for word in core.split())
     return [f"{prefix} {core}" for prefix in _ENTRY_FORMS]
+
+
+def _search_order(search: Search) -> tuple[int, str, str]:
+    # Graduate and Junior before Entry Level so a mid-list budget stop still hits common UK titles.
+    role = search.role.lower()
+    for index, form in enumerate(_ENTRY_FORMS):
+        if role.startswith(form.lower() + " "):
+            return (index, search.location.lower(), role)
+    return (len(_ENTRY_FORMS), search.location.lower(), role)
 
 
 def indeed_searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Search]:
@@ -75,7 +95,7 @@ def indeed_searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> l
         for title in entry_titles(search.role):
             expanded = Search(title, search.location)
             found.setdefault((expanded.role.lower(), expanded.location.lower()), expanded)
-    return sorted(found.values(), key=lambda search: (search.role.lower(), search.location.lower()))
+    return sorted(found.values(), key=_search_order)
 
 
 async def collect_indeed(
