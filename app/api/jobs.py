@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
@@ -17,8 +18,9 @@ from app.api.listings import place_names
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
-from app.models import Applicant, Job, JobFreshness
+from app.models import Applicant, Job, JobFreshness, JobVerification, ListingVerdict
 from app.summaries.generate import Shown, summary_for_view
+from app.verify.scam_text import scam_reasons
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -69,8 +71,17 @@ async def job_page(
     gateway: FetchGateway = Depends(get_gateway),
 ) -> HTMLResponse:
     job = db.get(Job, job_id)
-    # D23: only open jobs are shown.
-    if job is None or job.freshness != JobFreshness.open:
+    # D23: only open jobs are shown. D55: fake listings stay off the page too.
+    if job is None or job.freshness != JobFreshness.open or _is_fake(db, job):
         raise HTTPException(status_code=404)
     shown = await summary_for_view(db, job, gateway=gateway, settings=get_settings(), persist=db.commit)
     return page(job.title, _body(job, shown), header=applicant_bar(request, "matches"), narrow=True)
+
+
+def _is_fake(session: Session, job: Job) -> bool:
+    if (job.quality_results or {}).get("real") == "low":
+        return True
+    row = session.scalar(select(JobVerification).where(JobVerification.job_id == job.id))
+    if row is not None and row.outcome == ListingVerdict.fake:
+        return True
+    return bool(scam_reasons(job.description))

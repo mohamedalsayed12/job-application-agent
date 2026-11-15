@@ -25,6 +25,7 @@ from app.matching.report import write_reports
 from app.quality import store_results
 from app.skills.taxonomy import map_job_skills
 from app.summaries.generate import summarise_matches
+from app.verify import verify_jobs
 
 # Searches run once a day; the short poll keeps AI work on the backlog moving.
 DEFAULT_POLL_SECONDS = 60
@@ -44,6 +45,15 @@ async def run_cycle(
         now = datetime.now(UTC)
         store_results(session, now=now)
         map_job_skills(session)
+        match_all(session, now=now)
+        save()
+    # D55: fake-listing check (Companies House + company site). Rematch when confidence or apply URL changes.
+    verified = await verify_jobs(session, gateway=gateway, settings=get_settings(), persist=save)
+    # Rematch whenever this cycle checked anything, so a crash between verify and match
+    # cannot leave a newly-faked job on /listings until its hash changes.
+    if verified.checked:
+        now = datetime.now(UTC)
+        store_results(session, now=now)
         match_all(session, now=now)
         save()
     # Every cycle, not only after collection: a backlog stopped by a cap carries on next time (D50).

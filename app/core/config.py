@@ -29,7 +29,13 @@ class Settings(BaseSettings):
     fetch_user_agent: str = (
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
-    api_allowlist: str = "api.apify.com,api.anthropic.com"
+    api_allowlist: str = (
+        "api.apify.com,api.anthropic.com,api.company-information.service.gov.uk"
+    )
+    # D55: Companies House Public Data API. Blank = skip the register lookup.
+    companies_house_api_key: str = ""
+    # Fake-listing checks per worker cycle (CH + page fetches).
+    verify_per_cycle: int = 20
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
     apify_api_token: str = ""

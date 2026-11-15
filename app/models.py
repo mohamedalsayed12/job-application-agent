@@ -147,6 +147,14 @@ class SummaryStatus(StrEnum):
     rejected = "rejected"
 
 
+class ListingVerdict(StrEnum):
+    """D55: outcome of the fake-listing check for one master job."""
+
+    real = "real"
+    fake = "fake"
+    inconclusive = "inconclusive"
+
+
 class SpendKind(StrEnum):
     search = "search"
     ai_extraction = "ai_extraction"
@@ -912,6 +920,30 @@ class JobSummary(_UuidPk, Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class JobVerification(_UuidPk, Base):
+    """D55: one fake-listing check per master job (Companies House, domain, careers page)."""
+
+    __tablename__ = "job_verification"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_job_verification_job_id"),
+        _text_in("outcome", ListingVerdict),
+    )
+
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    source_hash: Mapped[str] = mapped_column(Text())
+    outcome: Mapped[str] = mapped_column(Text())
+    company_number: Mapped[str | None] = mapped_column(Text())
+    company_status: Mapped[str | None] = mapped_column(Text())
+    official_domain: Mapped[str | None] = mapped_column(Text())
+    listing_found: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
+    company_apply_url: Mapped[str | None] = mapped_column(Text())
+    reasons: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB(), default=dict, server_default=text("'{}'::jsonb"))
+    checked_at: Mapped[datetime] = mapped_column(TZ)
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 
