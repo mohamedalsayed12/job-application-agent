@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -29,6 +28,7 @@ from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest
 from app.linkedin import Search, searches
+from app.matching.titles import LEADING_ENTRY_LEVEL
 from app.models import FetchOutcome, FetchRun, RawPayload, SpendKind
 
 SOURCE = "indeed"
@@ -36,11 +36,6 @@ APIFY_API = "https://api.apify.com/v2"
 WAIT_SECONDS = 25
 _FINISHED = frozenset({"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"})
 _HAS_RESULTS = frozenset({"SUCCEEDED", "TIMED-OUT"})
-# Strip a leading level word so "Junior Python Developer" and "Python Developer" share a core.
-_LEADING_LEVEL = re.compile(
-    r"^(?:graduate|grad|junior|jr\.?|entry[- ]level|entry|early[- ]careers?)\s+",
-    re.IGNORECASE,
-)
 _ENTRY_FORMS = ("Graduate", "Junior", "Entry Level")
 
 
@@ -64,14 +59,13 @@ def entry_titles(role: str) -> list[str]:
     cleaned = " ".join(role.split())
     if not cleaned:
         return []
-    core = _LEADING_LEVEL.sub("", cleaned).strip() or cleaned
+    # shortcut: a role that is only a level word ("Graduate") is not stripped and gets prefixed again
+    core = LEADING_ENTRY_LEVEL.sub("", cleaned).strip()
+    if not core:
+        return []
     # Prefs may store "backend developer"; Indeed queries stay readable Title Case.
     core = " ".join(word[:1].upper() + word[1:] for word in core.split())
-    found: dict[str, str] = {}
-    for prefix in _ENTRY_FORMS:
-        title = f"{prefix} {core}"
-        found.setdefault(title.casefold(), title)
-    return list(found.values())
+    return [f"{prefix} {core}" for prefix in _ENTRY_FORMS]
 
 
 def indeed_searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Search]:
