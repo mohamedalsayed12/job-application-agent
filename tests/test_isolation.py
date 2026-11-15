@@ -1,12 +1,9 @@
-"""Per-worktree DB naming (no database required)."""
-
 from __future__ import annotations
 
 import pytest
 from sqlalchemy.engine import make_url
 
 from tests.isolation import (
-    assert_safe_database_name,
     require_slug,
     resolve_live_database_name,
     resolve_test_database_name,
@@ -35,6 +32,16 @@ def test_reject_slug_aliases_that_would_collide() -> None:
         require_slug("matching-")
 
 
+def test_reject_slugs_that_collide_with_pytest_db_names() -> None:
+    with pytest.raises(ValueError, match="collides with pytest"):
+        require_slug("test")
+    with pytest.raises(ValueError, match="collides with pytest"):
+        resolve_live_database_name("test-foo")
+    with pytest.raises(ValueError, match="collides with pytest"):
+        resolve_test_database_name("jaa-test")
+    assert resolve_live_database_name("testing") == "job_app_agent_testing"
+
+
 def test_live_and_test_names_share_slug_grammar() -> None:
     assert resolve_live_database_name("profile-search") == "job_app_agent_profile_search"
     assert (
@@ -43,38 +50,9 @@ def test_live_and_test_names_share_slug_grammar() -> None:
     )
 
 
-def test_override_wins() -> None:
-    assert (
-        resolve_test_database_name(
-            "jaa-matching", override="job_app_agent_test_custom"
-        )
-        == "job_app_agent_test_custom"
-    )
-
-
-def test_override_rejects_unsafe() -> None:
-    with pytest.raises(ValueError):
-        resolve_test_database_name("jaa-matching", override="  ")
-    with pytest.raises(ValueError):
-        resolve_test_database_name("jaa-matching", override='evil"; drop db')
-    with pytest.raises(ValueError):
-        resolve_test_database_name("jaa-matching", override="x" * 64)
-    with pytest.raises(ValueError):
-        resolve_test_database_name("jaa-matching", override="postgres")
-
-
-def test_assert_safe_rejects_source_database() -> None:
-    with pytest.raises(ValueError):
-        assert_safe_database_name(
-            "job_app_agent_m1", source_database="job_app_agent_m1"
-        )
-
-
-def test_with_database_keeps_query_and_fails_noop() -> None:
+def test_with_database_keeps_query() -> None:
     url = "postgresql+psycopg://jaa:jaa@localhost:5432/jaa?sslmode=disable"
     out = with_database(url, "job_app_agent_matching")
     parsed = make_url(out)
     assert parsed.database == "job_app_agent_matching"
     assert parsed.query.get("sslmode") == "disable"
-    with pytest.raises(ValueError):
-        with_database(out, "job_app_agent_matching")

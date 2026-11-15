@@ -14,6 +14,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Live DB is job_app_agent_<slug>; pytest uses job_app_agent_test[_<slug>].
+if ($Slug -eq "test" -or $Slug.StartsWith("test-")) {
+    throw "slug '$Slug' collides with pytest DB names; choose another"
+}
+
 $primary = (git rev-parse --show-toplevel).Trim()
 if (-not $primary) {
     throw "not inside a git repository"
@@ -41,6 +46,10 @@ if (Test-Path $srcEnv) {
         if ($LASTEXITCODE -ne 0) {
             throw "write_worktree_env.py failed"
         }
+    } catch {
+        git worktree remove --force $path 2>$null
+        git branch -D $branch 2>$null
+        throw
     } finally {
         Pop-Location
     }

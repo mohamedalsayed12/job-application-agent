@@ -1,18 +1,16 @@
-"""Per-worktree DB naming so parallel agents do not share databases."""
+"""Per-worktree Postgres names for parallel agent checkouts."""
 
 from __future__ import annotations
 
 import re
 
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ProgrammingError
 
 _DEFAULT_TEST = "job_app_agent_test"
 _LIVE_PREFIX = "job_app_agent_"
-OVERRIDE_ENV = "JOB_APP_AGENT_TEST_DB"
-# One grammar for script slugs and jaa-<slug> directory names.
-_SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_IDENT = re.compile(r"^[a-z0-9_]+$")
-_RESERVED = frozenset({"postgres", "template0", "template1"})
+_SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")  # script slug and jaa-<slug>
 
 
 def require_slug(slug: str) -> str:
@@ -22,69 +20,62 @@ def require_slug(slug: str) -> str:
             f"slug must match {_SLUG.pattern} (no leading/trailing/doubled hyphens); "
             f"got {slug!r}"
         )
+    # Live name is job_app_agent_<slug>; pytest uses job_app_agent_test[_<slug>].
+    # Ban test / test-* so live never lands on a pytest database.
+    if cleaned == "test" or cleaned.startswith("test-"):
+        raise ValueError(
+            f"slug {slug!r} collides with pytest DB names "
+            f"(job_app_agent_test…); choose another"
+        )
     return cleaned
 
 
 def worktree_slug(repo_dir_name: str) -> str | None:
-    """Return the slug for a ``jaa-<slug>`` checkout, or None for the primary tree."""
     if not repo_dir_name.startswith("jaa-"):
         return None
     return require_slug(repo_dir_name.removeprefix("jaa-"))
 
 
-def resolve_live_database_name(slug: str) -> str:
-    """Live/app DB for a worktree: ``job_app_agent_<slug_with_underscores>``."""
-    safe = require_slug(slug).replace("-", "_")
-    name = f"{_LIVE_PREFIX}{safe}"
+def _postgres_name(prefix: str, slug: str) -> str:
+    name = f"{prefix}{require_slug(slug).replace('-', '_')}"
     if len(name) > 63:
-        raise ValueError(f"live database name too long: {name!r}")
+        raise ValueError(f"database name too long: {name!r}")
     return name
 
 
-def resolve_test_database_name(
-    repo_dir_name: str, override: str | None = None
-) -> str:
-    """Pytest DB: primary → ``job_app_agent_test``; ``jaa-<slug>`` → ``…_test_<slug>``."""
-    if override is not None:
-        name = override.strip().lower()
-        if (
-            not name
-            or len(name) > 63
-            or not _IDENT.fullmatch(name)
-            or name.startswith("_")
-        ):
-            raise ValueError(
-                f"{OVERRIDE_ENV} must be a postgres identifier "
-                f"(a-z, 0-9, underscore, 1-63 chars); got {override!r}"
-            )
-        assert_safe_database_name(name)
-        return name
+def resolve_live_database_name(slug: str) -> str:
+    return _postgres_name(_LIVE_PREFIX, slug)
+
+
+def resolve_test_database_name(repo_dir_name: str) -> str:
     slug = worktree_slug(repo_dir_name)
     if slug is None:
         return _DEFAULT_TEST
-    name = f"{_DEFAULT_TEST}_{slug.replace('-', '_')}"
-    if len(name) > 63:
-        raise ValueError(f"derived test DB name too long: {name!r}")
-    return name
-
-
-def assert_safe_database_name(
-    name: str, *, source_database: str | None = None
-) -> None:
-    """Reject cluster templates and the source URL's database (pytest override guard)."""
-    if name in _RESERVED:
-        raise ValueError(f"refusing reserved database name {name!r}")
-    if source_database and name == source_database:
-        raise ValueError(
-            f"refusing to use source database {name!r} as the pytest target"
-        )
+    return _postgres_name(f"{_DEFAULT_TEST}_", slug)
 
 
 def with_database(url: str, database: str) -> str:
-    """Return ``url`` with the database name replaced; fail if nothing changed."""
-    parsed = make_url(url)
-    if parsed.database == database:
-        raise ValueError(
-            f"DATABASE_URL database segment already {database!r}; refusing no-op rewrite"
-        )
-    return parsed.set(database=database).render_as_string(hide_password=False)
+    return make_url(url).set(database=database).render_as_string(hide_password=False)
+
+
+def ensure_database(url: str, name: str) -> None:
+    """CREATE DATABASE if missing. ``name`` must already be a safe identifier."""
+    engine = create_engine(
+        with_database(url, "postgres"),
+        isolation_level="AUTOCOMMIT",
+        pool_pre_ping=True,
+    )
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :n"),
+                {"n": name},
+            ).scalar()
+            if exists:
+                return
+            try:
+                conn.execute(text(f'CREATE DATABASE "{name}"'))
+            except ProgrammingError:
+                pass  # concurrent creator won
+    finally:
+        engine.dispose()

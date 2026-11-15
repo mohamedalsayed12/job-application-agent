@@ -13,7 +13,7 @@ Parallel coding agents must not share a working tree, branch tip they both rewri
 2. **Own branch.** Never commit, amend, or force-push another agent's branch. Do not check out a branch that is already checked out in another worktree.
 3. **Stay in your tree.** All edits, tests, and shell `working_directory` paths must be that worktree. Do not write feature files into `job-application-agent` when your task was assigned a `jaa-*` tree.
 4. **Own audit files.** Write trails under `.audit/<task-slug>.*` inside your worktree only.
-5. **Own DBs.** Live: `job_app_agent_<slug>`. Pytest: `job_app_agent_test_<slug>` (both from `tests/isolation.py`). Never migrate another agent's database.
+5. **Own DBs.** Live: `job_app_agent_<slug>`. Pytest: `job_app_agent_test_<slug>` (both from `tests/isolation.py`). Slug must not be `test` or `test-*` (those collide with pytest DB names). Never migrate another agent's database.
 6. **Read-only fan-out is fine.** Explore / review subagents may share a tree if they do not write. Any writer needs its own worktree.
 
 ## Forbidden
