@@ -1,0 +1,23 @@
+﻿deslop-thermo cleanup trail
+worktree: jaa-deslop-thermo / feat/deslop-thermo
+
+Applied (ponytail + deslop + thermo CQ):
+- Shared messages_body + anthropic_api_key; shared tokens_used_today; Settings.resolved_model
+- estimate_cost: drop unused provider; raise on unknown kind
+- Budget gate: drop isinstance/InvalidOperation noise
+- Title level regexes unified in titles.py (plural training titles)
+- Robots fetch reuses _send_once(require_content_type=False)
+- Drop search_embedder, _verdicts, dead alias/comments
+
+Skipped (deliberate):
+- Drop unread employer-discovery schema (~280 lines in models.py) — needs Alembic migration, not a drive-by
+- Split listings.py / profile.py HTML — under 1k, house style matches other API modules
+- Inline job_excluded_for_salary — named rule pinned by tests
+
+Tests: 212 then 151 targeted suites green; plural NOT_ENTRY assert added.
+
+Thermos correctness follow-up (P1/P2):
+- P1 current_reports filters by input_hash; CV delete drops JobReport + rematches
+- P1 checked_report grounds advertised_pay / assessments / requirement evidence
+- P2 budget sums spend per provider for provider caps; * cap still totals all
+- P2 LinkedIn no-run-id settles consumed=False and skips FetchRun

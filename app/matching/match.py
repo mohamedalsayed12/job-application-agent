@@ -25,14 +25,16 @@ from app.cleaning.normalize import Place, parse_location, parse_places
 from app.matching.credentials import Held, held_groups, required_in_advert
 from app.matching.degrees import degree_shuts_out, required_fields
 from app.matching.titles import (
+    APPRENTICE_TITLE,
     ENTRY_TITLE,
+    INTERNSHIP_TITLE,
     NOT_ENTRY_TITLE,
+    TRAINING_TITLE,
     UK_PLACE,
     YEARS_REQUIRED,
 )
 from app.matching.verdicts import (
     ADD_LINE,
-    Profile,
     current_reports,
     current_verdicts,
     digest,
@@ -57,9 +59,6 @@ from app.quality.checks import Confidence, JobFacts, JobQuality
 from app.quality.report import check_all
 from app.skills.mapping import label_forms
 
-_TRAINING_TITLE = re.compile(r"\b(intern|interns|internship|placement|apprentice|apprenticeship)\b", re.IGNORECASE)
-_INTERNSHIP_TITLE = re.compile(r"\b(intern|interns|internship|internships|placement|placements)\b", re.IGNORECASE)
-_APPRENTICE_TITLE = re.compile(r"\b(apprentice|apprentices|apprenticeship|apprenticeships)\b", re.IGNORECASE)
 _SPELLINGS = (
     (re.compile(r"\bback[- ]end\b"), "backend"),
     (re.compile(r"\bfront[- ]end\b"), "frontend"),
@@ -73,7 +72,7 @@ _LEVEL_WORDS = frozenset(
 _INTERNSHIP_WORDS = frozenset("intern interns internship internships placement placements".split())
 _INTERNSHIP_LEVEL = "internship in the title"
 _ENGINEER = "engineer"
-# Titles that share a skill with the target. Milestone 2 replaces this table with skill overlap.
+# Titles that share a skill with the target.
 _SIMILAR_TITLES = {
     "backend": frozenset({"software", "python", "fullstack", "platform", "api"}),
     "python": frozenset({"software", "backend", "fullstack", "api", "django", "platform"}),
@@ -265,13 +264,13 @@ def entry_evidence(title: str, description: str | None) -> str | None:
 
 
 def _fit_internship(title: str, words: set[str], role: str) -> RoleMatch | None:
-    if not _INTERNSHIP_TITLE.search(title) or _APPRENTICE_TITLE.search(title):
+    if not INTERNSHIP_TITLE.search(title) or APPRENTICE_TITLE.search(title):
         return None
     return _fit_title(words, _title_words(role) - _LEVEL_WORDS - _INTERNSHIP_WORDS, role, _INTERNSHIP_LEVEL)
 
 
 def _fit_role(title: str, words: set[str], description: str | None, role: str, *, entry: bool) -> RoleMatch | None:
-    if _TRAINING_TITLE.search(title) and not _TRAINING_TITLE.search(role):
+    if TRAINING_TITLE.search(title) and not TRAINING_TITLE.search(role):
         return None
     level = None
     if entry or ENTRY_TITLE.search(role):
@@ -285,10 +284,10 @@ def match_by_skills(title: str, description: str | None, skills: SkillFit, *, le
     if len(skills.matched) < SKILLS_MATCH_MIN or skills.share < SKILLS_MATCH_SHARE:
         return None
     if level == ExperienceLevel.internship:
-        if not _INTERNSHIP_TITLE.search(title) or _APPRENTICE_TITLE.search(title):
+        if not INTERNSHIP_TITLE.search(title) or APPRENTICE_TITLE.search(title):
             return None
         return RoleMatch("", RoleKind.skills, _INTERNSHIP_LEVEL)
-    if _TRAINING_TITLE.search(title):
+    if TRAINING_TITLE.search(title):
         return None
     if level != ExperienceLevel.entry:
         return RoleMatch("", RoleKind.skills, None)
@@ -437,23 +436,31 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
     degrees = applicant_degrees(session)
     subjects = {facts.job_id: required_fields(facts.description) for facts in shown}
     profiles = load_profiles(session, applicant_ids)
-    job_digests = {
-        facts.job_id: digest(
-            job_text(
-                title=facts.title,
-                company=facts.company_name,
-                places=facts.places,
-                apply_url=facts.apply_url,
-                description=facts.description,
-            )
+    job_texts = {
+        facts.job_id: job_text(
+            title=facts.title,
+            company=facts.company_name,
+            places=facts.places,
+            apply_url=facts.apply_url,
+            description=facts.description,
         )
         for facts in shown
     }
+    job_digests = {job_id: digest(text) for job_id, text in job_texts.items()}
+    # Lazy: report.py imports showable from here.
+    from app.core.config import get_settings
+    from app.matching.report import input_hash, load_readers
+
+    readers = load_readers(session, cv_chars=get_settings().ai_report_cv_chars, applicant_ids=applicant_ids)
     preferences = select(ApplicantPreference)
     if applicant_ids is not None:
         preferences = preferences.where(ApplicantPreference.applicant_id.in_(applicant_ids))
     for preference in session.scalars(preferences).all():
         report.applicants += 1
+        reader = readers.get(preference.applicant_id)
+        report_hashes = (
+            {job_id: input_hash(reader, text) for job_id, text in job_texts.items()} if reader is not None else {}
+        )
         _match_applicant(
             session,
             preference,
@@ -464,7 +471,12 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
             subjects,
             level=levels.get(preference.applicant_id),
             degrees=degrees.get(preference.applicant_id) or [],
-            verdicts=_verdicts(session, profiles.get(preference.applicant_id), job_digests),
+            verdicts=(
+                current_verdicts(session, profiles[preference.applicant_id], job_digests)
+                if preference.applicant_id in profiles
+                else {}
+            ),
+            report_hashes=report_hashes,
         )
     session.flush()
     return report
@@ -482,12 +494,13 @@ def _match_applicant(
     level: str | None,
     degrees: list[str],
     verdicts: dict[uuid.UUID, JobVerdict],
+    report_hashes: dict[uuid.UUID, str],
 ) -> None:
     applicant_id = preference.applicant_id
     wanted = wanted_locations(preference.locations)
     expected = _expected_salary(preference)
     held = skills.credentials.get(applicant_id, set())
-    fit_reports = current_reports(session, applicant_id)
+    fit_reports = current_reports(session, applicant_id, report_hashes)
     existing = {
         row.job_id: row
         for row in session.scalars(select(ApplicantJobMatch).where(ApplicantJobMatch.applicant_id == applicant_id))
@@ -570,8 +583,3 @@ def _match_applicant(
     report.matches += len(kept)
     report.by_applicant[applicant_id] = len(kept)
 
-
-def _verdicts(
-    session: Session, profile: Profile | None, job_digests: dict[uuid.UUID, str]
-) -> dict[uuid.UUID, JobVerdict]:
-    return current_verdicts(session, profile, job_digests) if profile is not None else {}

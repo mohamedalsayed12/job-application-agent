@@ -124,8 +124,14 @@ async def collect_linkedin(
         started = now()
         run = _Run(gateway, token, settings, sleep)
         items, cost_usd = await run.search(search)
-        gate.settle(reservation, **_actual(reservation, cost_usd, settings))
         report.searches += 1
+        if not run.started:
+            # No Apify run id: do not charge the ceiling or write a FetchRun that blocks the next day.
+            gate.settle(reservation, consumed=False)
+            report.failed.append(f"{search.role} in {search.location}: {run.problem or 'did not start'}")
+            persist()
+            continue
+        gate.settle(reservation, **_actual(reservation, cost_usd, settings))
         if items is None:
             report.failed.append(f"{search.role} in {search.location}: {run.problem}")
         stored = store_items(session, items or [], started_at=started, finished_at=now(), ok=items is not None)
@@ -187,6 +193,7 @@ class _Run:
         self.gateway, self.settings, self.sleep = gateway, settings, sleep
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         self.problem = ""
+        self.started = False
 
     async def search(self, search: Search) -> tuple[list[dict[str, Any]] | None, Decimal | None]:
         settings = self.settings
@@ -206,6 +213,7 @@ class _Run:
         run = (started or {}).get("data") or {}
         if not run.get("id"):
             return None, None
+        self.started = True
         deadline = settings.linkedin_wait_minutes * 60
         waited = 0
         while run.get("status") not in _FINISHED and waited < deadline:

@@ -155,6 +155,7 @@ class FetchGateway:
         request: FetchRequest,
         *,
         host: str,
+        require_content_type: bool = True,
     ) -> FetchResponse | FetchRefusal | _Redirect:
         headers = {**dict(request.headers), "User-Agent": self._user_agent}
         timeout_s = min(request.timeout_s or DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S)
@@ -204,7 +205,7 @@ class FetchGateway:
                     .strip()
                     .lower()
                 )
-                if content_type not in ALLOWED_CONTENT_TYPES:
+                if require_content_type and content_type not in ALLOWED_CONTENT_TYPES:
                     return FetchRefusal(reason="content_type")
 
                 body = bytearray()
@@ -227,37 +228,21 @@ class FetchGateway:
 
     async def _fetch_robots_body(self, robots_url: str) -> str | None:
         """Fetch robots.txt with SSRF + rate limits; only a final 200 body is returned."""
-        url = robots_url
+        request = FetchRequest(url=robots_url, method="GET", kind="page")
         for _ in range(MAX_REDIRECTS + 1):
-            if check_ssrf(url, resolve=self._resolve) is not None:
+            if check_ssrf(request.url, resolve=self._resolve) is not None:
                 return None
-            host = urlparse(url).hostname
+            host = urlparse(request.url).hostname
             if host is None:
                 return None
             async with self._rate_limiter.hold(host):
-                try:
-                    async with self._client.stream(
-                        "GET",
-                        url,
-                        headers={"User-Agent": self._user_agent},
-                        timeout=DEFAULT_TIMEOUT_S,
-                    ) as response:
-                        if response.status_code in {301, 302, 303, 307, 308}:
-                            location = response.headers.get("location")
-                            if not location:
-                                return None
-                            url = urljoin(url, location)
-                            continue
-                        if response.status_code != 200:
-                            return None
-                        body = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            if len(body) + len(chunk) > MAX_BODY_BYTES:
-                                return None
-                            body.extend(chunk)
-                        return bytes(body).decode("utf-8", errors="replace")
-                except httpx.HTTPError:
-                    return None
+                outcome = await self._send_once(request, host=host, require_content_type=False)
+            if isinstance(outcome, _Redirect):
+                request = outcome.next_request
+                continue
+            if isinstance(outcome, FetchResponse) and outcome.status_code == 200:
+                return outcome.body.decode("utf-8", errors="replace")
+            return None
         return None
 
 

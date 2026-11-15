@@ -9,7 +9,6 @@ from __future__ import annotations
 import html
 import uuid
 from collections import defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -500,11 +499,6 @@ def _discover_hint(
     return ""
 
 
-def search_embedder() -> Callable[[], Embedder]:
-    """Hands over the loader, not the model, so a page without a search never loads it."""
-    return semantic.local_embedder
-
-
 @router.get("", response_class=HTMLResponse)
 def listings_page(
     request: Request,
@@ -513,11 +507,9 @@ def listings_page(
     page_number: int = Query(1, alias="page", ge=1),
     everywhere: bool = Query(False),
     role: str = Query("", max_length=200),
-    # Operator request (2026-11-10): newest jobs first unless the person picks match score.
     sort: Sort = Query("newest"),
     show: Show = Query("roles"),
     q: str = Query("", max_length=200),
-    embedder: Callable[[], Embedder] = Depends(search_embedder),
 ) -> HTMLResponse:
     search = " ".join(q.split())
     listings, total = load_listings(
@@ -529,7 +521,7 @@ def listings_page(
         sort=sort,
         show=show,
         search=search,
-        embedder=embedder() if search else None,
+        embedder=semantic.local_embedder() if search else None,
     )
     if search:
         db.commit()

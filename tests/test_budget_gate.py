@@ -161,6 +161,35 @@ def test_t3_monthly_cap_refuses_and_leaves_no_ledger(session: Session) -> None:
     assert rows[0].actual_cost == Decimal("9.50")
 
 
+def test_a_provider_cap_only_counts_that_provider_s_spend(session: Session) -> None:
+    now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+    session.add(
+        BudgetPolicy(
+            provider="anthropic",
+            period="month",
+            money_cap=Decimal("10.00"),
+            request_cap=None,
+            currency="GBP",
+            effective_from=now,
+            effective_to=None,
+        )
+    )
+    session.add(
+        SpendLedger(
+            provider="apify",
+            kind=SpendKind.linkedin_jobs,
+            estimated_cost=Decimal("9.50"),
+            actual_cost=Decimal("9.50"),
+            units=Decimal("1"),
+            unit_label="job",
+            occurred_at=datetime(2026, 11, 1, 12, 0, tzinfo=UTC),
+        )
+    )
+    session.flush()
+    gate = _gate(session, now)
+    gate.reserve(_paid(cost=Decimal("1.00"), provider="anthropic"))
+
+
 def test_the_whole_monthly_cap_can_be_spent_in_one_day(session: Session) -> None:
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     _policy(session, Decimal("30.00"), now)

@@ -519,5 +519,6 @@ def cv_download(applicant: Applicant = Depends(require_login), db: Session = Dep
 @router.post("/cv/delete", dependencies=_CSRF)
 def cv_delete(applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> RedirectResponse:
     delete_cv(db, applicant.id)
+    match_all(db, now=datetime.now(UTC), applicant_ids={applicant.id})
     db.commit()
     return RedirectResponse("/profile", status_code=_SEE_OTHER)

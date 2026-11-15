@@ -18,11 +18,12 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import islice
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallResponse
+from app.ai.anthropic import AiCallResponse, anthropic_api_key, messages_body
 from app.budget.pricing import estimate_cost
+from app.budget.tokens import tokens_used_today
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.batches import Ask, Spend, ask_in_batches
@@ -126,29 +127,13 @@ def facts_text(facts: JobFacts) -> str:
 def build_body(profile: str, posting: str, *, model: str, max_tokens: int) -> dict:
     data = json.dumps({"profile": profile}, ensure_ascii=False)
     job = json.dumps({"job_posting": posting}, ensure_ascii=False)
-    return {
-        "model": model,
-        "max_tokens": max_tokens,
-        "thinking": {"type": "disabled"},
-        "system": SYSTEM_INSTRUCTIONS,
-        "messages": [
-            {
-                "role": "user",
-                "content": f"<PROFILE_DATA>\n{data}\n</PROFILE_DATA>\n<JOB_POSTING_DATA>\n{job}\n</JOB_POSTING_DATA>",
-            }
-        ],
-        "output_config": {"format": {"type": "json_schema", "schema": VERDICT_SCHEMA}},
-    }
-
-
-def tokens_used_today(session: Session, now: datetime) -> int:
-    day_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
-    used = session.scalar(
-        select(func.coalesce(func.sum(JobVerdict.prompt_tokens + JobVerdict.completion_tokens), 0)).where(
-            JobVerdict.updated_at >= day_start
-        )
+    return messages_body(
+        system=SYSTEM_INSTRUCTIONS,
+        user=f"<PROFILE_DATA>\n{data}\n</PROFILE_DATA>\n<JOB_POSTING_DATA>\n{job}\n</JOB_POSTING_DATA>",
+        schema=VERDICT_SCHEMA,
+        model=model,
+        max_tokens=max_tokens,
     )
-    return int(used or 0)
 
 
 def _todo(session: Session, now: datetime, applicant_ids: set[uuid.UUID] | None = None) -> list[_Work]:
@@ -189,11 +174,11 @@ async def judge_jobs(
     """Judge up to a cycle's worth of jobs with no current verdict, until a cap stops it. The next run carries on."""
     now = now or datetime.now(UTC)
     report = JudgeReport()
-    api_key = settings.anthropic_api_key.strip()
-    if settings.ai_provider.strip().lower() != "anthropic" or not api_key:
+    api_key = anthropic_api_key(settings)
+    if api_key is None:
         report.stopped_by = "not_configured"
         return report
-    model = settings.resolved_ai_judge_model()
+    model = settings.resolved_model(settings.ai_judge_model)
     max_tokens = settings.ai_judge_max_output_tokens
     asks = (
         Ask(
@@ -206,7 +191,7 @@ async def judge_jobs(
         )
         for item in islice(_todo(session, now, settings.ai_applicants()), settings.ai_judge_per_cycle)
     )
-    cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_job_judge, units=Decimal(1), settings=settings)
+    cost = estimate_cost(kind=SpendKind.ai_job_judge, units=Decimal(1), settings=settings)
 
     def record(ask: Ask[_Work], call: AiCallResponse) -> int:
         _record(session, report, ask.item, cost, call, model=model, now=now)
@@ -221,7 +206,7 @@ async def judge_jobs(
         spend=Spend(SpendKind.ai_job_judge, "job_verdict", cost, settings.ai_provider),
         max_output_tokens=max_tokens,
         daily_token_cap=settings.ai_judge_daily_token_cap,
-        used_today=tokens_used_today(session, now),
+        used_today=tokens_used_today(session, JobVerdict, now),
         concurrency=settings.ai_judge_concurrency,
         outcomes=report.outcomes,
         record=record,

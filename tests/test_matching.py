@@ -133,6 +133,9 @@ def test_d46_an_entry_level_seeker_gets_only_jobs_shown_to_be_entry_level() -> N
     assert match_role("Junior Backend Developer", ADVERT, ENTRY_ROLES).level == "entry level in the title"
     assert match_role("Software Engineer, Early Careers", ADVERT, ENTRY_ROLES).level == "entry level in the title"
     assert match_role("Backend Developer", ADVERT, ["Backend Developer"]).level is None
+    # Plural training titles must not slip past NOT_ENTRY while internship matching still sees them.
+    assert match_role("Software Engineer Internships", ADVERT, ENTRY_ROLES) is None
+    assert match_role("Software Engineer Internships", ADVERT, ["Software Engineer"], internship=True) is not None
 
 
 @pytest.mark.parametrize(

@@ -101,9 +101,17 @@ def current_verdicts(
     }
 
 
-def current_reports(session: Session, applicant_id: uuid.UUID) -> dict[uuid.UUID, JobReport]:
-    """This person's fit reports from the current prompt, by job (D52)."""
+def current_reports(
+    session: Session,
+    applicant_id: uuid.UUID,
+    expected_hashes: dict[uuid.UUID, str],
+) -> dict[uuid.UUID, JobReport]:
+    """This person's fit reports that still match today's profile, CV and advert (D52)."""
     rows = session.scalars(
         select(JobReport).where(JobReport.applicant_id == applicant_id, JobReport.prompt_version == REPORT_PROMPT_VERSION)
     )
-    return {row.job_id: row for row in rows}
+    return {
+        row.job_id: row
+        for row in rows
+        if row.input_hash == expected_hashes.get(row.job_id)
+    }
