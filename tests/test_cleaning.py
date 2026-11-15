@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.cleaning import close_stale, completeness, normalize_job, reclean_all
 from app.cleaning.normalize import Location, parse_location
+from app.indeed import store_items as store_indeed
 from app.models import (
     FetchOutcome,
     FetchRun,
@@ -21,7 +22,7 @@ from app.models import (
     JobPosting,
     RawPayload,
 )
-from tests.jobs import DAY_1, _job, _li, _store
+from tests.jobs import DAY_1, _indeed, _job, _li, _store
 
 ADVERT = "Build APIs in Python for our payments platform. " * 10
 
@@ -41,6 +42,50 @@ def test_a_linkedin_result_is_cleaned_into_the_common_format() -> None:
     assert job.apply_url == "https://acme.example/careers/7"
     assert (job.hours, job.posted_at) == ("full_time", datetime(2026, 11, 5, tzinfo=UTC))
     assert not job.salary.known
+
+
+def test_an_indeed_result_is_cleaned_into_the_common_format() -> None:
+    raw = _indeed(
+        "jk7",
+        title="Graduate Software Engineer",
+        company="Monzo",
+        city="Manchester",
+        country="GB",
+        content="Build APIs in Python.",
+        posted="2026-11-05T00:00:00.000Z",
+        apply_url="https://monzo.example/jobs/jk7",
+        salary={"min": 32000, "max": 38000, "unitOfWork": "YEAR", "currencyCode": "GBP"},
+    )
+    job = normalize_job("indeed", raw)
+    assert (job.title, job.company, job.description) == ("Graduate Software Engineer", "Monzo", "Build APIs in Python.")
+    assert (job.location.city, job.location.country) == ("Manchester", "GB")
+    assert job.apply_url == "https://monzo.example/jobs/jk7"
+    assert job.salary.known
+    assert (job.salary.minimum, job.salary.maximum, job.salary.currency, job.salary.period) == (
+        Decimal("32000"),
+        Decimal("38000"),
+        "GBP",
+        "year",
+    )
+    assert job.posted_at == datetime(2026, 11, 5, tzinfo=UTC)
+
+
+def test_an_indeed_job_without_employer_apply_url_keeps_the_indeed_link() -> None:
+    job = normalize_job("indeed", _indeed(7, apply_url=""))
+    assert job.apply_url == "https://uk.indeed.com/viewjob?jk=7"
+
+
+def test_an_indeed_skill_named_remote_does_not_clear_the_city() -> None:
+    job = normalize_job(
+        "indeed",
+        _indeed(8, attributes={"X1": "Remote desktop", "CF3CP": "Full-time"}, jobTypes={"CF3CP": "Full-time"}),
+    )
+    assert (job.location.city, job.location.remote_type) == ("Manchester", None)
+
+
+def test_an_indeed_hybrid_work_label_sets_hybrid_and_keeps_the_city() -> None:
+    job = normalize_job("indeed", _indeed(9, attributes={"PAXZC": "Hybrid work"}))
+    assert (job.location.city, job.location.remote_type) == ("Manchester", "hybrid")
 
 
 def test_an_easy_apply_job_keeps_the_linkedin_link() -> None:
@@ -146,6 +191,20 @@ def test_a_job_no_search_finds_for_a_while_closes_and_opens_again_when_found(ses
     _store(session, [_li(11, title="Data Analyst")], at=DAY_1 + timedelta(days=16))
     assert (_job(session, 11).freshness, _job(session, 11).closure_evidence) == (JobFreshness.open, None)
     assert _job(session, 11).first_seen_at == DAY_1
+
+
+def test_a_fresh_linkedin_hit_keeps_a_shared_job_open_when_indeed_is_stale(session: Session) -> None:
+    _store(session, [_li(11, title="Backend Developer", company="Acme", city="Manchester, UK", content=ADVERT)])
+    store_indeed(
+        session,
+        [_indeed("jk11", title="Backend Developer", company="Acme", city="Manchester", content=ADVERT)],
+        started_at=DAY_1 - timedelta(days=20),
+        finished_at=DAY_1 - timedelta(days=20),
+    )
+    assert _job(session, 11).id == _job(session, "jk11").id
+    _store(session, [_li(11, title="Backend Developer", company="Acme", city="Manchester, UK", content=ADVERT)], at=DAY_1)
+    assert close_stale(session, source="indeed", now=DAY_1 + timedelta(days=1), after=timedelta(days=14)) == 0
+    assert _job(session, 11).freshness == JobFreshness.open
 
 
 def test_replaying_every_run_changes_nothing(session: Session) -> None:

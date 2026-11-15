@@ -28,11 +28,11 @@ This starts `postgres:16` on port `5432` with user/password/db `jaa` / `jaa` / `
 cp .env.example .env
 ```
 
-Job listings come only from LinkedIn, scraped once a day through Apify. Set `APIFY_API_TOKEN`
+Job listings come from LinkedIn and Indeed, scraped once a day through Apify. Set `APIFY_API_TOKEN`
 in `.env` to the API token from
 [Apify integrations](https://console.apify.com/settings/integrations). Without that token the
 worker does not search. Each search is a paid Apify run, so it also needs a monthly money cap
-in `budget_policy`. Until that cap is set, paid calls stay blocked. The scraper and the search
+in `budget_policy`. Until that cap is set, paid calls stay blocked. The scrapers and the search
 limits have defaults; see `.env.example`.
 
 ### 3. Install dependencies
@@ -96,16 +96,19 @@ uv run pytest
 
 ## Daily collection
 
-Jobs come only from LinkedIn. Once a day the worker runs one search for each target role
-and location on people's profiles. The same role and place is searched once, however many
-people want it. Each search is one run of the Black Falcon Data LinkedIn job scraper on
-Apify (`blackfalcondata/linkedin-job-scraper`). By default it asks for entry-level jobs
-posted in the last 3 days, newest first, up to 50 jobs, with the full description. The
-worker stores every run and every raw job, then cleans them into postings.
+Jobs come from LinkedIn and Indeed. Once a day the worker runs one LinkedIn search and one
+Indeed search for each target role and location on people's profiles. The same role and
+place is searched once per source, however many people want it. LinkedIn uses the Black
+Falcon Data scraper (`blackfalcondata/linkedin-job-scraper`): entry-level, last 3 days,
+newest first, up to 50 jobs. Indeed uses `valig/indeed-jobs-scraper` with country `uk` and
+the same role, place, 3-day window and limit; graduate/entry filtering is applied when
+matching (D46). The worker stores every run and every raw job, then cleans them into
+postings.
 
-A search is due 24 hours after the last one, so a machine that was off catches up the next
-time the worker runs. A search that fails is recorded, and the next attempt waits until
-the following day. A run that does not finish within 15 minutes is stopped.
+A search is due 24 hours after the last one for that source, so a machine that was off
+catches up the next time the worker runs. A search that fails is recorded, and the next
+attempt waits until the following day. A run that does not finish within 15 minutes is
+stopped.
 
 Set `APIFY_API_TOKEN` first. Each run is reserved against the monthly money cap before it
 starts, and the recorded cost is what Apify reports.

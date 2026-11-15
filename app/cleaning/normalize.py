@@ -195,7 +195,12 @@ class NormalizedJob:
 def normalize_job(source: str, raw: dict[str, Any]) -> NormalizedJob | None:
     """None when a job has no title, company or link, or its fields are not the expected types."""
     try:
-        parsed = _linkedin(raw) if source == "linkedin" else None
+        if source == "linkedin":
+            parsed = _linkedin(raw)
+        elif source == "indeed":
+            parsed = _indeed(raw)
+        else:
+            parsed = None
     except (AttributeError, TypeError, ValueError):
         return None
     return parsed if parsed and parsed.title and parsed.company and parsed.apply_url else None
@@ -203,6 +208,13 @@ def normalize_job(source: str, raw: dict[str, Any]) -> NormalizedJob | None:
 
 # LinkedIn names regions like "Greater Manchester Area" and "London Area, United Kingdom".
 _LINKEDIN_AREA = re.compile(r"^greater\s+|\s+(?:metropolitan\s+)?area\b", re.IGNORECASE)
+_INDEED_SALARY_PERIOD = {
+    "YEAR": "year",
+    "MONTH": "month",
+    "WEEK": "week",
+    "DAY": "day",
+    "HOUR": "hour",
+}
 
 
 def _linkedin(raw: dict[str, Any]) -> NormalizedJob:
@@ -225,6 +237,98 @@ def _linkedin(raw: dict[str, Any]) -> NormalizedJob:
         posted_at=_iso_date(raw.get("postedAt")),
         closes_at=None,
     )
+
+
+def _indeed(raw: dict[str, Any]) -> NormalizedJob:
+    """One item from Apify valig/indeed-jobs-scraper. Prefer the employer apply link when Indeed provides one."""
+    employer = raw.get("employer") if isinstance(raw.get("employer"), dict) else {}
+    place = raw.get("location") if isinstance(raw.get("location"), dict) else {}
+    city = clean_html(place.get("city")) if isinstance(place.get("city"), str) else ""
+    country_code = place.get("countryCode") or place.get("countryName")
+    country = None
+    if isinstance(country_code, str) and country_code.strip():
+        country = _COUNTRIES.get(country_code.strip().lower(), country_code.strip().upper())
+    labels = _indeed_labels(raw)
+    label_text = " ".join(labels)
+    remote_type = _indeed_workplace(labels)
+    if city and _REMOTE.search(city):
+        remote_type = remote_type or "remote"
+        city = ""
+    apply_url = raw.get("jobUrl")
+    if not isinstance(apply_url, str) or not apply_url.startswith(("http://", "https://")):
+        apply_url = raw.get("url") or ""
+    description = raw.get("description")
+    if isinstance(description, dict):
+        text = clean_html(description.get("text")) or clean_html(description.get("html")) or None
+    else:
+        text = clean_html(description) or None
+    city_value = city or None
+    return NormalizedJob(
+        title=clean_html(raw.get("title")),
+        company=clean_html(employer.get("name")),
+        apply_url=apply_url,
+        location=Location(city=city_value, country=country, remote_type=remote_type),
+        places=(Place(city=city_value, country=country),) if city_value or country else (),
+        salary=_indeed_salary(raw.get("baseSalary")),
+        description=text,
+        hours=_hours(label_text),
+        contract_type=_contract_type(label_text),
+        posted_at=_iso_date(raw.get("datePublished") or raw.get("dateOnIndeed")),
+        closes_at=_iso_date(raw.get("expirationDate")),
+    )
+
+
+def _indeed_labels(raw: dict[str, Any]) -> list[str]:
+    """Attribute and job-type labels from the actor, kept as separate values (no key overwrite)."""
+    labels: list[str] = []
+    for field_name in ("attributes", "jobTypes"):
+        values = raw.get(field_name)
+        if not isinstance(values, dict):
+            continue
+        for value in values.values():
+            text = str(value).strip().lower()
+            if text:
+                labels.append(text)
+    return labels
+
+
+_INDEED_REMOTE = frozenset({"remote", "remote work", "work from home", "home-based", "home based"})
+_INDEED_HYBRID = frozenset({"hybrid", "hybrid work"})
+
+
+def _indeed_workplace(labels: list[str]) -> str | None:
+    if any(label in _INDEED_REMOTE for label in labels):
+        return "remote"
+    if any(label in _INDEED_HYBRID for label in labels):
+        return "hybrid"
+    return None
+
+
+def _indeed_salary(raw: object) -> Salary:
+    if not isinstance(raw, dict):
+        return Salary()
+    period = _INDEED_SALARY_PERIOD.get(str(raw.get("unitOfWork") or "").upper())
+    currency = raw.get("currencyCode")
+    if not isinstance(currency, str) or not currency.strip():
+        currency = None
+    else:
+        currency = currency.strip().upper()
+    return Salary(
+        minimum=_money(raw.get("min")),
+        maximum=_money(raw.get("max")),
+        currency=currency,
+        period=period,
+    )
+
+
+def _money(value: object) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, int | float | str | Decimal):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except ArithmeticError:
+        return None
+    return amount if amount.is_finite() and amount >= 0 else None
 
 
 def parse_location(text: str, *, country: str | None = None, workplace: str | None = None) -> Location:

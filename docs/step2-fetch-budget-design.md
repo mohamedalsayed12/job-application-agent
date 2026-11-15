@@ -31,7 +31,7 @@ Name these before Build. Callers pass them in. The gateway and gate own the rule
 | `FetchRequest` | `url`, `method`, `kind` (`api` \| `page`), `headers`, `timeout_s`, optional `official_domain` for page mode | Input to the gateway |
 | `FetchResponse` | `url` (final), `status_code`, `content_type`, `body` (bytes, capped), `fetched_at` | Output on success |
 | `FetchRefusal` | `reason` (`blocked_host` \| `robots` \| `private_address` \| `allowlist` \| `size` \| `redirect_limit` \| `timeout` \| `scheme` \| …) | Soft failure for callers. Not a budget wait. |
-| `SpendEstimate` | `provider`, `kind` (`search` \| `ai_extraction` \| `ai_summary`), `units`, `unit_label`, `estimated_cost`, optional `related_run_id` / `related_item_id`, optional `applicant_id` | Input to the gate before a paid call |
+| `SpendEstimate` | `provider`, `kind` (`linkedin_jobs` \| `indeed_jobs` \| `ai_summary` \| `ai_cv_read` \| `ai_job_judge` \| `ai_fit_report`, plus legacy `search` / `ai_extraction`), `units`, `unit_label`, `estimated_cost`, optional `related_run_id` / `related_item_id`, optional `applicant_id` | Input to the gate before a paid call |
 | `SpendReservation` | `ledger_id`, `estimated_cost` | Hold created before the call |
 | `BudgetWait` | which cap tripped (`monthly` \| `per_run` \| `per_applicant`) | Caller leaves work queued. Never marks it failed (T3). |
 
