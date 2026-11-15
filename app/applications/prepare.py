@@ -91,8 +91,9 @@ async def prepare_application(
         now=now,
     )
     if extracted.budget_blocked:
-        row.status = ApplicationStatus.failed.value
-        row.error = extracted.error
+        # BudgetWait must not fail the work (T3): leave it waiting for a later prepare.
+        row.status = ApplicationStatus.preparing.value
+        row.error = extracted.error or "Waiting on monthly budget."
         session.flush()
         return row
     if extracted.schema is None:

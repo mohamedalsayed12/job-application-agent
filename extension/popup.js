@@ -2,13 +2,13 @@ const apiBase = document.getElementById("apiBase");
 const token = document.getElementById("token");
 const status = document.getElementById("status");
 
-chrome.storage.sync.get(["apiBase", "token"]).then((stored) => {
+chrome.storage.local.get(["apiBase", "token"]).then((stored) => {
   apiBase.value = stored.apiBase || "http://127.0.0.1:8000";
   token.value = stored.token || "";
 });
 
 document.getElementById("save").addEventListener("click", async () => {
-  await chrome.storage.sync.set({
+  await chrome.storage.local.set({
     apiBase: apiBase.value.trim(),
     token: token.value.trim(),
   });

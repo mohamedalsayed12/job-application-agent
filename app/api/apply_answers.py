@@ -122,7 +122,7 @@ def save(
     needs_visa_sponsorship: str = Form("unset"),
     nationality: str = Form(""),
     heard_about: str = Form(""),
-    previously_employed: str = Form("no"),
+    previously_employed: str = Form("unset"),
     free_school_meals: str = Form(PREFER_NOT),
     gender: str = Form(PREFER_NOT),
     ethnicity: str = Form(PREFER_NOT),

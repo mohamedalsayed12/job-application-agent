@@ -1,7 +1,7 @@
 const DEFAULT_API = "http://127.0.0.1:8000";
 
 async function settings() {
-  const stored = await chrome.storage.sync.get(["apiBase", "token"]);
+  const stored = await chrome.storage.local.get(["apiBase", "token"]);
   return {
     apiBase: (stored.apiBase || DEFAULT_API).replace(/\/$/, ""),
     token: stored.token || "",
@@ -49,10 +49,16 @@ async function fillActiveTab() {
   const match = ready.find((row) => urlsMatch(row.apply_url, tab.url));
   if (!match) return { ok: false, error: "No ready fill plan for this page." };
   const plan = match.fill_plan || { steps: [] };
+  const allowed = new Set(["fill", "select", "check", "upload_cv"]);
   for (const step of plan.steps || []) {
-    if (step.action === "click" || step.action === "submit") {
-      return { ok: false, error: "Refusing a plan that tries to click Submit." };
+    if (!allowed.has(step.action)) {
+      return { ok: false, error: "Refusing a plan with a disallowed action." };
     }
+  }
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: "jaa-ping" });
+  } catch (_) {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
   }
   const result = await chrome.tabs.sendMessage(tab.id, {
     type: "jaa-fill",

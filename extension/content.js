@@ -1,4 +1,5 @@
 /* Fills the open apply page from a fill plan. Never clicks Submit. */
+const ALLOWED_ACTIONS = new Set(["fill", "select", "check", "upload_cv"]);
 
 function isSubmitControl(el) {
   if (!el) return true;
@@ -9,7 +10,7 @@ function isSubmitControl(el) {
   const idAttr = el.id || "";
   if (String(typeAttr).toLowerCase() === "submit") return true;
   const hay = `${text} ${name} ${idAttr}`;
-  return /submit|apply now|send application|complete application|finish application/i.test(hay)
+  return /\b(submit|apply now|send application|complete application|finish application)\b/i.test(hay)
     && /^(BUTTON|INPUT|A)$/i.test(tag);
 }
 
@@ -41,9 +42,8 @@ function setValue(el, value) {
   if (isSubmitControl(el)) return;
   const tag = el.tagName.toLowerCase();
   if (tag === "select") {
-    const options = [...el.options];
-    const match = options.find((o) => o.text.trim().toLowerCase() === value.toLowerCase())
-      || options.find((o) => o.text.toLowerCase().includes(value.toLowerCase()));
+    const want = value.toLowerCase();
+    const match = [...el.options].find((o) => o.text.trim().toLowerCase() === want);
     if (match) {
       el.value = match.value;
       el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -57,7 +57,13 @@ function setValue(el, value) {
       for (const radio of group) {
         if (isSubmitControl(radio)) continue;
         const label = (radio.labels?.[0]?.textContent || radio.value || "").toLowerCase();
-        if (label.includes(value.toLowerCase()) || (want && /yes|true/.test(label))) {
+        const wantText = value.toLowerCase();
+        if (label === wantText || label.startsWith(wantText + " ") || label.endsWith(" " + wantText)) {
+          radio.checked = true;
+          radio.dispatchEvent(new Event("change", { bubbles: true }));
+          return;
+        }
+        if (want && /^(yes|true)$/i.test(label.trim())) {
           radio.checked = true;
           radio.dispatchEvent(new Event("change", { bubbles: true }));
           return;
@@ -92,7 +98,7 @@ async function uploadCv(el, apiBase, token) {
 
 async function applyPlan(plan, apiBase, token) {
   for (const step of plan.steps || []) {
-    if (step.action === "click" || step.action === "submit") continue;
+    if (!ALLOWED_ACTIONS.has(step.action)) continue;
     const el = findField(step);
     if (!el || isSubmitControl(el)) continue;
     if (step.action === "upload_cv") {
@@ -110,6 +116,10 @@ async function applyPlan(plan, apiBase, token) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "jaa-ping") {
+    sendResponse({ ok: true });
+    return false;
+  }
   if (message?.type !== "jaa-fill") return;
   (async () => {
     try {

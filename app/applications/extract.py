@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,7 @@ from app.models import AtsKind, SpendKind
 
 logger = logging.getLogger(__name__)
 APIFY_API = "https://api.apify.com/v2"
+WAIT_SECONDS = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,16 @@ class ExtractResult:
     schema: FormSchema | None
     error: str | None = None
     budget_blocked: bool = False
+
+
+def _usd(value: object) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        number = Decimal(str(value))
+    except ArithmeticError:
+        return None
+    return number if number.is_finite() and number >= 0 else None
 
 
 async def extract_form_schema(
@@ -75,11 +86,21 @@ async def extract_form_schema(
         return ExtractResult(None, error="Monthly budget reached.", budget_blocked=True)
     persist()
 
-    run = _ApifyFormRun(gateway, token, settings)
-    items, cost_usd, problem = await run.extract(apply_url, ats.value)
-    actual = estimate if cost_usd is None else (cost_usd * settings.usd_to_gbp).quantize(Decimal("0.0001"))
-    gate.settle(reservation, actual_cost=actual, units=Decimal(1))
-    persist()
+    cost_usd: Decimal | None = None
+    items: list[dict[str, Any]] | None = None
+    problem: str | None = None
+    try:
+        run = _ApifyFormRun(gateway, token, settings)
+        items, cost_usd, problem = await run.extract(apply_url, ats.value)
+    except Exception:
+        logger.exception("Apify form extraction crashed for %s", apply_url)
+        problem = "Form extraction crashed."
+        items = None
+    finally:
+        actual = estimate if cost_usd is None else (cost_usd * settings.usd_to_gbp).quantize(Decimal("0.0001"))
+        gate.settle(reservation, actual_cost=actual, units=Decimal(1))
+        persist()
+
     if items is None:
         return ExtractResult(None, error=problem or "Form extraction failed.")
     return ExtractResult(fields_from_apify_items(items, ats=ats))
@@ -104,8 +125,8 @@ async def _greenhouse_api(gateway: FetchGateway, board: str, job_id: str) -> Ext
 class _ApifyFormRun:
     def __init__(self, gateway: FetchGateway, token: str, settings: Settings) -> None:
         self.gateway = gateway
-        self.token = token
         self.settings = settings
+        self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         self.problem: str | None = None
 
     async def extract(self, apply_url: str, ats: str) -> tuple[list[dict[str, Any]] | None, Decimal | None, str | None]:
@@ -113,54 +134,25 @@ class _ApifyFormRun:
         if not actor:
             self.problem = "APPLY_FORM_ACTOR is not set."
             return None, None, self.problem
-        start = await self.gateway.fetch(
-            FetchRequest(
-                url=f"{APIFY_API}/acts/{quote(actor, safe='')}/runs?token={self.token}",
-                method="POST",
-                kind="api",
-                headers={"Content-Type": "application/json"},
-                body=json.dumps({"applyUrl": apply_url, "ats": ats}).encode(),
-                timeout_s=20.0,
-            )
-        )
-        if isinstance(start, FetchRefusal) or start.status_code >= 300:
-            self.problem = "Could not start the Apify form actor."
-            return None, None, self.problem
-        data = json.loads(start.body.decode()).get("data") or {}
-        run_id = data.get("id")
-        dataset = data.get("defaultDatasetId")
+        actor_path = quote(actor.replace("/", "~"), safe="~")
+        data = await self._call(f"{APIFY_API}/acts/{actor_path}/runs", method="POST", body={"applyUrl": apply_url, "ats": ats})
+        run = (data or {}).get("data") or {}
+        run_id = run.get("id")
+        dataset = run.get("defaultDatasetId")
         if not run_id or not dataset:
-            self.problem = "Apify did not return a run id."
+            self.problem = self.problem or "Apify did not return a run id."
             return None, None, self.problem
 
         cost_usd: Decimal | None = None
-        for _ in range(max(1, self.settings.apply_form_wait_minutes * 4)):
-            check = await self.gateway.fetch(
-                FetchRequest(
-                    url=f"{APIFY_API}/actor-runs/{run_id}?token={self.token}",
-                    kind="api",
-                    timeout_s=25.0,
-                )
-            )
-            if isinstance(check, FetchRefusal):
-                self.problem = "Apify run check refused."
-                return None, None, self.problem
-            payload = json.loads(check.body.decode()).get("data") or {}
+        deadline = max(1, self.settings.apply_form_wait_minutes) * 60
+        waited = 0
+        while waited < deadline:
+            checked = await self._call(f"{APIFY_API}/actor-runs/{run_id}")
+            payload = (checked or {}).get("data") or {}
             status = payload.get("status")
-            if payload.get("usageTotalUsd") is not None:
-                cost_usd = Decimal(str(payload["usageTotalUsd"]))
+            cost_usd = _usd(payload.get("usageTotalUsd")) or cost_usd
             if status == "SUCCEEDED":
-                items_resp = await self.gateway.fetch(
-                    FetchRequest(
-                        url=f"{APIFY_API}/datasets/{dataset}/items?token={self.token}",
-                        kind="api",
-                        timeout_s=20.0,
-                    )
-                )
-                if isinstance(items_resp, FetchRefusal):
-                    self.problem = "Could not read Apify dataset."
-                    return None, cost_usd, self.problem
-                items = json.loads(items_resp.body.decode())
+                items = await self._call(f"{APIFY_API}/datasets/{dataset}/items?{urlencode({'clean': 'true', 'format': 'json'})}")
                 if not isinstance(items, list):
                     self.problem = "Apify dataset was not a list."
                     return None, cost_usd, self.problem
@@ -168,14 +160,31 @@ class _ApifyFormRun:
             if status in ("FAILED", "ABORTED", "TIMED-OUT"):
                 self.problem = f"Apify run {status}."
                 return None, cost_usd, self.problem
-            await asyncio.sleep(15)
-        await self.gateway.fetch(
-            FetchRequest(
-                url=f"{APIFY_API}/actor-runs/{run_id}/abort?token={self.token}",
-                method="POST",
-                kind="api",
-                timeout_s=15.0,
-            )
-        )
+            await asyncio.sleep(WAIT_SECONDS)
+            waited += WAIT_SECONDS
+        await self._call(f"{APIFY_API}/actor-runs/{run_id}/abort", method="POST")
         self.problem = "Apify form run timed out."
         return None, cost_usd, self.problem
+
+    async def _call(self, url: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
+        response = await self.gateway.fetch(
+            FetchRequest(
+                url=url,
+                method=method,
+                kind="api",
+                headers=self.headers,
+                timeout_s=WAIT_SECONDS + 5,
+                body=json.dumps(body).encode("utf-8") if body is not None else None,
+            )
+        )
+        if isinstance(response, FetchRefusal):
+            self.problem = f"Apify refused: {response.reason}"
+            return None
+        if response.status_code >= 400:
+            self.problem = f"Apify answered {response.status_code}"
+            return None
+        try:
+            return json.loads(response.body)
+        except ValueError:
+            self.problem = "Apify sent something that is not JSON"
+            return None

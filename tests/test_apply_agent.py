@@ -97,6 +97,14 @@ def test_mapper_recognises_common_labels() -> None:
     assert match_answer_key("Right to work in the UK") == "right_to_work_uk"
 
 
+def test_mapper_does_not_false_match_common_traps() -> None:
+    assert match_answer_key("Tell us why you want this role") is None
+    assert match_answer_key("Sexual orientation") is None
+    assert match_answer_key("Hotel preferences") is None
+    assert match_answer_key("Intelligence") is None
+    assert match_answer_key("Gender") == "gender"
+
+
 def test_fill_plan_maps_answers_and_flags_gaps() -> None:
     schema = FormSchema(
         ats_kind=AtsKind.greenhouse,
@@ -124,6 +132,16 @@ def test_fill_plan_maps_answers_and_flags_gaps() -> None:
     assert actions["Resume"].action == "upload_cv"
     assert plan.missing == ["Secret custom question"]
     assert_plan_has_no_submit_clicks(plan.to_json())
+
+    decline_plan = build_fill_plan(
+        FormSchema(
+            ats_kind=AtsKind.greenhouse,
+            source="stub",
+            fields=[FormField("Ethnicity", "eth", "select", False, ["Yes", "No", "I do not want to answer"])],
+        ),
+        {"ethnicity": PREFER_NOT},
+    )
+    assert decline_plan.steps[0].value == "I do not want to answer"
 
 
 def test_submit_controls_are_detected() -> None:

@@ -3,7 +3,7 @@
   "name": "Job Agent Apply Fill",
   "version": "0.1.0",
   "description": "Fills employer application forms from your Job Agent fill plan and never clicks Submit.",
-  "permissions": ["storage", "notifications", "alarms"],
+  "permissions": ["storage", "notifications", "alarms", "activeTab", "scripting"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
@@ -18,10 +18,9 @@
         "https://boards.greenhouse.io/*",
         "https://job-boards.greenhouse.io/*",
         "https://*.greenhouse.io/*",
+        "https://boards-eu.greenhouse.io/*",
         "https://jobs.lever.co/*",
-        "https://*.lever.co/*",
-        "http://*/*",
-        "https://*/*"
+        "https://*.lever.co/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

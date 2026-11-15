@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+ALLOWED_ACTIONS = frozenset({"fill", "select", "check", "upload_cv"})
 _SUBMIT = re.compile(
     r"\b(submit|apply now|send application|complete application|finish application)\b",
     re.I,
@@ -15,20 +16,11 @@ def is_submit_control(*, tag: str, type_attr: str, text: str, name: str = "", id
     if type_attr.lower() == "submit":
         return True
     hay = f"{text} {name} {id_attr}"
-    if tag.lower() in ("button", "input", "a") and _SUBMIT.search(hay):
-        return True
-    return False
+    return tag.lower() in ("button", "input", "a") and bool(_SUBMIT.search(hay))
 
 
 def assert_plan_has_no_submit_clicks(plan: dict) -> None:
     for step in plan.get("steps") or []:
         action = str(step.get("action") or "")
-        if action == "click":
-            raise AssertionError("fill plans must not include click actions")
-        if is_submit_control(
-            tag="button",
-            type_attr="button",
-            text=str(step.get("value") or ""),
-            name=str(step.get("name") or ""),
-        ) and action in ("click", "submit"):
-            raise AssertionError("fill plan tries to activate a submit control")
+        if action not in ALLOWED_ACTIONS:
+            raise AssertionError(f"fill plans may only use {sorted(ALLOWED_ACTIONS)}, not {action!r}")
