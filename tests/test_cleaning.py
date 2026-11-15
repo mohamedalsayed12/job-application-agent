@@ -57,7 +57,7 @@ def test_a_result_without_a_title_company_or_link_is_unusable(raw: dict) -> None
 
 
 def test_an_unknown_source_gives_no_job() -> None:
-    assert normalize_job("greenhouse", _li(1)) is None
+    assert normalize_job("unknown-source", _li(1)) is None
 
 
 def test_t26_a_job_traces_back_to_its_raw_result_and_search(session: Session) -> None:

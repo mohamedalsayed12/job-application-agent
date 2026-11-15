@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
+from app.api.forms import csrf_field
 from app.cleaning.linking import is_primary
 from app.core.db import get_db
 from app.matching import semantic
@@ -260,10 +261,16 @@ def _e(value: object) -> str:
     return html.escape(str(value))
 
 
-def _apply(url: str) -> str:
+def _apply(url: str, job_id: object, csrf: str) -> str:
     if not url.lower().startswith(("https://", "http://")):
         return '<span class="muted">No usable apply link was given.</span>'
-    return f'<a class="button primary" href="{html.escape(url, quote=True)}" rel="noopener noreferrer">Apply on the original posting</a>'
+    safe = html.escape(url, quote=True)
+    return (
+        f'<form method="post" action="/applications" class="inline">{csrf}'
+        f'<input type="hidden" name="job_id" value="{html.escape(str(job_id))}"/>'
+        f'<button type="submit" class="primary">Prepare apply</button></form> '
+        f'<a class="button" href="{safe}" rel="noopener noreferrer">Original posting</a>'
+    )
 
 
 def _reasons(item: Listing) -> str:
@@ -371,7 +378,7 @@ def _plain_list(title: str, items: list[str]) -> str:
     return f'<p>{_e(title)}</p><ul class="plain">' + "".join(f"<li>{_e(item)}</li>" for item in items) + "</ul>"
 
 
-def render_listing(item: Listing) -> str:
+def render_listing(item: Listing, csrf: str = "") -> str:
     if item.summary:
         about = f"<p>{_e(item.summary)}</p><p><small>AI summary, checked against the posting.</small></p>"
     else:
@@ -414,7 +421,7 @@ def render_listing(item: Listing) -> str:
 {_fit_report(item)}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
-  {_apply(item.apply_url)}
+  {_apply(item.apply_url, item.job_id, csrf)}
 </div>
 </article>
 """
@@ -537,7 +544,8 @@ def listings_page(
     where = "in every location" if everywhere else "in your locations"
     hint = _discover_hint(db, applicant, preference, everywhere=everywhere, sort=sort) if show == "roles" else ""
     if listings:
-        body = "".join(render_listing(item) for item in listings)
+        csrf = csrf_field(request)
+        body = "".join(render_listing(item, csrf) for item in listings)
     elif preference is None:
         body = '<div class="card"><p>Fill in <a href="/profile">your profile</a> and we\'ll find your matches.</p></div>'
     else:

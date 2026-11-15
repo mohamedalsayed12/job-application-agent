@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     linkedin_run_price: Decimal = Decimal("0.02")
     usd_to_gbp: Decimal = Decimal("0.80")
 
+    # Post-MVP apply agent: Apify form-schema extraction for any apply URL.
+    apply_form_actor: str = ""
+    apply_form_unit_price: Decimal = Decimal("0.01")
+    apply_form_run_price: Decimal = Decimal("0.02")
+    apply_form_wait_minutes: int = 5
+    ai_apply_map_unit_price: Decimal = Decimal("0.002")
+    ai_apply_map_model: str = ""
+    ai_apply_map_max_output_tokens: int = 800
+
     # Blank model = provider default.
     ai_provider: str = "anthropic"
     anthropic_api_key: str = ""
@@ -91,6 +100,9 @@ class Settings(BaseSettings):
         "linkedin_unit_price",
         "linkedin_run_price",
         "usd_to_gbp",
+        "apply_form_unit_price",
+        "apply_form_run_price",
+        "ai_apply_map_unit_price",
         "ai_summary_unit_price",
         "ai_cv_unit_price",
         "ai_judge_unit_price",

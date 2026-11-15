@@ -228,7 +228,8 @@ def _profile_page(
         f"""{_PROFILE_STYLE}
 <div class="page-head"><div>
   <h1>Your profile</h1>
-  <p class="muted">Tell us what you're looking for. We use this only to find and match jobs, and you can delete it at any time.</p>
+  <p class="muted">Tell us what you're looking for. We use this only to find and match jobs, and you can delete it at any time.
+  For employer forms, set <a href="/profile/apply-answers">apply answers</a> separately.</p>
 </div></div>
 {message}
 <form method="post" action="/profile" id="profile-form">
