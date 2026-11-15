@@ -1,8 +1,10 @@
 """Indeed jobs through Apify's valig/indeed-jobs-scraper, same daily loop as LinkedIn (D54).
 
-Once a day each person the AI works for gets one Indeed search per target role and
-location. Each search is one Apify run: start, wait until it ends, read the dataset.
-Every run is reserved against the budget first and settled at what Apify says it cost.
+Once a day each person the AI works for gets Indeed searches for every target role and
+location, as graduate, junior and entry-level title forms (Indeed has no LinkedIn-style
+experience filter). Each search is one Apify run: start, wait until it ends, read the
+dataset. Every run is reserved against the budget first and settled at what Apify says
+it cost.
 """
 
 from __future__ import annotations
@@ -10,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -32,6 +36,12 @@ APIFY_API = "https://api.apify.com/v2"
 WAIT_SECONDS = 25
 _FINISHED = frozenset({"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"})
 _HAS_RESULTS = frozenset({"SUCCEEDED", "TIMED-OUT"})
+# Strip a leading level word so "Junior Python Developer" and "Python Developer" share a core.
+_LEADING_LEVEL = re.compile(
+    r"^(?:graduate|grad|junior|jr\.?|entry[- ]level|entry|early[- ]careers?)\s+",
+    re.IGNORECASE,
+)
+_ENTRY_FORMS = ("Graduate", "Junior", "Entry Level")
 
 
 @dataclass(slots=True)
@@ -47,6 +57,31 @@ class IndeedReport:
 def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
     last = session.scalar(select(func.max(FetchRun.started_at)).where(FetchRun.source == SOURCE))
     return last is None or now - last >= timedelta(hours=settings.indeed_every_hours)
+
+
+def entry_titles(role: str) -> list[str]:
+    """Graduate, junior and entry-level title queries for one target role (Indeed has no f_E filter)."""
+    cleaned = " ".join(role.split())
+    if not cleaned:
+        return []
+    core = _LEADING_LEVEL.sub("", cleaned).strip() or cleaned
+    # Prefs may store "backend developer"; Indeed queries stay readable Title Case.
+    core = " ".join(word[:1].upper() + word[1:] for word in core.split())
+    found: dict[str, str] = {}
+    for prefix in _ENTRY_FORMS:
+        title = f"{prefix} {core}"
+        found.setdefault(title.casefold(), title)
+    return list(found.values())
+
+
+def indeed_searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Search]:
+    """Each role × location, expanded to graduate / junior / entry-level titles, once each."""
+    found: dict[tuple[str, str], Search] = {}
+    for search in searches(session, applicant_ids):
+        for title in entry_titles(search.role):
+            expanded = Search(title, search.location)
+            found.setdefault((expanded.role.lower(), expanded.location.lower()), expanded)
+    return sorted(found.values(), key=lambda search: (search.role.lower(), search.location.lower()))
 
 
 async def collect_indeed(
@@ -66,7 +101,7 @@ async def collect_indeed(
     if not is_due(session, now=now(), settings=settings):
         return report
     gate = BudgetGate(session, clock=now)
-    for search in searches(session, settings.ai_applicants()):
+    for search in indeed_searches(session, settings.ai_applicants()):
         estimate = settings.indeed_max_results * settings.indeed_unit_price + settings.indeed_run_price
         try:
             reservation = gate.reserve(
