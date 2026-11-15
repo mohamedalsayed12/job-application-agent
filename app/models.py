@@ -99,6 +99,9 @@ class SpendKind(StrEnum):
     indeed_jobs = "indeed_jobs"
     apply_form = "apply_form"
     ai_apply_map = "ai_apply_map"
+    linkedin_people = "linkedin_people"
+    linkedin_profile = "linkedin_profile"
+    ai_outreach = "ai_outreach"
     # Spend recorded under kinds that no longer exist. Kept so the monthly cap still counts it.
     retired = "retired"
 
@@ -122,6 +125,34 @@ class AtsKind(StrEnum):
 
 # Prefer-not-to-say default for optional demographic application answers.
 PREFER_NOT = "prefer_not_to_say"
+
+
+class OutreachRoleKind(StrEnum):
+    hiring_manager = "hiring_manager"
+    recruiter = "recruiter"
+    executive = "executive"
+    employee = "employee"
+    unknown = "unknown"
+
+
+class OutreachChannel(StrEnum):
+    gmail = "gmail"
+    linkedin_note = "linkedin_note"
+
+
+class OutreachDraftStatus(StrEnum):
+    draft = "draft"
+    edited = "edited"
+    sent = "sent"
+    copied = "copied"
+
+
+class OutreachSendStatus(StrEnum):
+    sent = "sent"
+    copied = "copied"
+    failed = "failed"
+    dry_run = "dry_run"
+
 
 
 class TailoredCvStatus(StrEnum):
@@ -743,3 +774,107 @@ class ExtensionDevice(_UuidPk, Base):
     label: Mapped[str] = mapped_column(Text(), server_default=text("'default'"))
     created_at: Mapped[datetime] = _created()
     rotated_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+
+
+class OutreachContact(_UuidPk, Base):
+    """A person found for outreach on one job, for one applicant."""
+
+    __tablename__ = "outreach_contact"
+    __table_args__ = (
+        _text_in("role_kind", OutreachRoleKind),
+        UniqueConstraint(
+            "applicant_id",
+            "job_id",
+            "linkedin_url",
+            name="uq_outreach_contact_applicant_job_linkedin",
+        ),
+        Index("ix_outreach_contact_applicant_job", "applicant_id", "job_id"),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    full_name: Mapped[str] = mapped_column(Text())
+    title: Mapped[str | None] = mapped_column(Text())
+    company_name: Mapped[str | None] = mapped_column(Text())
+    linkedin_url: Mapped[str | None] = mapped_column(Text())
+    email: Mapped[str | None] = mapped_column(Text())
+    role_kind: Mapped[str] = mapped_column(Text())
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB(), default=dict, server_default=text("'{}'::jsonb"))
+    source_actor: Mapped[str] = mapped_column(Text())
+    created_at: Mapped[datetime] = _created()
+
+
+class OutreachResearch(_UuidPk, Base):
+    """Public About text and quotes for one contact."""
+
+    __tablename__ = "outreach_research"
+    __table_args__ = (UniqueConstraint("contact_id", name="uq_outreach_research_contact"),)
+
+    contact_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("outreach_contact.id", ondelete="CASCADE"))
+    about_text: Mapped[str | None] = mapped_column(Text())
+    quotes: Mapped[list[dict[str, Any]]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    raw_hash: Mapped[str] = mapped_column(Text())
+    fetched_at: Mapped[datetime] = mapped_column(TZ)
+
+
+class OutreachDraft(_UuidPk, Base):
+    """An outreach message the person can edit before sending or copying."""
+
+    __tablename__ = "outreach_draft"
+    __table_args__ = (
+        _text_in("channel", OutreachChannel),
+        _text_in("status", OutreachDraftStatus),
+        UniqueConstraint(
+            "applicant_id",
+            "contact_id",
+            "channel",
+            "evidence_digest",
+            name="uq_outreach_draft_evidence",
+        ),
+        Index("ix_outreach_draft_applicant_contact", "applicant_id", "contact_id"),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    contact_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("outreach_contact.id", ondelete="CASCADE"))
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    channel: Mapped[str] = mapped_column(Text())
+    subject: Mapped[str | None] = mapped_column(Text())
+    body: Mapped[str] = mapped_column(Text())
+    pattern_ids: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    evidence_digest: Mapped[str] = mapped_column(Text())
+    status: Mapped[str] = mapped_column(Text())
+    user_edited_body: Mapped[str | None] = mapped_column(Text())
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class OutreachSend(_UuidPk, Base):
+    """A send or copy of one draft."""
+
+    __tablename__ = "outreach_send"
+    __table_args__ = (
+        _text_in("channel", OutreachChannel),
+        _text_in("status", OutreachSendStatus),
+        Index("ix_outreach_send_draft", "draft_id"),
+    )
+
+    draft_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("outreach_draft.id", ondelete="CASCADE"))
+    channel: Mapped[str] = mapped_column(Text())
+    provider_message_id: Mapped[str | None] = mapped_column(Text())
+    status: Mapped[str] = mapped_column(Text())
+    error: Mapped[str | None] = mapped_column(Text())
+    created_at: Mapped[datetime] = _created()
+
+
+class GmailConnection(_UuidPk, Base):
+    """OAuth refresh token for sending outreach mail as the applicant."""
+
+    __tablename__ = "gmail_connection"
+    __table_args__ = (UniqueConstraint("applicant_id", name="uq_gmail_connection_applicant"),)
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    email: Mapped[str] = mapped_column(Text())
+    refresh_token_sealed: Mapped[str] = mapped_column(Text())
+    scopes: Mapped[str] = mapped_column(Text())
+    connected_at: Mapped[datetime] = mapped_column(TZ)
+    revoked_at: Mapped[datetime | None] = mapped_column(TZ)

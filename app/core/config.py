@@ -29,7 +29,10 @@ class Settings(BaseSettings):
     fetch_user_agent: str = (
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
-    api_allowlist: str = "api.apify.com,api.anthropic.com,boards-api.greenhouse.io"
+    api_allowlist: str = (
+        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
+        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com"
+    )
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
     apify_api_token: str = ""
@@ -63,6 +66,23 @@ class Settings(BaseSettings):
     ai_apply_map_unit_price: Decimal = Decimal("0.002")
     ai_apply_map_model: str = ""
     ai_apply_map_max_output_tokens: int = 800
+
+    # Outreach: people discovery and profile research through Apify (still never fetch linkedin.com here).
+    apify_outreach_hm_actor: str = "automation_studio/linkedin-job-hiring-manager-finder"
+    apify_outreach_employees_actor: str = "harvestapi/linkedin-company-employees"
+    apify_outreach_profile_actor: str = "harvestapi/linkedin-profile"
+    outreach_max_contacts: int = 8
+    outreach_people_unit_price: Decimal = Decimal("0.02")
+    outreach_profile_unit_price: Decimal = Decimal("0.01")
+    outreach_ai_unit_price: Decimal = Decimal("0.002")
+    outreach_daily_send_cap: int = 20
+    outreach_gmail_dry_run: bool = True
+
+    # Gmail OAuth (send only after the person connects and approves a draft).
+    gmail_client_id: str = ""
+    gmail_client_secret: str = ""
+    gmail_redirect_uri: str = "http://localhost:8000/account/gmail/callback"
+    gmail_token_key: str = ""
 
     # Blank model = provider default.
     ai_provider: str = "anthropic"
@@ -128,6 +148,9 @@ class Settings(BaseSettings):
         "ai_judge_unit_price",
         "ai_report_unit_price",
         "ai_tailor_unit_price",
+        "outreach_people_unit_price",
+        "outreach_profile_unit_price",
+        "outreach_ai_unit_price",
         mode="before",
     )
     @classmethod
@@ -164,6 +187,12 @@ class Settings(BaseSettings):
 
     def resolved_ai_tailor_model(self) -> str:
         return self.ai_tailor_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_outreach_model(self) -> str:
+        return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def gmail_seal_secret(self) -> str:
+        return (self.gmail_token_key or self.session_secret).strip()
 
     def api_allowlist_hosts(self) -> frozenset[str]:
         return frozenset(
