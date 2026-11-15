@@ -23,10 +23,11 @@ from urllib.parse import quote, urlencode
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservation
+from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
-from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest
+from app.fetch.apify import run_actor, settle_cost
+from app.fetch.gateway import FetchGateway
 from app.models import (
     ApplicantPreference,
     FetchOutcome,
@@ -36,11 +37,7 @@ from app.models import (
 )
 
 SOURCE = "linkedin"
-APIFY_API = "https://api.apify.com/v2"
-WAIT_SECONDS = 25
 ENTRY_LEVEL = "2"
-_FINISHED = frozenset({"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"})
-_HAS_RESULTS = frozenset({"SUCCEEDED", "TIMED-OUT"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,12 +119,29 @@ async def collect_linkedin(
             break
         persist()
         started = now()
-        run = _Run(gateway, token, settings, sleep)
-        items, cost_usd = await run.search(search)
-        gate.settle(reservation, **_actual(reservation, cost_usd, settings))
+        max_charge = (settings.linkedin_max_results * settings.linkedin_unit_price) / settings.usd_to_gbp
+        items, cost_usd, problem = await run_actor(
+            gateway,
+            token=token,
+            actor=settings.linkedin_actor,
+            body={
+                "startUrls": [{"url": search.url(posted_within_days=settings.linkedin_posted_within_days)}],
+                "maxResults": settings.linkedin_max_results,
+                "includeDetails": True,
+                "enrichDetails": True,
+                "descriptionFormat": "text",
+            },
+            max_charge_usd=max_charge,
+            wait_minutes=settings.linkedin_wait_minutes,
+            sleep=sleep,
+        )
+        gate.settle(
+            reservation,
+            actual_cost=settle_cost(reservation.estimated_cost, cost_usd, settings.usd_to_gbp),
+        )
         report.searches += 1
         if items is None:
-            report.failed.append(f"{search.role} in {search.location}: {run.problem}")
+            report.failed.append(f"{search.role} in {search.location}: {problem}")
         stored = store_items(session, items or [], started_at=started, finished_at=now(), ok=items is not None)
         report.jobs += len(items or [])
         report.postings_new += stored
@@ -135,12 +149,6 @@ async def collect_linkedin(
     report.closed = close_stale(session, source=SOURCE, now=now(), after=timedelta(days=settings.linkedin_stale_days))
     persist()
     return report
-
-
-def _actual(reservation: SpendReservation, cost_usd: Decimal | None, settings: Settings) -> dict[str, Any]:
-    if cost_usd is None:
-        return {"actual_cost": reservation.estimated_cost}
-    return {"actual_cost": (cost_usd * settings.usd_to_gbp).quantize(Decimal("0.0001"))}
 
 
 def store_items(
@@ -178,85 +186,3 @@ def store_items(
 def _job_id(item: dict[str, Any]) -> str | None:
     value = item.get("linkedinJobId") or item.get("jobId")
     return str(value).strip() or None if value is not None else None
-
-
-class _Run:
-    """One Apify run of the scraper: start it, wait for it to end, read what it found."""
-
-    def __init__(self, gateway: FetchGateway, token: str, settings: Settings, sleep: Callable[[float], Any]) -> None:
-        self.gateway, self.settings, self.sleep = gateway, settings, sleep
-        self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        self.problem = ""
-
-    async def search(self, search: Search) -> tuple[list[dict[str, Any]] | None, Decimal | None]:
-        settings = self.settings
-        max_charge = (settings.linkedin_max_results * settings.linkedin_unit_price) / settings.usd_to_gbp
-        actor = quote(settings.linkedin_actor.replace("/", "~"), safe="~")
-        started = await self._call(
-            f"{APIFY_API}/acts/{actor}/runs?{urlencode({'maxTotalChargeUsd': f'{max_charge:.2f}', 'memory': 1024})}",
-            method="POST",
-            body={
-                "startUrls": [{"url": search.url(posted_within_days=settings.linkedin_posted_within_days)}],
-                "maxResults": settings.linkedin_max_results,
-                "includeDetails": True,
-                "enrichDetails": True,
-                "descriptionFormat": "text",
-            },
-        )
-        run = (started or {}).get("data") or {}
-        if not run.get("id"):
-            return None, None
-        deadline = settings.linkedin_wait_minutes * 60
-        waited = 0
-        while run.get("status") not in _FINISHED and waited < deadline:
-            checked = await self._call(f"{APIFY_API}/actor-runs/{run['id']}?waitForFinish={WAIT_SECONDS}")
-            if checked is None:
-                await self.sleep(WAIT_SECONDS)
-            run = (checked or {}).get("data") or run
-            waited += WAIT_SECONDS
-        if run.get("status") not in _FINISHED:
-            await self._call(f"{APIFY_API}/actor-runs/{run['id']}/abort", method="POST")
-            self.problem = "did not finish in time"
-        cost = _usd(run.get("usageTotalUsd"))
-        if run.get("status") not in _HAS_RESULTS:
-            self.problem = self.problem or f"run {str(run.get('status')).lower()}"
-            return None, cost
-        dataset = run.get("defaultDatasetId")
-        items = await self._call(f"{APIFY_API}/datasets/{dataset}/items?{urlencode({'clean': 'true', 'format': 'json'})}")
-        if not isinstance(items, list):
-            self.problem = self.problem or "results unreadable"
-            return None, cost
-        return items, cost
-
-    async def _call(self, url: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
-        response = await self.gateway.fetch(
-            FetchRequest(
-                url=url,
-                method=method,
-                kind="api",
-                headers=self.headers,
-                timeout_s=WAIT_SECONDS + 5,
-                body=json.dumps(body).encode("utf-8") if body is not None else None,
-            )
-        )
-        if isinstance(response, FetchRefusal):
-            self.problem = response.reason
-            return None
-        if response.status_code >= 400:
-            self.problem = f"Apify answered {response.status_code}"
-            return None
-        try:
-            return json.loads(response.body)
-        except ValueError:
-            self.problem = "Apify sent something that is not JSON"
-            return None
-
-
-def _usd(value: object) -> Decimal | None:
-    if isinstance(value, bool) or not isinstance(value, int | float | str):
-        return None
-    try:
-        number = Decimal(str(value))
-    except ArithmeticError:
-        return None
-    return number if number.is_finite() and number >= 0 else None

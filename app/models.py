@@ -95,10 +95,30 @@ class SpendKind(StrEnum):
     ai_job_judge = "ai_job_judge"
     ai_fit_report = "ai_fit_report"
     linkedin_jobs = "linkedin_jobs"
+    interview_collect = "interview_collect"
+    ai_interview_analyse = "ai_interview_analyse"
+    ai_interview_plan = "ai_interview_plan"
     # Spend recorded under kinds that no longer exist. Kept so the monthly cap still counts it.
     retired = "retired"
 
 
+class InterviewPlatform(StrEnum):
+    reddit = "reddit"
+    youtube = "youtube"
+    linkedin = "linkedin"
+
+
+class InterviewOutcome(StrEnum):
+    success = "success"
+    failure = "failure"
+    unclear = "unclear"
+
+
+class InterviewRequestStatus(StrEnum):
+    queued = "queued"
+    running = "running"
+    ready = "ready"
+    failed = "failed"
 
 
 def _text_in(
@@ -567,5 +587,77 @@ class JobReport(_UuidPk, Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class InterviewIntelPack(_UuidPk, Base):
+    """Shared interview findings and practice plan for one normalised target role."""
+
+    __tablename__ = "interview_intel_pack"
+    __table_args__ = (Index("ix_interview_intel_pack_role_key_expires", "role_key", "expires_at"),)
+
+    role_key: Mapped[str] = mapped_column(Text())
+    role_label: Mapped[str] = mapped_column(Text())
+    summary: Mapped[str] = mapped_column(Text())
+    success_themes: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    failure_themes: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    differentiators: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    materials: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    practice_plan: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    source_hash: Mapped[str] = mapped_column(Text())
+    model: Mapped[str] = mapped_column(Text())
+    prompt_version: Mapped[str] = mapped_column(Text())
+    prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    ready_at: Mapped[datetime] = mapped_column(TZ)
+    expires_at: Mapped[datetime] = mapped_column(TZ)
+    created_at: Mapped[datetime] = _created()
+
+
+class InterviewEvidence(_UuidPk, Base):
+    """One public social item collected for interview research on a role."""
+
+    __tablename__ = "interview_evidence"
+    __table_args__ = (
+        _text_in("platform", InterviewPlatform),
+        _text_in("outcome", InterviewOutcome),
+        UniqueConstraint("role_key", "content_hash", name="uq_interview_evidence_role_key_content_hash"),
+        Index("ix_interview_evidence_role_key", "role_key"),
+    )
+
+    role_key: Mapped[str] = mapped_column(Text())
+    platform: Mapped[str] = mapped_column(Text())
+    url: Mapped[str] = mapped_column(Text())
+    title: Mapped[str] = mapped_column(Text())
+    snippet: Mapped[str] = mapped_column(Text())
+    outcome: Mapped[str] = mapped_column(Text(), server_default=text("'unclear'"))
+    labelled: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
+    reasons: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    methods: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    materials: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    content_hash: Mapped[str] = mapped_column(Text())
+    fetch_run_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("fetch_run.id"))
+    created_at: Mapped[datetime] = _created()
+
+
+class InterviewIntelRequest(_UuidPk, Base):
+    """One applicant's on-demand request for interview intel on a target role."""
+
+    __tablename__ = "interview_intel_request"
+    __table_args__ = (
+        _text_in("status", InterviewRequestStatus),
+        Index("ix_interview_intel_request_status", "status"),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    role: Mapped[str] = mapped_column(Text())
+    role_key: Mapped[str] = mapped_column(Text())
+    status: Mapped[str] = mapped_column(Text())
+    pack_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("interview_intel_pack.id", ondelete="SET NULL"))
+    error: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()

@@ -11,7 +11,7 @@ from app.api.chrome import public_bar
 router = APIRouter(tags=["privacy"])
 
 CONTACT_EMAIL = "mohammed33771885@gmail.com"
-UPDATED = "10 November 2026"
+UPDATED = "15 November 2026"
 
 _BODY = f"""
 <h1>Privacy notice</h1>
@@ -33,6 +33,9 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
   from my CV", its text is read to suggest entries for your profile form. The suggestions aren't stored: only what you
   save is kept.</li>
   <li><b>Your job matches:</b> which jobs fit your profile, with a score and the reasons.</li>
+  <li><b>Interview intel requests:</b> which target role you asked us to research, and the resulting practice pack.</li>
+  <li><b>Public interview stories</b> from Reddit, YouTube and LinkedIn (short text snippets and URLs only), collected when
+  you ask for interview intel on a role. These are not about you; they are used to build a shared findings pack for that role.</li>
   <li><b>Your IP address</b>, held briefly in memory to limit repeated login attempts. It isn't written to the database.</li>
 </ul>
 <p>The lawful basis is that you asked for this service: we use your data only to provide it to you.</p>
@@ -49,6 +52,9 @@ together with each job advert. Your email address, name, locations, salary and C
 <p>For each job that first check scores 3.0 or more, the service writes a fuller fit report. For that it sends Anthropic
 the job advert with your target roles, experience level, skills, degrees, salary wish, wanted locations and the text of
 your CV, if you uploaded one. Your email address and name are never sent.</p>
+<p>When you ask for interview intel on a target role, the service collects public posts through Apify and sends those
+short snippets to Anthropic so it can label success vs failure stories and draft a practice plan. Your email address,
+name and CV are not part of that.</p>
 </div>
 
 <div class="card">
