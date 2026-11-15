@@ -49,6 +49,7 @@ def _body(job: Job, shown: Shown) -> str:
 {about}
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
 {_apply_link(job.apply_url)}
+<p><a class="button" href="/jobs/{job.id}/outreach">Outreach to people at this company</a></p>
 </div>
 """
 

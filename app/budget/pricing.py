@@ -17,6 +17,12 @@ def estimate_cost(
 ) -> Decimal:
     if kind == SpendKind.linkedin_jobs:
         unit_price = settings.linkedin_unit_price
+    elif kind == SpendKind.linkedin_people:
+        unit_price = settings.outreach_people_unit_price
+    elif kind == SpendKind.linkedin_profile:
+        unit_price = settings.outreach_profile_unit_price
+    elif kind == SpendKind.ai_outreach:
+        unit_price = settings.outreach_ai_unit_price
     elif kind == SpendKind.ai_cv_read:
         unit_price = settings.ai_cv_unit_price
     elif kind == SpendKind.ai_job_judge:

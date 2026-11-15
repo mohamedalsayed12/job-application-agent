@@ -13,6 +13,7 @@ from app.api.forms import FormRefused, form_refused_page
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.listings import router as listings_router
+from app.api.outreach import router as outreach_router
 from app.api.privacy import router as privacy_router
 from app.api.profile import router as profile_router
 from app.api.quality import router as quality_router
@@ -46,6 +47,7 @@ app.include_router(privacy_router)
 app.include_router(accounts_router)
 app.include_router(profile_router)
 app.include_router(jobs_router)
+app.include_router(outreach_router)
 app.include_router(listings_router)
 app.include_router(admin_session_router)
 app.include_router(admin_accounts_router)

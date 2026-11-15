@@ -186,12 +186,13 @@ def _account_page(
 <h1>Your account</h1>
 <div class="card">
 <p>Logged in as {html.escape(applicant.email)}.</p>
-<p><a href="/listings">Your job matches</a> · <a href="/profile">Your profile and CV</a></p>
+<p><a href="/listings">Your job matches</a> · <a href="/profile">Your profile and CV</a> ·
+<a href="/account/gmail">Gmail for outreach</a></p>
 <form method="post" action="/logout">{csrf_field(request)}<button type="submit">Log out</button></form>
 </div>
 <div class="card" id="delete">
 <h2>Delete your account</h2>
-<p>This permanently removes your profile, CV, preferences and job matches, and can't be undone.</p>
+<p>This permanently removes your profile, CV, preferences, job matches, outreach contacts and drafts, and Gmail connection, and can't be undone.</p>
 {_error(error)}
 <form method="post" action="/account/delete">
   {csrf_field(request)}
