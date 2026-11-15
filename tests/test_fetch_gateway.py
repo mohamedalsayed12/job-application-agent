@@ -38,7 +38,7 @@ def _gateway(
         allowlist=frozenset(
             {
                 "api.example.com",
-                "boards-api.greenhouse.io",
+                "api.apify.com",
                 "api.reed.co.uk",
                 "serpapi.com",
             }
@@ -229,7 +229,7 @@ async def test_oversized_body_refused_without_buffering_all() -> None:
 
 @pytest.mark.asyncio
 async def test_large_real_job_feed_is_read_whole() -> None:
-    feed = b"x" * 2_506_903  # Octopus Energy's Lever feed, measured 2026-11-08
+    feed = b"x" * 2_506_903  # large JSON body size regression fixture
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=feed, headers={"content-type": "application/json"})
