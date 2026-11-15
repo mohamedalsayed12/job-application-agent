@@ -40,6 +40,7 @@ from app.applicants.service import PreferenceValidationError
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
+from app.api.interview_intel import interview_card
 from app.matching.match import match_all
 from app.models import Applicant, CvFile, CvFileType
 from app.skills.taxonomy import suggest_skills
@@ -292,6 +293,7 @@ def _profile_page(
   </section>
 </form>
 {_cv_section(request, cv_for(db, applicant.id), cv_error)}
+{interview_card(request, [line.strip() for line in fields.target_roles.splitlines() if line.strip()])}
 <div class="form-foot">
   <a class="button danger" href="/account#delete">Delete my account and data</a>
   <button type="submit" class="primary" form="profile-form">Save and find my matches</button>

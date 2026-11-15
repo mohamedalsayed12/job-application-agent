@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
 from app.indeed import IndeedReport, collect_indeed
+from app.interview.service import process_requests
 from app.linkedin import LinkedinReport, collect_linkedin
 from app.matching import semantic
 from app.matching.judge import judge_jobs
@@ -75,6 +76,8 @@ async def run_cycle(
     await summarise_matches(session, gateway=gateway, settings=settings, persist=save)
     # After summaries, so a job's vector is made from its summary when it has one (D48).
     semantic.embed_matches(session, semantic.local_embedder())
+    save()
+    await process_requests(session, gateway=gateway, settings=get_settings(), persist=save)
     save()
     return CycleReport(linkedin=linkedin, indeed=indeed)
 
