@@ -39,7 +39,9 @@ from app.models import (
     JobPosting,
     JobSummary,
     SummaryStatus,
+    TailoredCv,
 )
+from app.tailor.ui import tailored_block
 
 router = APIRouter(prefix="/listings", tags=["listings"])
 
@@ -106,6 +108,7 @@ class Listing:
     last_seen_at: datetime | None
     source: str
     apply_url: str
+    tailored: TailoredCv | None = None
 
 
 def salary_text(job: Job) -> str:
@@ -208,6 +211,15 @@ def load_listings(
         ).all()
     )
     sources = _sources(session, jobs) if jobs else {}
+    tailored = {
+        row.job_id: row
+        for row in session.scalars(
+            select(TailoredCv).where(
+                TailoredCv.applicant_id == applicant_id,
+                TailoredCv.job_id.in_([job.id for job in jobs]),
+            )
+        )
+    } if jobs else {}
     listings = [
         Listing(
             job_id=job.id,
@@ -225,6 +237,7 @@ def load_listings(
             last_seen_at=job.last_seen_at,
             source=sources[job.id],
             apply_url=job.apply_url,
+            tailored=tailored.get(job.id),
         )
         for match, job in rows
     ]
@@ -412,6 +425,7 @@ def render_listing(item: Listing) -> str:
 {_skills(item)}
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 {_fit_report(item)}
+{tailored_block(item.job_id, item.tailored, verdict=(item.reasons.get("report") or {}).get("verdict"))}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url)}
