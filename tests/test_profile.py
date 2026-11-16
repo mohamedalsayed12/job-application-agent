@@ -31,10 +31,6 @@ from app.models import (
     CvFile,
     CvFileType,
     ExperienceLevel,
-    SearchRun,
-    SearchRunStatus,
-    SearchTemplate,
-    SearchTemplateStatus,
 )
 
 EMAIL = "person@example.com"
@@ -75,6 +71,8 @@ def _docx(*, main_type: str = WORD_MAIN, extra: dict[str, bytes] | None = None, 
 @pytest.fixture
 async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.AsyncClient]:
     monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    # Uploads here run without AI; a real key in .env would make them read the stub CVs.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     get_settings.cache_clear()
     throttle.reset()
 
@@ -407,22 +405,11 @@ async def _full_account(client: httpx.AsyncClient, session: Session) -> Applican
     return _applicant(session)
 
 
-def _search_run(session: Session, applicant_id: uuid.UUID) -> SearchRun:
-    session.merge(SearchTemplate(id="T1", search_type="web", provider="serpapi", pattern="p", status=SearchTemplateStatus.active))
-    session.flush()
-    run = SearchRun(template_id="T1", applicant_id=applicant_id, query="q", provider="serpapi", status=SearchRunStatus.succeeded)
-    session.add(run)
-    session.flush()
-    return run
-
-
-async def test_t32_deleting_removes_everything_personal_and_keeps_search_history(
+async def test_t32_deleting_removes_everything_personal(
     client: httpx.AsyncClient, session: Session
 ) -> None:
     applicant = await _full_account(client, session)
     applicant_id = applicant.id
-    run = _search_run(session, applicant_id)
-    run_id = run.id
     models = (ApplicantPreference, ApplicantProfile, ApplicantSkill, ApplicantCertification, CvFile)
     assert all(_count(session, model, applicant_id) >= 1 for model in models)
 
@@ -433,9 +420,6 @@ async def test_t32_deleting_removes_everything_personal_and_keeps_search_history
     session.expire_all()
     assert session.get(Applicant, applicant_id) is None
     assert all(_count(session, model, applicant_id) == 0 for model in (*models, ApplicantJobMatch))
-    kept = session.get(SearchRun, run_id)
-    assert kept is not None
-    assert kept.applicant_id is None
 
 
 async def test_t32_deleting_ends_the_session_and_the_email_can_register_again(client: httpx.AsyncClient, session: Session) -> None:

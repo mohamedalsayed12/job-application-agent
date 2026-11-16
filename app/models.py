@@ -24,68 +24,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.sql.elements import TextClause
 
 from app.core.db import Base
 
 TZ = DateTime(timezone=True)
-
-
-class SearchTemplateStatus(StrEnum):
-    unproven = "unproven"
-    active = "active"
-    retired = "retired"
-
-
-class SearchRunStatus(StrEnum):
-    planned = "planned"
-    running = "running"
-    succeeded = "succeeded"
-    failed = "failed"
-    inconclusive = "inconclusive"
-
-
-class CandidateState(StrEnum):
-    new = "new"
-    duplicate = "duplicate"
-    queued = "queued"
-    verifying = "verifying"
-    retry_wait = "retry_wait"
-    needs_review = "needs_review"
-    verified = "verified"
-    registered = "registered"
-    unsupported = "unsupported"
-    rejected = "rejected"
-
-
-class ExtractedBy(StrEnum):
-    code = "code"
-    ai = "ai"
-
-
-class VerificationOutcome(StrEnum):
-    pass_ = "pass"
-    fail = "fail"
-    inconclusive = "inconclusive"
-    error = "error"
-
-
-class ReviewDecision(StrEnum):
-    verified = "verified"
-    rejected = "rejected"
-    unsupported = "unsupported"
-
-
-class EvidenceLevel(StrEnum):
-    strong = "strong"
-    medium = "medium"
-    weak = "weak"
-
-
-class BoardStatus(StrEnum):
-    verified = "verified"
-    needs_reverify = "needs_reverify"
-    retired = "retired"
 
 
 class FetchOutcome(StrEnum):
@@ -148,18 +90,15 @@ class SummaryStatus(StrEnum):
 
 
 class SpendKind(StrEnum):
-    search = "search"
-    ai_extraction = "ai_extraction"
     ai_summary = "ai_summary"
     ai_cv_read = "ai_cv_read"
     ai_job_judge = "ai_job_judge"
     ai_fit_report = "ai_fit_report"
     linkedin_jobs = "linkedin_jobs"
+    # Spend recorded under kinds that no longer exist. Kept so the monthly cap still counts it.
+    retired = "retired"
 
 
-CANDIDATE_CLAIMABLE = (CandidateState.queued, CandidateState.retry_wait)
-SEARCH_RUN_CLAIMABLE = (SearchRunStatus.planned, SearchRunStatus.failed)
-CANDIDATE_LIVE_UNIQUE_EXCLUDES = (CandidateState.duplicate, CandidateState.rejected)
 
 
 def _text_in(
@@ -173,29 +112,6 @@ def _text_in(
     if nullable:
         predicate = f"{column} IS NULL OR {predicate}"
     return CheckConstraint(predicate, name=column)
-
-
-def _in(column: str, members: tuple[StrEnum, ...]) -> TextClause:
-    literals = ", ".join(f"'{member.value}'" for member in members)
-    return text(f"{column} IN ({literals})")
-
-
-def _excluded_states() -> str:
-    return ", ".join(f"'{member.value}'" for member in CANDIDATE_LIVE_UNIQUE_EXCLUDES)
-
-
-def _live_candidate_board_where() -> TextClause:
-    return text(
-        "board_system IS NOT NULL AND board_instance IS NOT NULL "
-        "AND board_id IS NOT NULL "
-        f"AND state NOT IN ({_excluded_states()})"
-    )
-
-
-def _live_candidate_domain_where() -> TextClause:
-    return text(
-        f"primary_domain IS NOT NULL AND state NOT IN ({_excluded_states()})"
-    )
 
 
 class _UuidPk:
@@ -230,18 +146,6 @@ class Applicant(_UuidPk, Base):
     created_at: Mapped[datetime] = _created()
 
 
-class SearchTemplate(Base):
-    __tablename__ = "search_template"
-    __table_args__ = (_text_in("status", SearchTemplateStatus),)
-
-    id: Mapped[str] = mapped_column(Text(), primary_key=True)
-    search_type: Mapped[str] = mapped_column(Text())
-    provider: Mapped[str] = mapped_column(Text())
-    pattern: Mapped[str] = mapped_column(Text())
-    status: Mapped[str] = mapped_column(Text())
-    created_at: Mapped[datetime] = _created()
-
-
 class BudgetPolicy(_UuidPk, Base):
     __tablename__ = "budget_policy"
     __table_args__ = (
@@ -260,40 +164,6 @@ class BudgetPolicy(_UuidPk, Base):
     currency: Mapped[str] = mapped_column(Text())
     effective_from: Mapped[datetime] = mapped_column(TZ)
     effective_to: Mapped[datetime | None] = mapped_column(TZ)
-
-
-class AiExtraction(_UuidPk, Base):
-    __tablename__ = "ai_extraction"
-    __table_args__ = (
-        UniqueConstraint(
-            "input_hash",
-            "prompt_version",
-            name="uq_ai_extraction_input_hash_prompt_version",
-        ),
-    )
-
-    input_hash: Mapped[str] = mapped_column(Text())
-    model: Mapped[str] = mapped_column(Text())
-    prompt_version: Mapped[str] = mapped_column(Text())
-    output: Mapped[dict[str, Any]] = mapped_column(JSONB())
-    grounded_count: Mapped[int] = mapped_column(Integer())
-    ungrounded_count: Mapped[int] = mapped_column(Integer())
-    cost_amount: Mapped[Decimal] = mapped_column(Numeric())
-    created_at: Mapped[datetime] = _created()
-
-
-class Employer(_UuidPk, Base):
-    __tablename__ = "employer"
-    __table_args__ = (Index("ix_employer_cleaned_name", "cleaned_name"),)
-
-    name: Mapped[str] = mapped_column(Text())
-    cleaned_name: Mapped[str] = mapped_column(Text())
-    official_domain: Mapped[str] = mapped_column(Text(), unique=True)
-    sector: Mapped[str] = mapped_column(Text(), server_default=text("'tech'"))
-    careers_system: Mapped[str] = mapped_column(Text())
-    revisit_at: Mapped[datetime | None] = mapped_column(TZ)
-    created_at: Mapped[datetime] = _created()
-    updated_at: Mapped[datetime] = _updated()
 
 
 class ApplicantPreference(_UuidPk, Base):
@@ -442,86 +312,6 @@ class CvFile(_UuidPk, Base):
     uploaded_at: Mapped[datetime] = mapped_column(TZ)
 
 
-class SearchRun(_UuidPk, Base):
-    __tablename__ = "search_run"
-    __table_args__ = (
-        _text_in("status", SearchRunStatus),
-        Index(
-            "ix_search_run_claim",
-            "status",
-            "next_attempt_at",
-            postgresql_where=_in("status", SEARCH_RUN_CLAIMABLE),
-        ),
-    )
-
-    template_id: Mapped[str] = mapped_column(Text(), ForeignKey("search_template.id"))
-    # Cleared when the account is deleted, so the search record and its spend stay.
-    applicant_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="SET NULL"))
-    query: Mapped[str] = mapped_column(Text())
-    provider: Mapped[str] = mapped_column(Text())
-    status: Mapped[str] = mapped_column(Text())
-    attempt_count: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
-    next_attempt_at: Mapped[datetime | None] = mapped_column(TZ)
-    claimed_at: Mapped[datetime | None] = mapped_column(TZ)
-    result_count: Mapped[int | None] = mapped_column(Integer())
-    cost_amount: Mapped[Decimal | None] = mapped_column(Numeric())
-    last_error: Mapped[str | None] = mapped_column(Text())
-    started_at: Mapped[datetime | None] = mapped_column(TZ)
-    finished_at: Mapped[datetime | None] = mapped_column(TZ)
-    # Null until measured. A board or job shared between runs is split, so these can be fractions.
-    new_candidates: Mapped[Decimal | None] = mapped_column(Numeric())
-    new_verified_boards: Mapped[Decimal | None] = mapped_column(Numeric())
-    relevant_jobs: Mapped[Decimal | None] = mapped_column(Numeric())
-    freshness_share: Mapped[Decimal | None] = mapped_column(Numeric())
-    outcomes_at: Mapped[datetime | None] = mapped_column(TZ)
-    created_at: Mapped[datetime] = _created()
-
-
-class SearchResult(_UuidPk, Base):
-    __tablename__ = "search_result"
-    __table_args__ = (
-        UniqueConstraint(
-            "search_run_id",
-            "rank",
-            name="uq_search_result_search_run_id_rank",
-        ),
-        Index("ix_search_result_url", "url"),
-    )
-
-    search_run_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(),
-        ForeignKey("search_run.id", ondelete="CASCADE"),
-    )
-    rank: Mapped[int] = mapped_column(Integer())
-    url: Mapped[str] = mapped_column(Text())
-    title: Mapped[str] = mapped_column(Text())
-    snippet: Mapped[str] = mapped_column(Text())
-    created_at: Mapped[datetime] = _created()
-
-
-class TemplateStats(Base):
-    __tablename__ = "template_stats"
-    __table_args__ = (
-        CheckConstraint(
-            "freshness_share >= 0 AND freshness_share <= 1",
-            name="freshness_share_range",
-        ),
-    )
-
-    template_id: Mapped[str] = mapped_column(
-        Text(),
-        ForeignKey("search_template.id"),
-        primary_key=True,
-    )
-    run_count: Mapped[int] = mapped_column(Integer())
-    total_cost: Mapped[Decimal] = mapped_column(Numeric())
-    new_candidates: Mapped[Decimal] = mapped_column(Numeric())
-    new_verified_boards: Mapped[Decimal] = mapped_column(Numeric())
-    relevant_jobs: Mapped[Decimal] = mapped_column(Numeric())
-    freshness_share: Mapped[Decimal] = mapped_column(Numeric())
-    updated_at: Mapped[datetime] = _updated()
-
-
 class SpendLedger(_UuidPk, Base):
     __tablename__ = "spend_ledger"
     __table_args__ = (
@@ -531,7 +321,6 @@ class SpendLedger(_UuidPk, Base):
 
     provider: Mapped[str] = mapped_column(Text())
     kind: Mapped[str] = mapped_column(Text())
-    related_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid())
     related_item_id: Mapped[uuid.UUID | None] = mapped_column(Uuid())
     estimated_cost: Mapped[Decimal] = mapped_column(Numeric())
     actual_cost: Mapped[Decimal | None] = mapped_column(Numeric())
@@ -540,179 +329,11 @@ class SpendLedger(_UuidPk, Base):
     occurred_at: Mapped[datetime] = mapped_column(TZ)
 
 
-class Candidate(_UuidPk, Base):
-    __tablename__ = "candidate"
-    __table_args__ = (
-        _text_in("state", CandidateState),
-        _text_in("extracted_by", ExtractedBy),
-        Index(
-            "uq_candidate_live_board",
-            "board_system",
-            "board_instance",
-            "board_id",
-            unique=True,
-            postgresql_where=_live_candidate_board_where(),
-        ),
-        Index(
-            "uq_candidate_live_primary_domain",
-            "primary_domain",
-            unique=True,
-            postgresql_where=_live_candidate_domain_where(),
-        ),
-        Index("ix_candidate_cleaned_name", "cleaned_name"),
-        Index(
-            "ix_candidate_claim",
-            "state",
-            "next_attempt_at",
-            postgresql_where=_in("state", CANDIDATE_CLAIMABLE),
-        ),
-    )
-
-    company_name: Mapped[str] = mapped_column(Text())
-    cleaned_name: Mapped[str] = mapped_column(Text())
-    domain_candidates: Mapped[list[str]] = mapped_column(
-        ARRAY(Text()),
-        server_default=text("'{}'::text[]"),
-    )
-    primary_domain: Mapped[str | None] = mapped_column(Text())
-    board_system: Mapped[str | None] = mapped_column(Text())
-    board_instance: Mapped[str | None] = mapped_column(Text())
-    board_id: Mapped[str | None] = mapped_column(Text())
-    state: Mapped[str] = mapped_column(Text())
-    attempt_count: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
-    next_attempt_at: Mapped[datetime | None] = mapped_column(TZ)
-    claimed_at: Mapped[datetime | None] = mapped_column(TZ)
-    last_error: Mapped[str | None] = mapped_column(Text())
-    extracted_by: Mapped[str] = mapped_column(Text())
-    ai_extraction_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("ai_extraction.id"),
-    )
-    merged_into_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("candidate.id"),
-    )
-    employer_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("employer.id"),
-    )
-    revisit_at: Mapped[datetime | None] = mapped_column(TZ)
-    # Step 10 R2: set once a CF3 official-domain search has run for this row.
-    domain_searched_at: Mapped[datetime | None] = mapped_column(TZ)
-    created_at: Mapped[datetime] = _created()
-    updated_at: Mapped[datetime] = _updated()
-
-
-class EmployerBoard(_UuidPk, Base):
-    __tablename__ = "employer_board"
-    __table_args__ = (
-        UniqueConstraint(
-            "system",
-            "instance",
-            "board_id",
-            name="uq_employer_board_system_instance_board_id",
-        ),
-        _text_in("evidence_level", EvidenceLevel),
-        _text_in("status", BoardStatus),
-        Index("ix_employer_board_reverify", "status", "next_reverify_at"),
-    )
-
-    employer_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("employer.id"))
-    system: Mapped[str] = mapped_column(Text())
-    instance: Mapped[str] = mapped_column(Text())
-    board_id: Mapped[str] = mapped_column(Text())
-    evidence_level: Mapped[str] = mapped_column(Text())
-    status: Mapped[str] = mapped_column(Text())
-    verified_at: Mapped[datetime | None] = mapped_column(TZ)
-    last_checked_at: Mapped[datetime | None] = mapped_column(TZ)
-    next_reverify_at: Mapped[datetime | None] = mapped_column(TZ)
-    consecutive_failures: Mapped[int] = mapped_column(
-        Integer(),
-        server_default=text("0"),
-    )
-    last_job_count: Mapped[int | None] = mapped_column(Integer())
-    created_at: Mapped[datetime] = _created()
-    updated_at: Mapped[datetime] = _updated()
-
-
-class CandidateEvidence(_UuidPk, Base):
-    __tablename__ = "candidate_evidence"
-    __table_args__ = (
-        CheckConstraint("char_length(quoted_text) <= 200", name="quoted_text_len"),
-        Index("ix_candidate_evidence_candidate_id", "candidate_id"),
-    )
-
-    candidate_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("candidate.id"))
-    search_result_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("search_result.id"),
-    )
-    quoted_text: Mapped[str] = mapped_column(Text())
-    source_url: Mapped[str] = mapped_column(Text())
-    created_at: Mapped[datetime] = _created()
-
-
-class VerificationCheck(_UuidPk, Base):
-    __tablename__ = "verification_check"
-    __table_args__ = (
-        _text_in("outcome", VerificationOutcome),
-        CheckConstraint(
-            "candidate_id IS NOT NULL OR employer_board_id IS NOT NULL",
-            name="has_subject",
-        ),
-    )
-
-    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("candidate.id"),
-    )
-    employer_board_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("employer_board.id"),
-    )
-    check_type: Mapped[str] = mapped_column(Text())
-    outcome: Mapped[str] = mapped_column(Text())
-    evidence_url: Mapped[str | None] = mapped_column(Text())
-    evidence_snippet: Mapped[str | None] = mapped_column(Text())
-    http_status: Mapped[int | None] = mapped_column(Integer())
-    checked_at: Mapped[datetime] = mapped_column(TZ)
-
-
-class ReviewItem(_UuidPk, Base):
-    __tablename__ = "review_item"
-    __table_args__ = (
-        _text_in("decision", ReviewDecision, nullable=True),
-        Index(
-            "uq_review_item_one_open",
-            "candidate_id",
-            unique=True,
-            postgresql_where=text("decided_at IS NULL"),
-        ),
-    )
-
-    candidate_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("candidate.id"))
-    reason: Mapped[str] = mapped_column(Text())
-    priority: Mapped[int] = mapped_column(Integer())
-    decision: Mapped[str | None] = mapped_column(Text())
-    reviewer: Mapped[str | None] = mapped_column(Text())
-    decided_at: Mapped[datetime | None] = mapped_column(TZ)
-    notes: Mapped[str | None] = mapped_column(Text())
-    created_at: Mapped[datetime] = _created()
-
-
 class FetchRun(_UuidPk, Base):
     __tablename__ = "fetch_run"
     __table_args__ = (_text_in("outcome", FetchOutcome),)
 
     source: Mapped[str] = mapped_column(Text())
-    employer_board_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("employer_board.id"),
-    )
-    search_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("search_run.id"),
-    )
     outcome: Mapped[str] = mapped_column(Text())
     http_status: Mapped[int | None] = mapped_column(Integer())
     jobs_returned: Mapped[int] = mapped_column(Integer())
@@ -749,19 +370,10 @@ class JobPosting(_UuidPk, Base):
             name="uq_job_posting_source_source_job_id",
         ),
         _text_in("employer_type", EmployerType),
-        Index("ix_job_posting_employer_board_id", "employer_board_id"),
     )
 
     source: Mapped[str] = mapped_column(Text())
     source_job_id: Mapped[str] = mapped_column(Text())
-    employer_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("employer.id"),
-    )
-    employer_board_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("employer_board.id"),
-    )
     raw_payload_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(),
         ForeignKey("raw_payload.id"),
@@ -800,10 +412,6 @@ class Job(_UuidPk, Base):
         Index("ix_job_freshness", "freshness"),
     )
 
-    employer_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("employer.id"),
-    )
     title: Mapped[str] = mapped_column(Text())
     company_name: Mapped[str] = mapped_column(Text())
     location_city: Mapped[str | None] = mapped_column(Text())
@@ -870,25 +478,6 @@ class ApplicantJobMatch(_UuidPk, Base):
     missing_licences: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
-
-
-class AuditSample(_UuidPk, Base):
-    __tablename__ = "audit_sample"
-
-    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("candidate.id"),
-    )
-    employer_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(),
-        ForeignKey("employer.id"),
-    )
-    system_result: Mapped[str] = mapped_column(Text())
-    auditor_result: Mapped[str | None] = mapped_column(Text())
-    is_correct: Mapped[bool | None] = mapped_column(Boolean())
-    is_useful: Mapped[bool | None] = mapped_column(Boolean())
-    notes: Mapped[str | None] = mapped_column(Text())
-    created_at: Mapped[datetime] = _created()
 
 
 class JobSummary(_UuidPk, Base):

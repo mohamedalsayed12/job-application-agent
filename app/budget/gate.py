@@ -10,20 +10,18 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app.models import BudgetPolicy, SearchRun, SpendKind, SpendLedger
+from app.models import BudgetPolicy, SpendKind, SpendLedger
 
 logger = logging.getLogger(__name__)
 
-CapName = Literal["monthly", "per_run", "per_applicant"]
-PER_RUN_SEARCH_CAP = 10
-PER_APPLICANT_DAY_SEARCH_CAP = 50
+CapName = Literal["monthly"]
 WARN_RATIO = Decimal("0.8")
 # Fixed advisory key for all budget reserves (one worker / one gate).
 _BUDGET_ADVISORY_LOCK_KEY = 0x4A414142  # "JAAB"
@@ -36,7 +34,6 @@ class SpendEstimate:
     units: Decimal
     unit_label: str
     estimated_cost: Decimal
-    related_run_id: uuid.UUID | None = None
     related_item_id: uuid.UUID | None = None
     applicant_id: uuid.UUID | None = None
 
@@ -68,10 +65,6 @@ def _require_non_negative_cost(value: Decimal, *, label: str) -> Decimal:
 
 def _month_start(now: datetime) -> datetime:
     return datetime(now.year, now.month, 1, tzinfo=UTC)
-
-
-def _day_start(now: datetime) -> datetime:
-    return datetime(now.year, now.month, now.day, tzinfo=UTC)
 
 
 def _load_monthly_money_cap(session: Session, provider: str, now: datetime) -> Decimal | None:
@@ -110,36 +103,6 @@ def _sum_spend(session: Session, *, since: datetime) -> Decimal:
     return Decimal(total or 0)
 
 
-def _sum_search_units_for_run(session: Session, run_id: uuid.UUID) -> Decimal:
-    total = session.scalar(
-        select(func.coalesce(func.sum(SpendLedger.units), 0)).where(
-            SpendLedger.related_run_id == run_id,
-            SpendLedger.kind == SpendKind.search,
-        )
-    )
-    return Decimal(total or 0)
-
-
-def _sum_search_units_for_applicant_day(
-    session: Session,
-    applicant_id: uuid.UUID,
-    day_start: datetime,
-) -> Decimal:
-    day_end = day_start + timedelta(days=1)
-    total = session.scalar(
-        select(func.coalesce(func.sum(SpendLedger.units), 0))
-        .select_from(SpendLedger)
-        .join(SearchRun, SearchRun.id == SpendLedger.related_run_id)
-        .where(
-            SearchRun.applicant_id == applicant_id,
-            SpendLedger.kind == SpendKind.search,
-            SpendLedger.occurred_at >= day_start,
-            SpendLedger.occurred_at < day_end,
-        )
-    )
-    return Decimal(total or 0)
-
-
 def _warn_if_needed(spent: Decimal, cap: Decimal, label: CapName) -> None:
     if cap <= 0:
         return
@@ -165,8 +128,6 @@ class BudgetGate:
         )
         cost = _require_non_negative_cost(estimate.estimated_cost, label="estimated_cost")
         units = _require_non_negative_cost(estimate.units, label="units")
-        if estimate.kind == SpendKind.search and units < 1:
-            raise ValueError("search units must be >= 1")
 
         now = self._clock()
         money_cap = _load_monthly_money_cap(self._session, estimate.provider, now)
@@ -181,30 +142,9 @@ class BudgetGate:
                 raise BudgetWait("monthly")
             _warn_if_needed(monthly_spent + cost, money_cap, "monthly")
 
-        related_run_id = estimate.related_run_id
-        if estimate.kind == SpendKind.search:
-            if related_run_id is None:
-                raise ValueError("search spend requires related_run_id")
-            run = self._session.get(SearchRun, related_run_id)
-            if run is None:
-                raise BudgetWait("per_run")
-            applicant_id = run.applicant_id
-            day_start = _day_start(now)
-            run_units = _sum_search_units_for_run(self._session, related_run_id)
-            if run_units + units > PER_RUN_SEARCH_CAP:
-                raise BudgetWait("per_run")
-            applicant_units = _sum_search_units_for_applicant_day(
-                self._session,
-                applicant_id,
-                day_start,
-            )
-            if applicant_units + units > PER_APPLICANT_DAY_SEARCH_CAP:
-                raise BudgetWait("per_applicant")
-
         row = SpendLedger(
             provider=estimate.provider,
             kind=estimate.kind,
-            related_run_id=related_run_id,
             related_item_id=estimate.related_item_id,
             estimated_cost=cost,
             actual_cost=None,
@@ -228,7 +168,7 @@ class BudgetGate:
         if row is None:
             raise KeyError(f"spend_ledger row missing: {reservation.ledger_id}")
         if not consumed:
-            row.actual_cost = Decimal("0")
+            row.actual_cost = Decimal(0)
         elif actual_cost is not None:
             row.actual_cost = _require_non_negative_cost(actual_cost, label="actual_cost")
         else:
