@@ -1,0 +1,41 @@
+{
+  "version": "outreach-patterns-v1",
+  "patterns": [
+    {
+      "id": "name_the_role",
+      "label": "Name the concrete role",
+      "rule": "Mention the exact job title and company early. Do not say 'a role at your company'.",
+      "intents": ["recruiter", "hiring_manager", "employee", "executive"]
+    },
+    {
+      "id": "one_real_hook",
+      "label": "One real hook from their words",
+      "rule": "If a quote or About line is provided, reference at most one short phrase that appears verbatim in the research. Never invent a post, podcast, or shared history.",
+      "intents": ["recruiter", "hiring_manager", "employee", "executive"]
+    },
+    {
+      "id": "soft_ask",
+      "label": "One soft ask",
+      "rule": "End with one low-pressure ask: a short chat, a referral, or whether the team is still hiring for this role. Not a demand.",
+      "intents": ["recruiter", "hiring_manager", "employee", "executive"]
+    },
+    {
+      "id": "short_human",
+      "label": "Short and human",
+      "rule": "Gmail body under 120 words. LinkedIn note under 300 characters. No buzzword stacks, no 'I hope this email finds you well', no fake warmth.",
+      "intents": ["recruiter", "hiring_manager", "employee", "executive"]
+    },
+    {
+      "id": "fit_not_flattery",
+      "label": "Fit over flattery",
+      "rule": "For recruiters and hiring managers, tie one skill from the CV to one requirement from the job. Do not praise the company in generic terms.",
+      "intents": ["recruiter", "hiring_manager"]
+    },
+    {
+      "id": "referral_path",
+      "label": "Referral path",
+      "rule": "For employees and executives, ask whether they know who owns hiring for the role, or if a referral is appropriate. Do not pitch as if they posted the job unless evidence says they did.",
+      "intents": ["employee", "executive"]
+    }
+  ]
+}

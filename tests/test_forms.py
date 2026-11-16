@@ -23,11 +23,15 @@ PASSWORD = "correct horse battery"
 ADMIN_PAGES = ("/admin/applicants", "/admin/applicants/new", "/admin/quality", "/admin/accounts/set-password-link")
 ADMIN_FORM_PAGES = ("/admin/applicants/new", "/admin/accounts/set-password-link")
 ROUTES = app.openapi()["paths"]
-POST_PATHS = sorted(
-    path.replace("{applicant_id}", str(uuid.uuid4()))
-    for path, operations in ROUTES.items()
-    if "post" in operations
-)
+
+
+def _concrete(path: str) -> str:
+    for name in ("applicant_id", "job_id", "contact_id", "draft_id"):
+        path = path.replace("{" + name + "}", str(uuid.uuid4()))
+    return path
+
+
+POST_PATHS = sorted(_concrete(path) for path, operations in ROUTES.items() if "post" in operations)
 
 
 @pytest.fixture
@@ -65,7 +69,7 @@ async def _log_in_as_applicant_and_admin(client: httpx.AsyncClient) -> None:
 
 def test_no_route_changes_data_without_being_a_post() -> None:
     assert not [path for path, operations in ROUTES.items() if {"put", "patch", "delete"} & set(operations)]
-    assert len(POST_PATHS) == 14
+    assert len(POST_PATHS) == 21
 
 
 @pytest.mark.parametrize("path", POST_PATHS)

@@ -22,7 +22,10 @@ def _usable(url: str | None) -> bool:
 
 def apply_step(job: Job, application: Application | None, csrf: str) -> str:
     if application is not None and application.status == ApplicationStatus.submitted.value:
-        return "<p><b>You applied for this job.</b></p>"
+        return (
+            "<p><b>You applied for this job.</b></p>"
+            f'<p><a class="button" href="/jobs/{html.escape(str(job.id))}/outreach">Reach out to people at this company</a></p>'
+        )
     posting = (
         f'<a class="button" href="{html.escape(job.apply_url, quote=True)}" rel="noopener noreferrer">Original posting</a> '
         if _usable(job.apply_url)
