@@ -134,3 +134,19 @@ def test_reserve_then_settle_records_actual(session: Session) -> None:
     row = session.scalars(select(SpendLedger)).one()
     assert row.estimated_cost == Decimal("0.50")
     assert row.actual_cost == Decimal("0.40")
+
+
+@pytest.mark.parametrize("kind", list(SpendKind))
+def test_every_spend_kind_can_be_recorded_after_all_migrations(session: Session, kind: SpendKind) -> None:
+    # Each migration rewrites the kind check from its own list; a later one must not drop an earlier kind.
+    session.add(
+        SpendLedger(
+            provider="test",
+            kind=kind,
+            estimated_cost=Decimal("0.01"),
+            units=Decimal(1),
+            unit_label="call",
+            occurred_at=datetime(2026, 11, 16, tzinfo=UTC),
+        )
+    )
+    session.flush()
