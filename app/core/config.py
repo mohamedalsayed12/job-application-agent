@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     linkedin_run_price: Decimal = Decimal("0.02")
     usd_to_gbp: Decimal = Decimal("0.80")
 
+    # Indeed through valig/indeed-jobs-scraper (~$0.07–0.10 / 1k results); ceilings cover event + compute.
+    indeed_actor: str = "valig/indeed-jobs-scraper"
+    indeed_max_results: int = 50
+    indeed_every_hours: int = 24
+    indeed_posted_within_days: int = 3
+    indeed_stale_days: int = 14
+    indeed_wait_minutes: int = 15
+    indeed_country: str = "uk"  # actor enum uses uk, not ISO gb
+    indeed_unit_price: Decimal = Decimal("0.0002")
+    indeed_run_price: Decimal = Decimal("0.01")
+
     # Blank model = provider default.
     ai_provider: str = "anthropic"
     anthropic_api_key: str = ""
@@ -90,6 +101,8 @@ class Settings(BaseSettings):
     @field_validator(
         "linkedin_unit_price",
         "linkedin_run_price",
+        "indeed_unit_price",
+        "indeed_run_price",
         "usd_to_gbp",
         "ai_summary_unit_price",
         "ai_cv_unit_price",

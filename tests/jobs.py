@@ -47,6 +47,36 @@ def _li(
     }
 
 
+def _indeed(
+    job_id: int | str,
+    *,
+    title: str = "Backend Developer",
+    city: str = "Manchester",
+    country: str = "GB",
+    content: str = "Build APIs in Python.",
+    company: str = "Acme",
+    posted: str = "2026-11-01T00:00:00.000Z",
+    apply_url: str | None = None,
+    salary: dict[str, Any] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """One result as Apify valig/indeed-jobs-scraper returns it."""
+    key = str(job_id)
+    return {
+        "key": key,
+        "url": f"https://uk.indeed.com/viewjob?jk={key}",
+        "title": title,
+        "jobUrl": apply_url if apply_url is not None else f"https://acme.example/careers/{key}",
+        "datePublished": posted,
+        "location": {"city": city, "countryCode": country, "countryName": "United Kingdom"},
+        "employer": {"name": company},
+        "description": {"text": content, "html": f"<p>{content}</p>"},
+        "jobTypes": {"CF3CP": "Full-time"},
+        "baseSalary": salary,
+        **extra,
+    }
+
+
 class _Apify:
     """Answers like Apify: a run starts, is still running at the first check, then succeeds with ``items``."""
 

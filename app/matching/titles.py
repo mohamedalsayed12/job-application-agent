@@ -17,7 +17,19 @@ NOT_ENTRY_TITLE = re.compile(
     r"intern|interns|internship|placement|apprentice|apprenticeship)\b",
     re.IGNORECASE,
 )
-ENTRY_TITLE = re.compile(r"\b(graduate|grad|junior|jr\.?|entry.level|early.careers?)\b", re.IGNORECASE)
+# Shared entry-level wording. Bare "entry" is strip-only: matching must not treat
+# "Data Entry Analyst" / "Market Entry Manager" as entry-level jobs or roles.
+ENTRY_TITLE_TOKENS = (
+    "graduate",
+    "grad",
+    "junior",
+    r"jr\.?",
+    r"entry[- ]level",
+    r"early[- ]careers?",
+)
+LEADING_ENTRY_LEVEL_TOKENS = (*ENTRY_TITLE_TOKENS, "entry")
+ENTRY_TITLE = re.compile(rf"\b(?:{'|'.join(ENTRY_TITLE_TOKENS)})\b", re.IGNORECASE)
+LEADING_ENTRY_LEVEL = re.compile(rf"^(?:{'|'.join(LEADING_ENTRY_LEVEL_TOKENS)})\s+", re.IGNORECASE)
 YEARS_REQUIRED = re.compile(
     r"\b([3-9]|1\d)\s*\+?\s*(?:(?:-|–|to)\s*\d+\s*)?(?:years?|yrs?)\b[^.]{0,60}\bexperience",
     re.IGNORECASE,

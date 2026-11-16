@@ -95,6 +95,7 @@ class SpendKind(StrEnum):
     ai_job_judge = "ai_job_judge"
     ai_fit_report = "ai_fit_report"
     linkedin_jobs = "linkedin_jobs"
+    indeed_jobs = "indeed_jobs"
     # Spend recorded under kinds that no longer exist. Kept so the monthly cap still counts it.
     retired = "retired"
 
