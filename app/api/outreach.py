@@ -17,6 +17,8 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
+from app.applications.prepare import has_applied
+from app.applications.ui import applied_button
 from app.core.config import Settings, get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
@@ -50,6 +52,7 @@ from app.outreach.research import research_contact
 router = APIRouter(tags=["outreach"])
 _CSRF = [Depends(require_csrf)]
 _SEE_OTHER = 303
+_APPLY_FIRST = "Mark this job as applied first. Outreach comes after you've sent your application."
 
 
 async def get_gateway() -> AsyncIterator[FetchGateway]:
@@ -82,11 +85,26 @@ def _own_contact(db: Session, applicant: Applicant, contact_id: uuid.UUID) -> Ou
     return contact
 
 
+def _apply_first(job: Job) -> RedirectResponse:
+    return RedirectResponse(f"/jobs/{job.id}/outreach?notice={quote(_APPLY_FIRST)}", status_code=_SEE_OTHER)
+
+
 def _error(message: str | None) -> str:
     return f'<p class="error">{html.escape(message)}</p>' if message else ""
 
 
-def _contacts_html(job: Job, contacts: list[OutreachContact], request: Request, *, notice: str | None = None) -> str:
+def _find_button(job: Job, request: Request, *, applied: bool) -> str:
+    if not applied:
+        return f"<p>{html.escape(_APPLY_FIRST)}</p><p>{applied_button(csrf_field(request), job.id)}</p>"
+    return f"""<form method="post" action="/jobs/{job.id}/outreach/find">
+  {csrf_field(request)}
+  <button type="submit" class="primary">Find people</button>
+</form>"""
+
+
+def _contacts_html(
+    job: Job, contacts: list[OutreachContact], request: Request, *, applied: bool, notice: str | None = None
+) -> str:
     rows = []
     for contact in contacts:
         title = html.escape(contact.title or "Title unknown")
@@ -112,10 +130,7 @@ def _contacts_html(job: Job, contacts: list[OutreachContact], request: Request, 
 <p class="muted">{html.escape(job.company_name)}. Contacts come from Apify LinkedIn people actors.
 You review every message before anything is sent. Cold email is your responsibility under UK PECR.</p>
 {_error(notice)}
-<form method="post" action="/jobs/{job.id}/outreach/find">
-  {csrf_field(request)}
-  <button type="submit" class="primary">Find people</button>
-</form>
+{_find_button(job, request, applied=applied)}
 </div>
 {body}
 """
@@ -139,7 +154,7 @@ def outreach_list(
     notice = request.query_params.get("notice")
     return page(
         f"Outreach · {job.title}",
-        _contacts_html(job, contacts, request, notice=notice),
+        _contacts_html(job, contacts, request, applied=has_applied(db, applicant.id, job.id), notice=notice),
         header=applicant_bar(request, "matches"),
         narrow=True,
     )
@@ -155,6 +170,8 @@ async def outreach_find(
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
     job = _open_matched_job(db, applicant, job_id)
+    if not has_applied(db, applicant.id, job.id):
+        return _apply_first(job)
     report = await find_contacts(
         db,
         applicant_id=applicant.id,
@@ -180,6 +197,8 @@ async def outreach_draft_create(
     contact = _own_contact(db, applicant, contact_id)
     if contact.job_id != job.id:
         raise HTTPException(status_code=404)
+    if not has_applied(db, applicant.id, job.id):
+        return _apply_first(job)
     researched = await research_contact(db, contact, gateway=gateway, settings=settings, persist=db.commit)
     if researched.stopped_by == "budget":
         return RedirectResponse(f"/jobs/{job.id}/outreach?notice=budget", status_code=_SEE_OTHER)

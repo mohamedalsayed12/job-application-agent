@@ -438,3 +438,58 @@ def test_cannot_use_another_applicants_contact_id_shape(session: Session) -> Non
     session.add(contact)
     session.flush()
     assert session.get(OutreachContact, contact.id).applicant_id != second
+
+
+async def test_outreach_waits_until_the_person_has_applied(session: Session, monkeypatch) -> None:
+    from app.accounts import throttle
+    from app.api.forms import require_csrf
+    from app.api.outreach import get_gateway
+    from app.core.config import get_settings
+    from app.core.db import get_db
+    from app.main import app
+    from app.models import Applicant
+
+    monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+    get_settings.cache_clear()
+    throttle.reset()
+    _policy(session)
+    apify = _Apify(
+        [{"fullName": "Casey Hire", "title": "Hiring Manager", "linkedinUrl": "https://www.linkedin.com/in/casey"}],
+        cost_usd=0.05,
+    )
+
+    async def _gateway():
+        gateway = apify.gateway()
+        try:
+            yield gateway
+        finally:
+            await gateway.aclose()
+
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[require_csrf] = lambda: None
+    app.dependency_overrides[get_gateway] = _gateway
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as client:
+            await client.post("/register", data={"email": "outreach@example.com", "password": "correct horse battery"})
+            applicant = session.scalar(select(Applicant).where(Applicant.email == "outreach@example.com"))
+            job = _matched_job(session, applicant.id)
+
+            refused = await client.post(f"/jobs/{job.id}/outreach/find")
+            assert refused.status_code == 303
+            assert "applied%20first" in refused.headers["location"]
+            assert apify.requests == []
+            page = (await client.get(f"/jobs/{job.id}/outreach")).text
+            assert "Find people" not in page
+            assert "applied" in page
+
+            assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
+            found = await client.post(f"/jobs/{job.id}/outreach/find")
+            assert found.status_code == 303
+            assert apify.requests
+            contacts = session.scalars(select(OutreachContact).where(OutreachContact.job_id == job.id)).all()
+            assert [contact.full_name for contact in contacts] == ["Casey Hire"]
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        throttle.reset()
