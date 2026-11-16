@@ -105,6 +105,7 @@ class SpendKind(StrEnum):
     interview_collect = "interview_collect"
     ai_interview_analyse = "ai_interview_analyse"
     ai_interview_plan = "ai_interview_plan"
+    ai_interview_tailor = "ai_interview_tailor"
     # Spend recorded under kinds that no longer exist. Kept so the monthly cap still counts it.
     retired = "retired"
 
@@ -973,3 +974,29 @@ class InterviewIntelRequest(_UuidPk, Base):
     error: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
+
+
+class InterviewJobPack(_UuidPk, Base):
+    """Applicant-specific interview practice for one job and one set of source facts."""
+
+    __tablename__ = "interview_job_pack"
+    __table_args__ = (Index("ix_interview_job_pack_applicant_job", "applicant_id", "job_id"),)
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    role_pack_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("interview_intel_pack.id"))
+    source_hash: Mapped[str] = mapped_column(Text())
+    summary: Mapped[str] = mapped_column(Text())
+    success_themes: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    failure_themes: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    differentiators: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    materials: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    practice_plan: Mapped[list[Any]] = mapped_column(JSONB(), default=list, server_default=text("'[]'::jsonb"))
+    model: Mapped[str] = mapped_column(Text())
+    prompt_version: Mapped[str] = mapped_column(Text())
+    prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
+    cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    ready_at: Mapped[datetime] = mapped_column(TZ)
+    expires_at: Mapped[datetime] = mapped_column(TZ)
+    created_at: Mapped[datetime] = _created()

@@ -32,6 +32,12 @@ def queries_for(role: str) -> list[str]:
     ]
 
 
+def queries_for_company(company: str, role: str) -> list[str]:
+    company = company.strip()
+    role = role.strip()
+    return [f'"{company}" {role} interview', f'"{company}" interview experience']
+
+
 def normalize_item(
     platform: InterviewPlatform,
     item: dict[str, Any],

@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     interview_collect_run_price: Decimal = Decimal("0.03")
     interview_analyse_unit_price: Decimal = Decimal("0.002")
     interview_plan_unit_price: Decimal = Decimal("0.003")
+    interview_tailor_unit_price: Decimal = Decimal("0.003")
     interview_analyse_model: str = ""
     interview_plan_model: str = ""
     interview_analyse_max_output_tokens: int = 2000
@@ -168,6 +169,7 @@ class Settings(BaseSettings):
         "interview_collect_run_price",
         "interview_analyse_unit_price",
         "interview_plan_unit_price",
+        "interview_tailor_unit_price",
         "ai_summary_unit_price",
         "ai_cv_unit_price",
         "ai_judge_unit_price",

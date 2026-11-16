@@ -62,6 +62,7 @@ async def collect_for_role(
     persist: Callable[[], None],
     now: Callable[[], datetime],
     sleep: Callable[[float], Any] | None = None,
+    queries: list[str] | None = None,
 ) -> CollectReport:
     report = CollectReport()
     if evidence_count(session, role_key) > 0:
@@ -98,7 +99,7 @@ async def collect_for_role(
         run_kwargs: dict[str, Any] = {
             "token": token,
             "actor": actor_id(platform, settings),
-            "body": actor_input(platform, role, max_items=settings.interview_max_per_platform),
+            "body": actor_input(platform, role, max_items=settings.interview_max_per_platform, queries=queries),
             "max_charge_usd": max_charge,
             "wait_minutes": settings.interview_wait_minutes,
         }
@@ -203,8 +204,8 @@ def store_items(
     return created
 
 
-def actor_input(platform: InterviewPlatform, role: str, *, max_items: int) -> dict[str, Any]:
-    queries = queries_for(role)
+def actor_input(platform: InterviewPlatform, role: str, *, max_items: int, queries: list[str] | None = None) -> dict[str, Any]:
+    queries = queries if queries is not None else queries_for(role)
     if platform is InterviewPlatform.reddit:
         return {
             "searches": queries,

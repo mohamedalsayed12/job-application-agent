@@ -31,6 +31,8 @@ def estimate_cost(
         unit_price = settings.interview_analyse_unit_price
     elif kind == SpendKind.ai_interview_plan:
         unit_price = settings.interview_plan_unit_price
+    elif kind == SpendKind.ai_interview_tailor:
+        unit_price = settings.interview_tailor_unit_price
     elif kind == SpendKind.ai_cv_read:
         unit_price = settings.ai_cv_unit_price
     elif kind == SpendKind.ai_job_judge:

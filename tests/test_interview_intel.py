@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -428,7 +428,7 @@ async def test_profile_card_and_ready_pack_page(client: httpx.AsyncClient, sessi
         },
         rows=[evidence],
         settings=_settings(),
-        now=DAY_1,
+        now=datetime.now(UTC),
     )
     assert isinstance(pack, InterviewIntelPack)
     session.commit()

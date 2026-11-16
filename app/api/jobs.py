@@ -57,6 +57,7 @@ def _body(job: Job, shown: Shown, tailored: TailoredCv | None, step: str) -> str
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
 {tailored_block(job.id, tailored)}
 {step}
+<p><a href="/jobs/{job.id}/interview">Interview practice for this job</a></p>
 </div>
 """
 
