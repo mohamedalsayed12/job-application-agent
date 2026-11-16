@@ -39,6 +39,7 @@ from app.tailor.render import render_docx, render_pdf
 
 PROMPT_VERSION = "cv-tailor-pipeline-v2"
 TAILOR_VERDICTS = frozenset({"Apply", "Consider"})
+REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
 
 
@@ -139,20 +140,58 @@ async def write_tailored_cvs(
     return run
 
 
+def tailor_allowed(settings: Settings, applicant_id: uuid.UUID) -> bool:
+    allowed = settings.ai_applicants()
+    return allowed is None or applicant_id in allowed
+
+
+def request_tailored_cv(
+    session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID, *, now: datetime | None = None
+) -> TailoredCv:
+    """Ask the worker for a package on any job; a failed one is queued again."""
+    now = now or datetime.now(UTC)
+    row = session.scalars(
+        select(TailoredCv).where(TailoredCv.applicant_id == applicant_id, TailoredCv.job_id == job_id)
+    ).first()
+    if row is None:
+        row = TailoredCv(
+            applicant_id=applicant_id,
+            job_id=job_id,
+            status=TailoredCvStatus.pending.value,
+            input_hash=REQUESTED,
+            prompt_version=PROMPT_VERSION,
+            updated_at=now,
+        )
+        session.add(row)
+    elif row.status == TailoredCvStatus.failed.value:
+        row.status = TailoredCvStatus.pending.value
+        row.input_hash = REQUESTED
+        row.updated_at = now
+    session.flush()
+    return row
+
+
 def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     allowed = settings.ai_applicants()
-    reports = session.scalars(
-        select(JobReport).where(JobReport.verdict.in_(tuple(TAILOR_VERDICTS)))
-    ).all()
-    if not reports:
+    reports = {
+        (row.applicant_id, row.job_id): row
+        for row in session.scalars(
+            select(JobReport).where(JobReport.verdict.in_(tuple(TAILOR_VERDICTS)))
+        )
+    }
+    # A package row is itself demand: a person asked for it, or a report made one before.
+    existing = {
+        (row.applicant_id, row.job_id): row for row in session.scalars(select(TailoredCv))
+    }
+    pairs = [
+        pair
+        for pair in reports.keys() | existing.keys()
+        if allowed is None or pair[0] in allowed
+    ]
+    if not pairs:
         return []
 
-    applicant_ids = {row.applicant_id for row in reports}
-    if allowed is not None:
-        applicant_ids &= allowed
-    if not applicant_ids:
-        return []
-
+    applicant_ids = {applicant_id for applicant_id, _ in pairs}
     profiles = load_profiles(session, applicant_ids)
     cvs = {
         row.applicant_id: row
@@ -160,34 +199,28 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     }
     jobs = {
         row.id: row
-        for row in session.scalars(select(Job).where(Job.id.in_({r.job_id for r in reports})))
-    }
-    existing = {
-        (row.applicant_id, row.job_id): row
-        for row in session.scalars(
-            select(TailoredCv).where(TailoredCv.applicant_id.in_(applicant_ids))
-        )
+        for row in session.scalars(select(Job).where(Job.id.in_({job_id for _, job_id in pairs})))
     }
 
     work: list[tuple[int, float, _Work]] = []
-    for report in reports:
-        if report.applicant_id not in applicant_ids:
-            continue
-        job = jobs.get(report.job_id)
+    for applicant_id, job_id in pairs:
+        report = reports.get((applicant_id, job_id))
+        current = existing.get((applicant_id, job_id))
+        job = jobs.get(job_id)
         if job is None or not job.description:
             continue
-        cv_file = cvs.get(report.applicant_id)
+        cv_file = cvs.get(applicant_id)
         if cv_file is None:
-            _ensure_skipped(session, report.applicant_id, report.job_id, reason="no_cv", now=now)
+            _ensure_skipped(session, applicant_id, job_id, reason="no_cv", now=now)
             continue
         try:
             text = cv_text(
                 cv_file.content, CvFileType(cv_file.file_type), max_chars=settings.ai_tailor_cv_chars
             )
         except CvUnreadable:
-            _ensure_skipped(session, report.applicant_id, report.job_id, reason="unreadable", now=now)
+            _ensure_skipped(session, applicant_id, job_id, reason="unreadable", now=now)
             continue
-        profile = profiles.get(report.applicant_id)
+        profile = profiles.get(applicant_id)
         profile_blob = profile.text if profile is not None else ""
         posting = job_text(
             title=job.title,
@@ -197,6 +230,12 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
             description=job.description,
         )
         if looks_like_injection(posting):
+            if current is not None and current.status == TailoredCvStatus.pending.value:
+                current.status = TailoredCvStatus.failed.value
+                current.input_hash = "posting_flagged"
+                current.draft = {"reason": "posting_flagged"}
+                current.updated_at = now
+                session.flush()
             continue
         wanted = package_hash(
             posting=posting,
@@ -204,21 +243,23 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
             profile=profile_blob,
             company_key=job.company_name.strip().lower(),
         )
-        current = existing.get((report.applicant_id, report.job_id))
         if current is not None and current.input_hash == wanted and current.status in {
             TailoredCvStatus.ready.value,
             TailoredCvStatus.skipped.value,
             TailoredCvStatus.failed.value,
         }:
             continue
-        prefer = 0 if report.verdict == "Apply" else 1
+        verdict = report.verdict if report is not None else None
+        requested = current is not None and current.input_hash == REQUESTED
+        # Someone pressed the button and is waiting, so they go first.
+        prefer = 0 if requested else 1 if verdict == "Apply" else 2 if verdict == "Consider" else 3
         work.append(
             (
                 prefer,
-                -float(report.score),
+                -float(report.score) if report is not None else 0.0,
                 _Work(
-                    applicant_id=report.applicant_id,
-                    job_id=report.job_id,
+                    applicant_id=applicant_id,
+                    job_id=job_id,
                     company_name=job.company_name,
                     apply_url=job.apply_url,
                     posting=posting,
@@ -226,7 +267,7 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
                     cv=text,
                     cv_bytes=bytes(cv_file.content),
                     input_hash=wanted,
-                    prefer_apply=report.verdict == "Apply",
+                    prefer_apply=verdict == "Apply",
                 ),
             )
         )

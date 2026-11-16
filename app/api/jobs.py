@@ -7,14 +7,14 @@ import uuid
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
-from app.api.forms import csrf_field
+from app.api.forms import csrf_field, require_csrf
 from app.api.listings import place_names
 from app.applications.prepare import application_for_job
 from app.applications.ui import apply_step
@@ -23,7 +23,8 @@ from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.models import Applicant, Job, JobFreshness, TailoredCv, TailoredCvStatus
 from app.summaries.generate import Shown, summary_for_view
-from app.tailor.ui import tailored_block
+from app.tailor.run import request_tailored_cv, tailor_allowed
+from app.tailor.ui import tailor_section
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -38,7 +39,7 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         await gateway.aclose()
 
 
-def _body(job: Job, shown: Shown, tailored: TailoredCv | None, step: str) -> str:
+def _body(job: Job, shown: Shown, tailored: str, step: str) -> str:
     if shown.summary:
         about = (
             f"<p>{html.escape(shown.summary)}</p>"
@@ -55,7 +56,7 @@ def _body(job: Job, shown: Shown, tailored: TailoredCv | None, step: str) -> str
 <p>{html.escape(job.company_name)}. {html.escape(place_names(job))}.</p>
 {about}
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
-{tailored_block(job.id, tailored)}
+{tailored}
 {step}
 <p><a href="/jobs/{job.id}/interview">Interview practice for this job</a></p>
 </div>
@@ -80,10 +81,30 @@ async def job_page(
     # D23: only open jobs are shown.
     if job is None or job.freshness != JobFreshness.open:
         raise HTTPException(status_code=404)
-    shown = await summary_for_view(db, job, gateway=gateway, settings=get_settings(), persist=db.commit)
-    tailored = _tailored_for(db, applicant.id, job_id)
-    step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf_field(request))
+    settings = get_settings()
+    shown = await summary_for_view(db, job, gateway=gateway, settings=settings, persist=db.commit)
+    csrf = csrf_field(request)
+    tailored = tailor_section(
+        job_id, _tailored_for(db, applicant.id, job_id), csrf, allowed=tailor_allowed(settings, applicant.id)
+    )
+    step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf)
     return page(job.title, _body(job, shown, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
+
+
+@router.post("/{job_id}/tailor", dependencies=[Depends(require_csrf)])
+def request_tailor(
+    job_id: uuid.UUID,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    job = db.get(Job, job_id)
+    if job is None or job.freshness != JobFreshness.open:
+        raise HTTPException(status_code=404)
+    if not tailor_allowed(get_settings(), applicant.id):
+        raise HTTPException(status_code=403)
+    request_tailored_cv(db, applicant.id, job_id)
+    db.commit()
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
 
 @router.get("/{job_id}/tailored.pdf")
