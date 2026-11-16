@@ -46,6 +46,17 @@ main.narrow { max-width: 42rem; }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
 .card > h2:first-child { margin-top: 0; }
+.workflow { display: grid; gap: 0.8rem; margin-top: 1rem; }
+.workflow-step { display: grid; grid-template-columns: 2.2rem 1fr auto; gap: 0.85rem; align-items: start;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; }
+.workflow-number { width: 2rem; height: 2rem; display: grid; place-items: center; border-radius: 999px;
+  background: var(--primary-soft); color: var(--primary); font-weight: 700; }
+.workflow-step.done .workflow-number { background: var(--good-soft); color: var(--good); }
+.workflow-copy h2 { margin: 0 0 0.2rem; }
+.workflow-copy p { margin: 0.2rem 0; }
+.workflow-action { white-space: nowrap; }
+@media (max-width: 36rem) { .workflow-step { grid-template-columns: 2.2rem 1fr; }
+  .workflow-action { grid-column: 2; white-space: normal; } }
 
 label { display: block; margin-top: 0.75rem; font-size: 0.85rem; font-weight: 600; }
 .hint { font-weight: 400; color: var(--muted); font-size: 0.8rem; }
