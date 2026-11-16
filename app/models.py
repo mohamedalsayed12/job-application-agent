@@ -97,8 +97,31 @@ class SpendKind(StrEnum):
     ai_cv_tailor = "ai_cv_tailor"
     linkedin_jobs = "linkedin_jobs"
     indeed_jobs = "indeed_jobs"
+    apply_form = "apply_form"
+    ai_apply_map = "ai_apply_map"
     # Spend recorded under kinds that no longer exist. Kept so the monthly cap still counts it.
     retired = "retired"
+
+
+class ApplicationStatus(StrEnum):
+    preparing = "preparing"
+    ready_to_fill = "ready_to_fill"
+    filled_awaiting_review = "filled_awaiting_review"
+    # Set only by the person ("I've applied"), never by the extension.
+    submitted = "submitted"
+    needs_input = "needs_input"
+    failed = "failed"
+    abandoned = "abandoned"
+
+
+class AtsKind(StrEnum):
+    greenhouse = "greenhouse"
+    lever = "lever"
+    unknown = "unknown"
+
+
+# Prefer-not-to-say default for optional demographic application answers.
+PREFER_NOT = "prefer_not_to_say"
 
 
 class TailoredCvStatus(StrEnum):
@@ -647,3 +670,76 @@ class TailoredCv(_UuidPk, Base):
     cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
+
+
+class ApplicationAnswers(_UuidPk, Base):
+    """Answers for employer application forms. Separate from the job-search profile."""
+
+    __tablename__ = "application_answers"
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(),
+        ForeignKey("applicant.id", ondelete="CASCADE"),
+        unique=True,
+    )
+    legal_first_name: Mapped[str | None] = mapped_column(Text())
+    legal_last_name: Mapped[str | None] = mapped_column(Text())
+    phone: Mapped[str | None] = mapped_column(Text())
+    address_line: Mapped[str | None] = mapped_column(Text())
+    city: Mapped[str | None] = mapped_column(Text())
+    postcode: Mapped[str | None] = mapped_column(Text())
+    country: Mapped[str | None] = mapped_column(Text())
+    linkedin_url: Mapped[str | None] = mapped_column(Text())
+    github_url: Mapped[str | None] = mapped_column(Text())
+    portfolio_url: Mapped[str | None] = mapped_column(Text())
+    right_to_work_uk: Mapped[bool | None] = mapped_column(Boolean())
+    needs_visa_sponsorship: Mapped[bool | None] = mapped_column(Boolean())
+    nationality: Mapped[str | None] = mapped_column(Text())
+    heard_about: Mapped[str | None] = mapped_column(Text())
+    previously_employed: Mapped[bool | None] = mapped_column(Boolean())
+    free_school_meals: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    gender: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    ethnicity: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    disability: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    veteran: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    updated_at: Mapped[datetime] = _updated()
+
+
+class Application(_UuidPk, Base):
+    """One prepare-and-fill attempt for one job and one applicant."""
+
+    __tablename__ = "application"
+    __table_args__ = (
+        UniqueConstraint("applicant_id", "job_id", name="uq_application_applicant_job"),
+        _text_in("status", ApplicationStatus),
+        _text_in("ats_kind", AtsKind, nullable=True),
+        Index("ix_application_applicant_status", "applicant_id", "status"),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
+    apply_url: Mapped[str] = mapped_column(Text())
+    status: Mapped[str] = mapped_column(Text())
+    ats_kind: Mapped[str | None] = mapped_column(Text())
+    schema_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
+    fill_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
+    missing_fields: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    error: Mapped[str | None] = mapped_column(Text())
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class ExtensionDevice(_UuidPk, Base):
+    """Hashed API token for the browser extension that fills forms in the user's tab."""
+
+    __tablename__ = "extension_device"
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(),
+        ForeignKey("applicant.id", ondelete="CASCADE"),
+        unique=True,
+    )
+    token_hash: Mapped[str] = mapped_column(Text())
+    label: Mapped[str] = mapped_column(Text(), server_default=text("'default'"))
+    created_at: Mapped[datetime] = _created()
+    rotated_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())

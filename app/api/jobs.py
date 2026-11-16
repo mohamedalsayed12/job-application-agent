@@ -14,7 +14,10 @@ from sqlalchemy.orm import Session
 from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
+from app.api.forms import csrf_field
 from app.api.listings import place_names
+from app.applications.prepare import application_for_job
+from app.applications.ui import apply_step
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
@@ -35,7 +38,7 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         await gateway.aclose()
 
 
-def _body(job: Job, shown: Shown, tailored: TailoredCv | None) -> str:
+def _body(job: Job, shown: Shown, tailored: TailoredCv | None, step: str) -> str:
     if shown.summary:
         about = (
             f"<p>{html.escape(shown.summary)}</p>"
@@ -53,16 +56,9 @@ def _body(job: Job, shown: Shown, tailored: TailoredCv | None) -> str:
 {about}
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
 {tailored_block(job.id, tailored)}
-{_apply_link(job.apply_url)}
+{step}
 </div>
 """
-
-
-def _apply_link(url: str) -> str:
-    """Only web links: an apply URL comes from outside data."""
-    if not url.lower().startswith(("https://", "http://")):
-        return "<p>No usable apply link was given.</p>"
-    return f'<p><a class="button primary" href="{html.escape(url, quote=True)}" rel="noopener noreferrer">Apply on the employer&#39;s site</a></p>'
 
 
 def _tailored_for(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> TailoredCv | None:
@@ -85,7 +81,8 @@ async def job_page(
         raise HTTPException(status_code=404)
     shown = await summary_for_view(db, job, gateway=gateway, settings=get_settings(), persist=db.commit)
     tailored = _tailored_for(db, applicant.id, job_id)
-    return page(job.title, _body(job, shown, tailored), header=applicant_bar(request, "matches"), narrow=True)
+    step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf_field(request))
+    return page(job.title, _body(job, shown, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
 
 
 @router.get("/{job_id}/tailored.pdf")

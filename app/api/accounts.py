@@ -186,12 +186,20 @@ def _account_page(
 <h1>Your account</h1>
 <div class="card">
 <p>Logged in as {html.escape(applicant.email)}.</p>
-<p><a href="/listings">Your job matches</a> · <a href="/profile">Your profile and CV</a></p>
+<p><a href="/listings">Your job matches</a> · <a href="/applications">Applications</a> ·
+<a href="/profile">Your profile and CV</a> · <a href="/profile/apply-answers">Apply answers</a></p>
 <form method="post" action="/logout">{csrf_field(request)}<button type="submit">Log out</button></form>
+</div>
+<div class="card" id="extension">
+<h2>Browser extension</h2>
+<p>The extension fills employer forms in your tab and never clicks Submit. Create a token, paste it into the extension,
+and keep this site's origin in the extension settings.</p>
+<form method="post" action="/account/extension-token">{csrf_field(request)}
+<button type="submit">Create or rotate extension token</button></form>
 </div>
 <div class="card" id="delete">
 <h2>Delete your account</h2>
-<p>This permanently removes your profile, CV, preferences and job matches, and can't be undone.</p>
+<p>This permanently removes your profile, CV, preferences, apply answers, applications and job matches, and can't be undone.</p>
 {_error(error)}
 <form method="post" action="/account/delete">
   {csrf_field(request)}

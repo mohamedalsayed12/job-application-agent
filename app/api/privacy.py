@@ -34,6 +34,12 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
   save is kept. For jobs the fit report marks Apply or Consider, a tailored CV copy (PDF and DOCX) may also be stored
   for you to download; it never replaces your uploaded CV.</li>
   <li><b>Your job matches:</b> which jobs fit your profile, with a score and the reasons.</li>
+  <li><b>Apply answers</b> (optional): legal name, phone, address, work authorisation, visa sponsorship need,
+  links, and optional demographics such as free school meals. Used only to fill employer forms in your browser.
+  Demographics default to prefer not to say and are never inferred from your CV.</li>
+  <li><b>Prepared applications:</b> which jobs you asked to prepare, the form fields we saw, and the fill plan for your
+  extension. Nothing is submitted to an employer by this service.</li>
+  <li><b>Extension token</b> (hashed): so the browser extension can download your CV and fill plans.</li>
   <li><b>Your IP address</b>, held briefly in memory to limit repeated login attempts. It isn't written to the database.</li>
 </ul>
 <p>The lawful basis is that you asked for this service: we use your data only to provide it to you.</p>
@@ -55,6 +61,9 @@ About pages (mission, vision, values) through the same safe fetch rules as other
 job advert, any company text it found, your profile summary and your CV text, so Claude can rephrase a grounded draft.
 Nothing is invented that is not already in your CV or profile. Your email address is only kept in the tailored file when
 it already appears in your uploaded CV.</p>
+<p>When you prepare an application, the service may call Greenhouse's public boards API or an Apify actor to read the
+application form questions for that job URL. Your answers are not sent to Apify. The fill happens in your browser via
+the extension; this service never clicks Submit for you.</p>
 </div>
 
 <div class="card">
@@ -65,8 +74,8 @@ no tracking or advertising cookie to accept or refuse.</p>
 
 <div class="card">
 <h2>How long we keep it</h2>
-<p>Until you delete your account. Deleting it on <a href="/account">your account page</a> removes your profile, CV, preferences and
-matches at once.</p>
+<p>Until you delete your account. Deleting it on <a href="/account">your account page</a> removes your profile, CV, preferences,
+apply answers, applications, extension token and matches at once.</p>
 <p>Copies of the database are kept as backups. Only the latest two are kept, and none for more than 30 days, so your data has
 left every backup within 30 days of deletion.</p>
 </div>

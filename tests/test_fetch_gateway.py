@@ -38,6 +38,7 @@ def _gateway(
         allowlist=frozenset(
             {
                 "api.example.com",
+                "api.apify.com",
                 "api.reed.co.uk",
             }
         ),
