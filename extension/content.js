@@ -81,9 +81,10 @@ function setValue(el, value) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function uploadCv(el, apiBase, token) {
+async function uploadCv(el, apiBase, token, applicationId) {
   if (isSubmitControl(el) || el.type !== "file") return;
-  const response = await fetch(`${apiBase.replace(/\/$/, "")}/extension/cv`, {
+  const query = applicationId ? `?application_id=${encodeURIComponent(applicationId)}` : "";
+  const response = await fetch(`${apiBase.replace(/\/$/, "")}/extension/cv${query}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok) throw new Error("Could not download CV");
@@ -96,13 +97,13 @@ async function uploadCv(el, apiBase, token) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function applyPlan(plan, apiBase, token) {
+async function applyPlan(plan, apiBase, token, applicationId) {
   for (const step of plan.steps || []) {
     if (!ALLOWED_ACTIONS.has(step.action)) continue;
     const el = findField(step);
     if (!el || isSubmitControl(el)) continue;
     if (step.action === "upload_cv") {
-      await uploadCv(el, apiBase, token);
+      await uploadCv(el, apiBase, token, applicationId);
     } else {
       setValue(el, String(step.value || ""));
     }
@@ -123,7 +124,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "jaa-fill") return;
   (async () => {
     try {
-      await applyPlan(message.plan, message.apiBase, message.token);
+      await applyPlan(message.plan, message.apiBase, message.token, message.applicationId);
       sendResponse({ ok: true });
     } catch (err) {
       sendResponse({ ok: false, error: String(err) });

@@ -64,6 +64,8 @@ async def prepare_application(
         raise PrepareRefused("This job has no usable apply link.")
 
     row = application_for_job(session, applicant.id, job_id)
+    if row is not None and row.status == ApplicationStatus.submitted.value:
+        raise PrepareRefused("You have already applied for this job.")
     if row is None:
         row = Application(
             applicant_id=applicant.id,
@@ -136,3 +138,21 @@ def set_application_status(
         application.error = error
     session.flush()
     return application
+
+
+def mark_submitted(session: Session, applicant_id: uuid.UUID, job: Job) -> Application:
+    """The person says they sent the application, here or on the employer's site directly."""
+    row = application_for_job(session, applicant_id, job.id)
+    if row is None:
+        row = Application(applicant_id=applicant_id, job_id=job.id, apply_url=job.apply_url or "", status=ApplicationStatus.submitted.value)
+        session.add(row)
+    else:
+        row.status = ApplicationStatus.submitted.value
+        row.error = None
+    session.flush()
+    return row
+
+
+def has_applied(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> bool:
+    row = application_for_job(session, applicant_id, job_id)
+    return row is not None and row.status == ApplicationStatus.submitted.value

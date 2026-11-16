@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import uuid
 
-from fastapi import APIRouter, Depends, Form, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -15,11 +15,18 @@ from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
 from app.api.jobs import get_gateway
 from app.applications.extension_device import issue_token
-from app.applications.prepare import PrepareRefused, get_application, list_applications, prepare_application
+from app.applications.ui import applied_button
+from app.applications.prepare import (
+    PrepareRefused,
+    get_application,
+    list_applications,
+    mark_submitted,
+    prepare_application,
+)
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
-from app.models import Applicant, Application, ApplicationStatus, Job
+from app.models import Applicant, Application, ApplicationStatus, Job, JobFreshness
 
 router = APIRouter(tags=["applications"])
 _CSRF = [Depends(require_csrf)]
@@ -28,6 +35,7 @@ _STATUS_LABEL = {
     ApplicationStatus.preparing.value: "Preparing",
     ApplicationStatus.ready_to_fill.value: "Ready to fill",
     ApplicationStatus.filled_awaiting_review.value: "Filled — review before submit",
+    ApplicationStatus.submitted.value: "Applied",
     ApplicationStatus.needs_input.value: "Needs your answers",
     ApplicationStatus.failed.value: "Failed",
     ApplicationStatus.abandoned.value: "Abandoned",
@@ -60,6 +68,8 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
         )
     if app_row.status == ApplicationStatus.filled_awaiting_review.value:
         actions.append('<span class="tag good">Ready for your review — submit yourself</span>')
+    if app_row.status != ApplicationStatus.submitted.value:
+        actions.append(applied_button(csrf_field(request), app_row.job_id))
     return f"""
 <article class="card">
   <h2>{_e(title)}</h2>
@@ -152,6 +162,20 @@ def open_fill(
     if row is None or row.status != ApplicationStatus.ready_to_fill.value:
         return RedirectResponse("/applications", status_code=_SEE_OTHER)
     return RedirectResponse(row.apply_url, status_code=_SEE_OTHER)
+
+
+@router.post("/jobs/{job_id}/applied", dependencies=_CSRF)
+def applied(
+    job_id: uuid.UUID,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    job = db.get(Job, job_id)
+    if job is None or job.freshness != JobFreshness.open:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    mark_submitted(db, applicant.id, job)
+    db.commit()
+    return RedirectResponse(f"/jobs/{job_id}", status_code=_SEE_OTHER)
 
 
 @router.post("/account/extension-token", dependencies=_CSRF)

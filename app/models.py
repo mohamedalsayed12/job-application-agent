@@ -107,6 +107,8 @@ class ApplicationStatus(StrEnum):
     preparing = "preparing"
     ready_to_fill = "ready_to_fill"
     filled_awaiting_review = "filled_awaiting_review"
+    # Set only by the person ("I've applied"), never by the extension.
+    submitted = "submitted"
     needs_input = "needs_input"
     failed = "failed"
     abandoned = "abandoned"

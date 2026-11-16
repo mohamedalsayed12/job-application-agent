@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.applicants.cv import cv_for
@@ -20,7 +21,7 @@ from app.applications.prepare import (
     set_application_status,
 )
 from app.core.db import get_db
-from app.models import ApplicationStatus, CvFileType
+from app.models import ApplicationStatus, CvFileType, TailoredCv, TailoredCvStatus
 
 router = APIRouter(prefix="/extension", tags=["extension"])
 
@@ -68,20 +69,43 @@ def ready_applications(
     return out
 
 
+def _tailored_pdf(db: Session, applicant_id: uuid.UUID, application_id: uuid.UUID | None) -> bytes | None:
+    """The job's tailored CV (D55) when one is ready, so the form gets the version written for it."""
+    if application_id is None:
+        return None
+    row = get_application(db, application_id, applicant_id)
+    if row is None:
+        return None
+    tailored = db.scalar(
+        select(TailoredCv).where(
+            TailoredCv.applicant_id == applicant_id,
+            TailoredCv.job_id == row.job_id,
+            TailoredCv.status == TailoredCvStatus.ready.value,
+        )
+    )
+    return bytes(tailored.pdf_content) if tailored is not None and tailored.pdf_content else None
+
+
 @router.get("/cv")
 def download_cv(
+    application_id: uuid.UUID | None = None,
     applicant_id: uuid.UUID = Depends(_bearer_applicant),
     db: Session = Depends(get_db),
 ) -> Response:
-    cv = cv_for(db, applicant_id)
-    if cv is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No CV uploaded")
-    media = "application/pdf" if cv.file_type == CvFileType.pdf.value else (
+    tailored = _tailored_pdf(db, applicant_id, application_id)
+    if tailored is not None:
+        content, file_type = tailored, CvFileType.pdf.value
+    else:
+        cv = cv_for(db, applicant_id)
+        if cv is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No CV uploaded")
+        content, file_type = bytes(cv.content), cv.file_type
+    media = "application/pdf" if file_type == CvFileType.pdf.value else (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    name = f"cv.{cv.file_type}"
+    name = f"cv.{file_type}"
     return Response(
-        content=bytes(cv.content),
+        content=content,
         media_type=media,
         headers={
             "Content-Disposition": f'attachment; filename="{name}"',

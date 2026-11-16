@@ -41,6 +41,8 @@ from app.models import (
     JobFreshness,
     SpendKind,
     SpendLedger,
+    TailoredCv,
+    TailoredCvStatus,
 )
 from tests.jobs import _li, _public_resolve, _store
 
@@ -393,3 +395,126 @@ async def test_apply_answers_page_saves(client: httpx.AsyncClient, session: Sess
     assert row.legal_first_name == "Mo"
     assert row.needs_visa_sponsorship is False
     assert row.free_school_meals == PREFER_NOT
+
+
+def _master_cv(session: Session, applicant: Applicant) -> None:
+    session.add(
+        CvFile(
+            applicant_id=applicant.id,
+            content=PDF,
+            file_type=CvFileType.pdf.value,
+            size_bytes=len(PDF),
+            uploaded_at=datetime.now(UTC),
+        )
+    )
+
+
+def _ready_application(session: Session, applicant: Applicant, job: Job) -> Application:
+    row = Application(
+        applicant_id=applicant.id,
+        job_id=job.id,
+        apply_url=job.apply_url,
+        status=ApplicationStatus.ready_to_fill.value,
+        fill_plan_json={"steps": [], "missing": []},
+        missing_fields=[],
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+async def test_the_extension_uploads_the_tailored_cv_for_that_job(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    _master_cv(session, applicant)
+    row = _ready_application(session, applicant, job)
+    token = issue_token(session, applicant.id)
+    tailored = b"%PDF-1.7\ntailored for Platform Engineer"
+    session.add(
+        TailoredCv(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            status=TailoredCvStatus.ready.value,
+            input_hash="h",
+            prompt_version="test",
+            pdf_content=tailored,
+            pdf_size_bytes=len(tailored),
+        )
+    )
+    session.flush()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert (await client.get(f"/extension/cv?application_id={row.id}", headers=headers)).content == tailored
+    assert (await client.get("/extension/cv", headers=headers)).content == PDF
+
+
+async def test_without_a_ready_tailored_cv_the_extension_uploads_the_uploaded_cv(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    _master_cv(session, applicant)
+    row = _ready_application(session, applicant, job)
+    token = issue_token(session, applicant.id)
+    session.add(TailoredCv(applicant_id=applicant.id, job_id=job.id, status=TailoredCvStatus.pending.value, input_hash="h", prompt_version="test"))
+    session.flush()
+
+    response = await client.get(f"/extension/cv?application_id={row.id}", headers={"Authorization": f"Bearer {token}"})
+    assert response.content == PDF
+
+
+async def test_after_review_the_person_marks_the_application_submitted(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    row = _ready_application(session, applicant, job)
+    row.status = ApplicationStatus.filled_awaiting_review.value
+    session.flush()
+
+    assert "press Submit on the employer" in (await client.get(f"/jobs/{job.id}")).text
+    assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
+    session.refresh(row)
+    assert row.status == ApplicationStatus.submitted.value
+    assert "You applied for this job" in (await client.get(f"/jobs/{job.id}")).text
+
+
+async def test_a_job_applied_for_elsewhere_can_be_marked_applied(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    job = _job(session)
+    assert "Prepare apply" in (await client.get(f"/jobs/{job.id}")).text
+
+    assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
+    row = session.scalar(select(Application).where(Application.job_id == job.id))
+    assert row.status == ApplicationStatus.submitted.value
+    assert row.applicant_id == _applicant(session).id
+
+    again = await client.post("/applications", data={"job_id": str(job.id)})
+    assert again.status_code == 303
+    assert "apply_error" in again.headers["location"]
+    session.refresh(row)
+    assert row.status == ApplicationStatus.submitted.value
+
+
+async def test_the_extension_cannot_mark_an_application_submitted(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    row = _ready_application(session, applicant, _job(session))
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.post(
+        f"/extension/applications/{row.id}/status",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"status": "submitted"},
+    )
+    assert response.status_code == 400
+    session.refresh(row)
+    assert row.status == ApplicationStatus.ready_to_fill.value
