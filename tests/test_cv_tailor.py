@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import uuid
+from collections.abc import AsyncIterator, Iterator
 from decimal import Decimal
 
 import httpx
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,7 +18,15 @@ from app.fetch.gateway import FetchGateway
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.matching.report import write_reports
-from app.models import SpendKind, SpendLedger, TailoredCv, TailoredCvStatus
+from app.models import (
+    Applicant,
+    Job,
+    JobReport,
+    SpendKind,
+    SpendLedger,
+    TailoredCv,
+    TailoredCvStatus,
+)
 from app.tailor.ats import ats_report, coverage_for
 from app.tailor.company import official_domain_from_apply_url
 from app.tailor.draft import grounded_draft
@@ -239,6 +250,97 @@ async def test_budget_wait_leaves_waiting_status(session: Session) -> None:
     assert run.stopped_by == "budget"
     row = session.scalars(select(TailoredCv)).one()
     assert row.status == TailoredCvStatus.waiting_budget.value
+
+
+@pytest.fixture
+async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.AsyncClient]:
+    from app.accounts import throttle
+    from app.api.forms import require_csrf
+    from app.core.config import get_settings
+    from app.core.db import get_db
+    from app.main import app
+
+    monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    monkeypatch.setenv("ADMIN_KEY", "test-admin-key-not-default")
+    # Job pages would otherwise write a summary with a real key.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("AI_APPLICANT_IDS", "")
+    get_settings.cache_clear()
+    throttle.reset()
+
+    def _db() -> Iterator[Session]:
+        yield session
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[require_csrf] = lambda: None
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+    throttle.reset()
+    get_settings.cache_clear()
+
+
+async def _person_on_a_job_without_a_report(session: Session, client: httpx.AsyncClient) -> tuple[Applicant, Job]:
+    from tests.test_judge import _jobs
+
+    _policy(session, Decimal(1))
+    email = "tailor-button@example.com"
+    assert (await client.post("/register", data={"email": email, "password": "correct horse battery"})).status_code == 303
+    applicant = session.scalar(select(Applicant).where(Applicant.email == email))
+    store_cv(session, applicant.id, _docx(CV_LINES))
+    await _jobs(session, ("Data Analyst", "Leeds, UK"))
+    job = session.scalar(select(Job).where(Job.title == "Data Analyst"))
+    assert session.scalar(select(JobReport).where(JobReport.job_id == job.id)) is None
+    return applicant, job
+
+
+async def test_any_job_can_be_tailored_on_request(client: httpx.AsyncClient, session: Session) -> None:
+    _, job = await _person_on_a_job_without_a_report(session, client)
+    assert "Tailor my CV for this job" in (await client.get(f"/jobs/{job.id}")).text
+
+    assert (await client.post(f"/jobs/{job.id}/tailor")).status_code == 303
+    assert "Tailoring your CV" in (await client.get(f"/jobs/{job.id}")).text
+
+    ai = _TailorAi()
+    settings = _settings(ai_tailor_unit_price=Decimal("0.003"))
+    run = await write_tailored_cvs(session, gateway=ai.gateway(), settings=settings, persist=session.flush, now=SOON)
+
+    assert run.outcomes["ready"] == 1
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert "Tailored CV ready" in page
+    assert "Tailor my CV for this job" not in page
+    pdf = await client.get(f"/jobs/{job.id}/tailored.pdf")
+    assert pdf.status_code == 200
+    assert pdf.content.startswith(b"%PDF")
+
+
+async def test_a_failed_package_can_be_tried_again(client: httpx.AsyncClient, session: Session) -> None:
+    applicant, job = await _person_on_a_job_without_a_report(session, client)
+    await client.post(f"/jobs/{job.id}/tailor")
+    row = session.scalars(select(TailoredCv)).one()
+    row.status = TailoredCvStatus.failed.value
+    session.flush()
+    assert "Try again" in (await client.get(f"/jobs/{job.id}")).text
+
+    assert (await client.post(f"/jobs/{job.id}/tailor")).status_code == 303
+
+    session.refresh(row)
+    assert row.status == TailoredCvStatus.pending.value
+    assert row.applicant_id == applicant.id
+
+
+async def test_people_outside_the_ai_list_get_no_button(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import get_settings
+
+    _, job = await _person_on_a_job_without_a_report(session, client)
+    monkeypatch.setenv("AI_APPLICANT_IDS", str(uuid.uuid4()))
+    get_settings.cache_clear()
+
+    assert "Tailor my CV for this job" not in (await client.get(f"/jobs/{job.id}")).text
+    assert (await client.post(f"/jobs/{job.id}/tailor")).status_code == 403
+    assert session.scalars(select(TailoredCv)).first() is None
 
 
 async def test_download_is_owner_only(session: Session) -> None:

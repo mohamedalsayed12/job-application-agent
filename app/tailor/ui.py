@@ -8,6 +8,27 @@ import uuid
 from app.models import TailoredCv, TailoredCvStatus
 
 
+def tailor_button(csrf: str, job_id: uuid.UUID, *, label: str = "Tailor my CV for this job") -> str:
+    return (
+        f'<form method="post" action="/jobs/{html.escape(str(job_id))}/tailor" class="inline">'
+        f'{csrf}<button type="submit">{html.escape(label)}</button></form>'
+    )
+
+
+def tailor_section(job_id: uuid.UUID, row: TailoredCv | None, csrf: str, *, allowed: bool) -> str:
+    """The job page's tailored-CV area: status, plus the button when a request would do something."""
+    status = tailored_block(job_id, row)
+    if not allowed:
+        return status
+    if row is None:
+        return f"<p>{tailor_button(csrf, job_id)}</p>"
+    if row.status == TailoredCvStatus.failed.value:
+        return f"{status}<p>{tailor_button(csrf, job_id, label='Try again')}</p>"
+    if row.status == TailoredCvStatus.pending.value:
+        return '<p class="muted">Tailoring your CV for this job. Refresh in a few minutes.</p>'
+    return status
+
+
 def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | None = None) -> str:
     if row is None:
         if verdict in ("Apply", "Consider"):
