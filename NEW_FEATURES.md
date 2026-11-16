@@ -1,16 +1,16 @@
 # New features (post-MVP)
 
-Catalog of features planned and built on 15 November 2026. These sit **outside** the core MVP discovery loop in [`MVP.md`](MVP.md). Each row has a Cursor plan, a worktree (`jaa-<slug>`), and a `feat/<slug>` branch.
+Catalog of post-MVP features planned and built on 15–16 November 2026. These sit **outside** the core MVP discovery loop in [`MVP.md`](MVP.md). The connected workflow is prepared as a stack of review branches.
 
-| Feature | Branch | Worktree | Remote |
+| Feature | Review branch | Original worktree | State |
 |---|---|---|---|
-| Apply fill agent | `feat/apply-agent` | `jaa-apply-agent` | open on origin |
+| Apply fill agent | `integration/apply-agent` | `jaa-apply-agent` | ready for review |
 | Job application auto-apply | — (with `feat/apply-agent`) | — | planned: fill → review → notify user to click Submit |
 | Fake listing agent | `feat/fake-listing` | `jaa-fake-listing` | open on origin |
-| Personalized outreach | `feat/outreach` | `jaa-outreach` | local only |
-| Interview intel | `feat/interview-intel` | `jaa-interview-intel` | local only |
-| CV tailoring | `feat/cv-tailor` | `jaa-cv-tailor` | local only |
-| Indeed Apify scraper | `feat/indeed-apify` | `jaa-indeed-apify` | open on origin |
+| Personalized outreach | `integration/outreach` | `jaa-outreach` | ready for review |
+| Interview intel | `integration/interview-job-pack` | `jaa-interview-intel` | ready for review |
+| CV tailoring | `integration/cv-tailor` | `jaa-cv-tailor` | ready for review |
+| Indeed Apify scraper | `integration/indeed-apify` | `jaa-indeed-apify` | ready for review |
 
 Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*`, `outreach_messaging_feature_*`, `interview_intel_feature_*`, `cv_tailoring_pipeline_*`, `indeed_apify_scraper_*`). Auto-apply has no separate plan yet; it extends the apply fill agent.
 
@@ -22,7 +22,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 **How it works**
 1. User clicks **Prepare apply** on a listing.
-2. Apify extracts the form schema from the job's `apply_url` (Greenhouse public questions API first; Lever / unknown ATS via browser actor).
+2. Apify extracts the form schema from the job's `apply_url`.
 3. Server maps fields to an `application_answers` profile (patterns first, LLM for leftovers).
 4. Browser extension (MV3) fills the open tab, uploads the CV, and **never** clicks Submit.
 5. Status becomes `filled_awaiting_review`; in-app + extension notify the user.
@@ -58,7 +58,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 **New data (on top of §1).** Optional user-reported `submitted` / `abandoned` on `application`; notification already covered by fill-agent badge + in-app banner.
 
-**Status.** Planned as the product framing on top of §1; no separate branch. Ship notify + “mark as submitted” with or right after the fill agent.
+**Status.** The extension stops before Submit, and the person can mark the application submitted or record an application sent elsewhere. No automatic submit is implemented.
 
 **Out of scope.** Extension or Apify clicking Submit; LinkedIn Easy Apply inside LinkedIn; inventing answers to clear `needs_input`; silent apply with no user review.
 
@@ -89,10 +89,10 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 ## 4. Personalized outreach
 
-**Goal.** Find hiring managers / company figures for a job, research public signals, draft a human message from a curated success-pattern library, let the user edit, then send via Gmail or copy for LinkedIn.
+**Goal.** After the user marks an application submitted, find hiring managers / company figures for that job, research public signals, draft a human message from a curated success-pattern library, let the user edit, then send via Gmail or copy for LinkedIn.
 
 **Flow**
-1. Job page → **Find people** (Apify LinkedIn people / employees actors, budget-gated).
+1. User marks the job as applied → job page shows **Find people** (Apify LinkedIn people / employees actors, budget-gated).
 2. Pick contact → **Research & draft** (About + quotes as evidence).
 3. User edits subject/body.
 4. **Send with Gmail** (OAuth) or **Copy for LinkedIn** + open profile.
@@ -112,7 +112,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 ## 5. Interview intel
 
-**Goal.** On-demand crowd research for one target role: collect public success/failure interview stories, compare them, and show a grounded practice plan.
+**Goal.** Compare public success/failure interview stories for a target role, then tailor a grounded practice plan to a matched job and employer.
 
 **Sources (v1).** Reddit, YouTube, LinkedIn via Apify only. Instagram and TikTok deferred.
 
@@ -120,14 +120,16 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 1. Profile → pick a target role → Generate.
 2. Cache hit (7-day TTL on shared `role_key`) → show pack.
 3. Else: Apify collect → AI label success vs failure → synthesize pack with citeable URLs → page.
+4. On a matched job page, build a job pack from the role pack, advert, cached company research, and employer interview stories collected through Apify. If the role pack is missing, queue it first. If no employer stories are usable, use the role pack and advert.
+5. Reuse a job pack while its source hash and seven-day TTL hold; rebuild when the advert, role evidence, company evidence, or company research changes.
 
 **Pack sections.** Findings summary; why people succeeded; why people failed; differentiators; materials/resources; ordered practice plan.
 
-**New data.** `InterviewIntelRequest`, `InterviewEvidence`, `InterviewIntelPack` (shared by normalized role key).
+**New data.** `InterviewIntelRequest`, `InterviewEvidence`, `InterviewIntelPack` (shared by normalized role key), and `InterviewJobPack` (per applicant and job).
 
-**Spend kinds.** `interview_collect`, `ai_interview_analyse`, `ai_interview_plan`.
+**Spend kinds.** `interview_collect`, `ai_interview_analyse`, `ai_interview_plan`, `ai_interview_tailor`.
 
-**Out of v1.** Mock interview chat; per-company packs; storing full HTML/video; direct social HTTP (Apify only).
+**Out of v1.** Mock interview chat; storing full HTML/video; direct social HTTP (Apify only).
 
 ---
 
@@ -182,4 +184,4 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 ## Merge note
 
-The six in-progress branches are not on `origin/master` yet; auto-apply is planned only. Land via PR into the integration branch; resolve Alembic revision chains at merge time (several branches invent `0018`/`0019`).
+The connected workflow is stacked in review branches: base cleanup → Indeed → CV tailoring → apply → outreach → interview. Alembic revisions form one chain through `0021_interview_job_pack`. Auto-submit remains out of scope; the person reviews and submits the form.
