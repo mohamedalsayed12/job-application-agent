@@ -6,6 +6,7 @@ Always-on for this Project’s `job-application-agent` work.
 
 | Tool | Role | How it stays active |
 |---|---|---|
+| **Feature tests** | New features ship with pytest in the same step | Always-applied `.cursor/rules/feature-tests.mdc`; checklist in `docs/code-quality-gate.md` |
 | **Ponytail** | Lazy-senior minimal diffs | Always-applied `.cursor/rules/ponytail.mdc` in the repo + Project preference |
 | **pstack** | Poteto-mode principles, subagent rigor | Plugin enabled in `.cursor/settings.json`; `pstack-models.mdc` at `large`; poteto-mode is the default agent style |
 | **Thermos** | Thermo-nuclear dual review | Plugin enabled in `.cursor/settings.json`; `docs/code-quality-gate.md` requires both review passes before done |
