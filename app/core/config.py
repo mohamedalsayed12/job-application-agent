@@ -84,6 +84,28 @@ class Settings(BaseSettings):
     gmail_redirect_uri: str = "http://localhost:8000/account/gmail/callback"
     gmail_token_key: str = ""
 
+    # Interview intel: public Reddit, YouTube and LinkedIn posts through Apify (no Instagram/TikTok in v1).
+    interview_reddit_actor: str = "trudax/reddit-scraper-lite"
+    interview_youtube_actor: str = "streamers/youtube-scraper"
+    interview_linkedin_actor: str = "apimaestro/linkedin-posts-search-scraper-no-cookies"
+    interview_max_per_platform: int = 25
+    # Keep this short: interview collection runs inside the only worker cycle.
+    interview_wait_minutes: int = 5
+    interview_ttl_days: int = 7
+    interview_per_cycle: int = 1
+    interview_collect_unit_price: Decimal = Decimal("0.002")
+    interview_collect_run_price: Decimal = Decimal("0.03")
+    interview_analyse_unit_price: Decimal = Decimal("0.002")
+    interview_plan_unit_price: Decimal = Decimal("0.003")
+    interview_tailor_unit_price: Decimal = Decimal("0.003")
+    interview_analyse_model: str = ""
+    interview_plan_model: str = ""
+    interview_analyse_max_output_tokens: int = 2000
+    interview_plan_max_output_tokens: int = 2500
+    interview_analyse_daily_token_cap: int = 1000000
+    interview_plan_daily_token_cap: int = 500000
+    interview_snippet_chars: int = 2000
+
     # Blank model = provider default.
     ai_provider: str = "anthropic"
     anthropic_api_key: str = ""
@@ -143,6 +165,11 @@ class Settings(BaseSettings):
         "apply_form_unit_price",
         "apply_form_run_price",
         "ai_apply_map_unit_price",
+        "interview_collect_unit_price",
+        "interview_collect_run_price",
+        "interview_analyse_unit_price",
+        "interview_plan_unit_price",
+        "interview_tailor_unit_price",
         "ai_summary_unit_price",
         "ai_cv_unit_price",
         "ai_judge_unit_price",
@@ -193,6 +220,12 @@ class Settings(BaseSettings):
 
     def gmail_seal_secret(self) -> str:
         return (self.gmail_token_key or self.session_secret).strip()
+
+    def resolved_interview_analyse_model(self) -> str:
+        return self.interview_analyse_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_interview_plan_model(self) -> str:
+        return self.interview_plan_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def api_allowlist_hosts(self) -> frozenset[str]:
         return frozenset(

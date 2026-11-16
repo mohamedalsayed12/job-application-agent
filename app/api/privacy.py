@@ -44,6 +44,9 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
   profile URLs, any work emails Apify returned, research snippets, and the messages you edit or send.</li>
   <li><b>Gmail connection</b>, if you connect Gmail: your Gmail address and a sealed refresh token used only to send
   outreach you have approved.</li>
+  <li><b>Interview intel requests:</b> which target role you asked us to research, and the resulting practice pack.</li>
+  <li><b>Public interview stories</b> from Reddit, YouTube and LinkedIn (short text snippets and URLs only), collected when
+  you ask for interview intel on a role. These are not about you; they are used to build a shared findings pack for that role.</li>
   <li><b>Your IP address</b>, held briefly in memory to limit repeated login attempts. It isn't written to the database.</li>
 </ul>
 <p>The lawful basis is that you asked for this service: we use your data only to provide it to you. Cold email is sent only
@@ -72,6 +75,9 @@ application form questions for that job URL. Your answers are not sent to Apify.
 the extension; this service never clicks Submit for you.</p>
 <p>Finding contacts and public profile research runs through Apify's LinkedIn people actors (not by this app fetching
 linkedin.com). Sending approved mail uses Google's Gmail API when you have connected Gmail.</p>
+<p>When you ask for interview intel on a target role, the service collects public posts through Apify and sends those
+short snippets to Anthropic so it can label success vs failure stories and draft a practice plan. Your email address,
+name and CV are not part of that.</p>
 </div>
 
 <div class="card">

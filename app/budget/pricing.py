@@ -25,6 +25,14 @@ def estimate_cost(
         unit_price = settings.outreach_profile_unit_price
     elif kind == SpendKind.ai_outreach:
         unit_price = settings.outreach_ai_unit_price
+    elif kind == SpendKind.interview_collect:
+        unit_price = settings.interview_collect_unit_price
+    elif kind == SpendKind.ai_interview_analyse:
+        unit_price = settings.interview_analyse_unit_price
+    elif kind == SpendKind.ai_interview_plan:
+        unit_price = settings.interview_plan_unit_price
+    elif kind == SpendKind.ai_interview_tailor:
+        unit_price = settings.interview_tailor_unit_price
     elif kind == SpendKind.ai_cv_read:
         unit_price = settings.ai_cv_unit_price
     elif kind == SpendKind.ai_job_judge:

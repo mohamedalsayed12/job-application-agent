@@ -14,6 +14,8 @@ from app.api.apply_answers import router as apply_answers_router
 from app.api.extension import router as extension_router
 from app.api.forms import FormRefused, form_refused_page
 from app.api.health import router as health_router
+from app.api.interview_intel import router as interview_intel_router
+from app.api.interview_job import router as interview_job_router
 from app.api.jobs import router as jobs_router
 from app.api.listings import router as listings_router
 from app.api.outreach import router as outreach_router
@@ -52,6 +54,8 @@ app.include_router(profile_router)
 app.include_router(apply_answers_router)
 app.include_router(applications_router)
 app.include_router(extension_router)
+app.include_router(interview_intel_router)
+app.include_router(interview_job_router)
 app.include_router(jobs_router)
 app.include_router(outreach_router)
 app.include_router(listings_router)
