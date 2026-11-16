@@ -71,6 +71,8 @@ def _docx(*, main_type: str = WORD_MAIN, extra: dict[str, bytes] | None = None, 
 @pytest.fixture
 async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.AsyncClient]:
     monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    # Uploads here run without AI; a real key in .env would make them read the stub CVs.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     get_settings.cache_clear()
     throttle.reset()
 
