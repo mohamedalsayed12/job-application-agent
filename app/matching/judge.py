@@ -52,7 +52,8 @@ Rate each area from 1 to 5:
 - cv_match: how well the person's skills, experience level and degrees meet what the advert requires. Count only what
   the profile states: a skill the profile does not list is missing, never assumed. An "entry" person wants graduate,
   junior or entry-level jobs, so an advert asking for several years of experience rates 1 or 2. A required degree
-  subject the person did not study rates 2 or less unless the advert accepts experience instead.
+  subject the person did not study rates 2 or less, and is named in red_flags, unless the advert accepts experience
+  instead.
 - role_alignment: 5 when the job is exactly one of the person's target roles, 1 when it is unrelated. A job that matches
   no target role is 1, not the middle.
 - comp: the advert's pay against the UK market for this role and level. 5 is top quartile, 1 is well below market.

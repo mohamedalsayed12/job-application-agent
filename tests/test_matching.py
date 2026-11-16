@@ -389,3 +389,13 @@ async def test_each_match_says_what_fitted_and_what_is_missing(session: Session)
         "level": "entry level in the advert",
     }
     assert set(row.reasons["missing"]) == {"location", "known salary", "skills on profile"}
+
+
+async def test_d62_a_degree_the_person_lacks_never_hides_a_job(session: Session) -> None:
+    applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(
+        ApplicantProfile(applicant_id=applicant, experience_level=ExperienceLevel.mid, degrees=["BSc Business Management"])
+    )
+    _store(session, [_posting(1, content=f"{ADVERT} You have a degree in Computer Science or STEM.")])
+    match_all(session, now=SOON)
+    assert set(_matches(session, applicant)) == {_job(session, 1).id}

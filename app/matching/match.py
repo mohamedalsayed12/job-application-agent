@@ -23,7 +23,6 @@ from app.applicants.salary import job_excluded_for_salary, salary_match_status
 from app.applicants.types import ExpectedSalary
 from app.cleaning.normalize import Place, parse_location, parse_places
 from app.matching.credentials import Held, held_groups, required_in_advert
-from app.matching.degrees import degree_shuts_out, required_fields
 from app.matching.titles import (
     ENTRY_TITLE,
     NOT_ENTRY_TITLE,
@@ -420,10 +419,6 @@ def experience_levels(session: Session) -> dict[uuid.UUID, str]:
     return dict(session.execute(select(ApplicantProfile.applicant_id, ApplicantProfile.experience_level)).all())
 
 
-def applicant_degrees(session: Session) -> dict[uuid.UUID, list[str]]:
-    return dict(session.execute(select(ApplicantProfile.applicant_id, ApplicantProfile.degrees)).all())
-
-
 def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] | None = None) -> MatchReport:
     """Safe to repeat. Afterwards the table holds exactly the current matches.
 
@@ -434,8 +429,6 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
     levels = experience_levels(session)
     skills = load_skills(session, now=now)
     required = {facts.job_id: required_in_advert(facts.description) for facts in shown}
-    degrees = applicant_degrees(session)
-    subjects = {facts.job_id: required_fields(facts.description) for facts in shown}
     profiles = load_profiles(session, applicant_ids)
     job_digests = {
         facts.job_id: digest(
@@ -461,9 +454,7 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
             report,
             skills,
             required,
-            subjects,
             level=levels.get(preference.applicant_id),
-            degrees=degrees.get(preference.applicant_id) or [],
             verdicts=_verdicts(session, profiles.get(preference.applicant_id), job_digests),
         )
     session.flush()
@@ -477,10 +468,8 @@ def _match_applicant(
     report: MatchReport,
     skills: Skills,
     required: dict[uuid.UUID, list[str]],
-    subjects: dict[uuid.UUID, list[frozenset[str]]],
     *,
     level: str | None,
-    degrees: list[str],
     verdicts: dict[uuid.UUID, JobVerdict],
 ) -> None:
     applicant_id = preference.applicant_id
@@ -513,7 +502,7 @@ def _match_applicant(
         ) or match_by_skills(facts.title, facts.description, skill_fit, level=level)
         if role is None and verdict is not None:
             role = RoleMatch(target="", kind=RoleKind.ai, level=ENTRY_BY_AI if verdict.level == "entry" else None)
-        if role is None or degree_shuts_out(subjects[facts.job_id], degrees):
+        if role is None:
             continue
         job = session.get(Job, facts.job_id)
         salary = salary_match_status(
