@@ -11,7 +11,7 @@ from app.api.chrome import public_bar
 router = APIRouter(tags=["privacy"])
 
 CONTACT_EMAIL = "mohammed33771885@gmail.com"
-UPDATED = "10 November 2026"
+UPDATED = "15 November 2026"
 
 _BODY = f"""
 <h1>Privacy notice</h1>
@@ -31,7 +31,8 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
   certifications and licences. To find jobs that fit you and explain each match.</li>
   <li><b>Your CV, if you upload one.</b> Stored so you can download it again. When you upload it, or press "Fill my profile
   from my CV", its text is read to suggest entries for your profile form. The suggestions aren't stored: only what you
-  save is kept.</li>
+  save is kept. For jobs the fit report marks Apply or Consider, a tailored CV copy (PDF and DOCX) may also be stored
+  for you to download; it never replaces your uploaded CV.</li>
   <li><b>Your job matches:</b> which jobs fit your profile, with a score and the reasons.</li>
   <li><b>Your IP address</b>, held briefly in memory to limit repeated login attempts. It isn't written to the database.</li>
 </ul>
@@ -49,6 +50,11 @@ together with each job advert. Your email address, name, locations, salary and C
 <p>For each job that first check scores 3.0 or more, the service writes a fuller fit report. For that it sends Anthropic
 the job advert with your target roles, experience level, skills, degrees, salary wish, wanted locations and the text of
 your CV, if you uploaded one. Your email address and name are never sent.</p>
+<p>When that fit report says Apply or Consider, the service may tailor a CV for that job. It may fetch the employer's public
+About pages (mission, vision, values) through the same safe fetch rules as other page reads. It then sends Anthropic the
+job advert, any company text it found, your profile summary and your CV text, so Claude can rephrase a grounded draft.
+Nothing is invented that is not already in your CV or profile. Your email address is only kept in the tailored file when
+it already appears in your uploaded CV.</p>
 </div>
 
 <div class="card">
