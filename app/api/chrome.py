@@ -7,6 +7,7 @@ from fastapi import Request
 from app.api.forms import csrf_field
 
 _APPLICANT_LINKS = (
+    ("workflow", "Workflow", "/workflow"),
     ("matches", "Matches", "/listings"),
     ("applications", "Applications", "/applications"),
     ("profile", "Profile", "/profile"),

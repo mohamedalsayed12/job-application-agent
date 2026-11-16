@@ -22,6 +22,7 @@ from app.api.outreach import router as outreach_router
 from app.api.privacy import router as privacy_router
 from app.api.profile import router as profile_router
 from app.api.quality import router as quality_router
+from app.api.workflow import router as workflow_router
 from app.core.config import get_settings
 
 SESSION_DAYS = 14
@@ -50,6 +51,7 @@ app.add_exception_handler(FormRefused, form_refused_page)
 app.include_router(health_router)
 app.include_router(privacy_router)
 app.include_router(accounts_router)
+app.include_router(workflow_router)
 app.include_router(profile_router)
 app.include_router(apply_answers_router)
 app.include_router(applications_router)
