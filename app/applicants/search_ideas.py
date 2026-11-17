@@ -133,14 +133,15 @@ def checked(payload: dict, ask: ProfileAsk) -> SearchIdeas:
             continue
         seen.add(_key(title))
         roles.append(RoleIdea(title, because))
-    known = {_key(place) for place in ask.locations}
+    listed = {_key(place) for place in ask.locations}
+    known = set(listed)
     reach = ask.travel_miles or DEFAULT_COMMUTE_MILES
     places: list[str] = []
     for item in payload.get("places") or []:
         if not isinstance(item, dict):
             continue
         place, miles = _clean(item.get("name")), item.get("miles")
-        near_listed = _key(_clean(item.get("near"))) in known
+        near_listed = _key(_clean(item.get("near"))) in listed
         in_reach = isinstance(miles, int) and not isinstance(miles, bool) and 0 <= miles <= reach
         if place and len(place) <= MAX_ITEM_LENGTH and near_listed and in_reach and _key(place) not in known:
             known.add(_key(place))

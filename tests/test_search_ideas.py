@@ -39,6 +39,7 @@ IDEAS = {
         {"name": "Leeds", "near": "Manchester", "miles": 36},
         {"name": "Chester", "near": "Liverpool", "miles": 10},
         {"name": "Bolton", "near": "Manchester", "miles": "close"},
+        {"name": "Eccles", "near": "Salford", "miles": 2},
     ],
 }
 
