@@ -62,6 +62,9 @@ So the text of your CV is sent to Anthropic at those times. When you ask for an 
 job text, a CV excerpt, and public research snippets about the contact; your login email and name are not sent.</p>
 <p>To judge which jobs suit you, the service also sends Anthropic your target roles, experience level, skills and degrees,
 together with each job advert. Your email address, name, locations, salary and CV are not part of that.</p>
+<p>When you press "Suggest roles and places" on your profile, the service sends Anthropic your skills, degrees, experience
+level, target roles, locations and travel distance, so it can suggest job titles and nearby towns to search. Your email
+address, name, salary and CV are not part of that.</p>
 <p>For each job that first check scores 3.0 or more, the service writes a fuller fit report. For that it sends Anthropic
 the job advert with your target roles, experience level, skills, degrees, salary wish, wanted locations and the text of
 your CV, if you uploaded one. Your email address and name are never sent.</p>

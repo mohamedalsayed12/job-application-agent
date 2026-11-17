@@ -30,14 +30,19 @@ from app.applicants.cv_read import CvRead, CvSuggestions, ReadOutcome, read_cv
 from app.applicants.profile import (
     EXPERIENCE_LABELS,
     MAX_ITEM_LENGTH,
+    MAX_DEGREES,
+    MAX_LOCATIONS,
+    MAX_ROLES,
+    MAX_SKILLS,
     CertificationInput,
     load_profile,
     parse_certification,
     parse_profile_input,
     save_profile,
 )
+from app.applicants.search_ideas import ProfileAsk, SearchIdeas, suggest_search
 from app.applicants.service import PreferenceValidationError
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.api.interview_intel import interview_card
@@ -249,6 +254,9 @@ def _profile_page(
     <label>Locations <span class="hint">one per line</span>
       <textarea name="locations" rows="2" required placeholder="Manchester">{html.escape(fields.locations)}</textarea>
     </label>
+    <p class="hint">Not sure what to search for? AI can suggest job titles that fit your skills and degrees, and towns
+    near your locations, for you to check before anything is searched.
+    <button type="submit" formaction="/profile/ideas" formnovalidate>Suggest roles and places</button></p>
     <div class="row">
       <label>Experience level
         <select name="experience_level" required>{levels}</select>
@@ -500,6 +508,96 @@ async def cv_fill(
     if read is None:
         return RedirectResponse("/profile", status_code=_SEE_OTHER)
     return _after_read(request, db, applicant, read)
+
+
+_IDEA_PROBLEMS = {
+    ReadOutcome.budget: "This month's AI budget is used up, so we couldn't suggest roles and places.",
+    ReadOutcome.provider_failed: "Suggesting roles and places didn't work this time. Try again later.",
+    ReadOutcome.not_configured: "Suggesting roles and places isn't set up on this server.",
+}
+
+
+def _ask(fields: ProfileFields) -> ProfileAsk:
+    """Unsaved form text, so it is held to the profile limits before it goes to the AI at a fixed price."""
+
+    def capped(text: str, limit: int) -> tuple[str, ...]:
+        return tuple(line for line in _lines(text) if len(line) <= MAX_ITEM_LENGTH)[:limit]
+
+    travel = fields.travel_distance.strip()
+    return ProfileAsk(
+        skills=capped(fields.skills, MAX_SKILLS),
+        degrees=capped(fields.degrees, MAX_DEGREES),
+        experience_level=fields.experience_level,
+        target_roles=capped(fields.target_roles, MAX_ROLES),
+        locations=capped(fields.locations, MAX_LOCATIONS),
+        travel_miles=int(travel) if travel.isdecimal() and len(travel) <= 3 else None,
+    )
+
+
+def add_ideas(fields: ProfileFields, ideas: SearchIdeas, settings: Settings) -> tuple[ProfileFields, str]:
+    """The form with the suggested roles and places added, up to the profile limits, and what to tell the person."""
+    roles, places = _lines(fields.target_roles), _lines(fields.locations)
+    new_roles = list(ideas.roles[: max(MAX_ROLES - len(roles), 0)])
+    new_places = list(ideas.places[: max(MAX_LOCATIONS - len(places), 0)])
+    if not new_roles and not new_places:
+        full = len(ideas.roles) + len(ideas.places)
+        return fields, (
+            f"Your profile already has the most roles and places it can hold ({MAX_ROLES} each)."
+            if full
+            else "We found no new roles or places to suggest."
+        )
+    roles += [idea.title for idea in new_roles]
+    places += new_places
+    merged = ProfileFields(
+        target_roles="\n".join(roles),
+        locations="\n".join(places),
+        salary_amount=fields.salary_amount,
+        salary_currency=fields.salary_currency,
+        salary_period=fields.salary_period,
+        experience_level=fields.experience_level,
+        travel_distance=fields.travel_distance,
+        skills=fields.skills,
+        cert_name=[row[0] for row in fields.certifications],
+        cert_issuer=[row[1] for row in fields.certifications],
+        cert_kind=[row[2] for row in fields.certifications],
+        cert_expiry=[row[3] for row in fields.certifications],
+        degrees=fields.degrees,
+    )
+    said = []
+    if new_roles:
+        said.append("Roles: " + "; ".join(f"{idea.title} (from your {', '.join(idea.because)})" for idea in new_roles) + ".")
+    if new_places:
+        said.append(f"Places near you: {', '.join(new_places)}.")
+    searches = len(roles) * max(len(places), 1)
+    cost = searches * (settings.linkedin_max_results * settings.linkedin_unit_price + settings.linkedin_run_price)
+    said.append(
+        "They're in the form now. Remove any you don't want, then press Save and find my matches. "
+        f"As it stands, your profile runs {searches} LinkedIn search{'es' if searches != 1 else ''} a day, "
+        f"costing up to £{cost:.2f}."
+    )
+    return merged, " ".join(said)
+
+
+@router.post("/ideas", response_model=None, dependencies=_CSRF)
+async def search_ideas(
+    request: Request,
+    fields: ProfileFields = Depends(),
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
+) -> Response:
+    """Works on what the form holds now, saved or not, and saves nothing."""
+    ask = _ask(fields)
+    if not ask.skills and not ask.degrees:
+        return _profile_page(request, db, applicant, fields, notice="Add your skills or a degree first, then ask for suggestions.")
+    if not throttle.take_cv_upload_attempt(str(applicant.id)):
+        raise FormRefused(status.HTTP_429_TOO_MANY_REQUESTS, "Too many tries. Wait a while and try again.")
+    settings = get_settings()
+    found = await suggest_search(db, applicant.id, ask, gateway=gateway, settings=settings)
+    if isinstance(found, ReadOutcome):
+        return _profile_page(request, db, applicant, fields, notice=_IDEA_PROBLEMS[found])
+    fields, notice = add_ideas(fields, found, settings)
+    return _profile_page(request, db, applicant, fields, notice=notice)
 
 
 @router.get("/cv")
