@@ -58,6 +58,7 @@ class ProfileInput:
     skills: tuple[str, ...]
     certifications: tuple[CertificationInput, ...]
     degrees: tuple[str, ...] = ()
+    tailor_outside_locations: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +133,7 @@ def parse_profile_input(
     skills: list[str],
     certifications: list[CertificationInput],
     degrees: list[str] | None = None,
+    tailor_outside_locations: bool = False,
 ) -> ProfileInput:
     roles = [role.strip() for role in target_roles if role.strip()]
     places = [place.strip() for place in locations if place.strip()]
@@ -156,6 +158,7 @@ def parse_profile_input(
         skills=_parse_skills(skills),
         certifications=tuple(certifications),
         degrees=_parse_degrees(degrees or []),
+        tailor_outside_locations=tailor_outside_locations,
     )
 
 
@@ -178,6 +181,7 @@ def save_profile(session: Session, applicant_id: uuid.UUID, profile: ProfileInpu
     row.experience_level = profile.experience_level
     row.travel_distance_miles = profile.travel_distance_miles
     row.degrees = list(profile.degrees)
+    row.tailor_outside_locations = profile.tailor_outside_locations
 
     session.execute(delete(ApplicantSkill).where(ApplicantSkill.applicant_id == applicant_id))
     session.execute(delete(ApplicantCertification).where(ApplicantCertification.applicant_id == applicant_id))

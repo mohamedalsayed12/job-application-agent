@@ -42,8 +42,9 @@ from app.models import (
     JobSummary,
     SummaryStatus,
     TailoredCv,
+    auto_tailored,
 )
-from app.tailor.run import tailor_allowed
+from app.tailor.run import tailor_allowed, tailors_outside_locations
 from app.tailor.ui import listing_tailor
 
 router = APIRouter(prefix="/listings", tags=["listings"])
@@ -112,6 +113,8 @@ class Listing:
     source: str
     apply_url: str
     tailored: TailoredCv | None = None
+    # Tailored with no click: an Apply or Consider verdict in the person's tailoring scope.
+    auto_tailor: bool = False
 
 
 def salary_text(job: Job) -> str:
@@ -223,6 +226,7 @@ def load_listings(
             )
         )
     } if jobs else {}
+    outside = tailors_outside_locations(session, applicant_id)
     listings = [
         Listing(
             job_id=job.id,
@@ -241,6 +245,11 @@ def load_listings(
             source=sources[job.id],
             apply_url=job.apply_url,
             tailored=tailored.get(job.id),
+            auto_tailor=auto_tailored(
+                (match.reasons.get("report") or {}).get("verdict"),
+                location_fit=match.location_fit,
+                outside_locations=outside,
+            ),
         )
         for match, job in rows
     ]
@@ -434,7 +443,7 @@ def render_listing(item: Listing, csrf: str = "", *, tailor_ok: bool = True) -> 
 {_skills(item)}
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 {_fit_report(item)}
-{listing_tailor(item.job_id, item.tailored, csrf, verdict=(item.reasons.get("report") or {}).get("verdict"), allowed=tailor_ok)}
+{listing_tailor(item.job_id, item.tailored, csrf, auto=item.auto_tailor, allowed=tailor_ok)}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url, item.job_id, csrf)}

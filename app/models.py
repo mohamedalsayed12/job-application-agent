@@ -192,8 +192,12 @@ class TailoredCvStatus(StrEnum):
 TAILOR_VERDICTS = ("Apply", "Consider")
 
 
-def auto_tailored(verdict: str | None) -> bool:
-    return verdict in TAILOR_VERDICTS
+def auto_tailored(verdict: str | None, *, location_fit: bool, outside_locations: bool) -> bool:
+    """Whether a listed job gets a tailored CV with no click.
+
+    `location_fit` is the listings' "My locations" rule, so the person's scope setting matches what they see there.
+    """
+    return verdict in TAILOR_VERDICTS and (location_fit or outside_locations)
 
 
 def attempt_failed(status: str, draft: object) -> bool:
@@ -364,6 +368,8 @@ class ApplicantProfile(_UuidPk, Base):
     travel_distance_miles: Mapped[int | None] = mapped_column(Integer())
     # As typed, such as "BSc Business Management". Studying for one counts (D45).
     degrees: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    # Automatic tailoring spends the AI budget, so by default it covers only jobs in the person's locations.
+    tailor_outside_locations: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
     updated_at: Mapped[datetime] = _updated()
 
 

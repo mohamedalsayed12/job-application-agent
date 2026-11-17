@@ -21,6 +21,8 @@ from app.matching.report import write_reports
 from app.models import (
     Applicant,
     ApplicantJobMatch,
+    ApplicantPreference,
+    ApplicantProfile,
     BudgetPolicy,
     Job,
     JobReport,
@@ -764,3 +766,110 @@ async def test_a_budget_wait_keeps_a_ready_cv_visible(session: Session) -> None:
     card = render_listing(listings[0])
     assert "tailored.pdf" in card
     assert "waiting on the monthly budget" not in card
+
+
+def _away_from_the_job(session: Session, applicant_id: uuid.UUID) -> None:
+    preference = session.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant_id))
+    preference.locations = ["Leeds"]
+    session.flush()
+    match_all(session, now=SOON)
+    assert session.scalar(select(ApplicantJobMatch.location_fit)) is False
+
+
+async def test_an_apply_job_outside_my_locations_waits_for_a_click_by_default(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    _away_from_the_job(session, applicant)
+    job_id = session.scalars(select(JobReport.job_id)).one()
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert session.scalars(select(TailoredCv)).first() is None
+    assert load_listings(session, applicant, everywhere=False, page_number=1)[0] == []
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    card = render_listing(listings[0], "<input>")
+    assert "Tailor my CV for this job" in card
+    assert "Tailored CV queued" not in card
+
+    request_tailored_cv(session, applicant, job_id, now=SOON)
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert run.outcomes["ready"] == 1
+
+
+async def test_an_apply_job_outside_my_locations_is_tailored_when_i_widen_the_scope(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    _away_from_the_job(session, applicant)
+    session.add(ApplicantProfile(applicant_id=applicant, experience_level="entry", tailor_outside_locations=True))
+    session.flush()
+
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    assert "Tailored CV queued." in render_listing(listings[0])
+    assert "Tailor my CV" not in render_listing(listings[0])
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert run.outcomes["ready"] == 1
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    assert "Tailored CV ready" in render_listing(listings[0])
+
+
+async def test_a_package_left_unfinished_outside_the_scope_offers_the_button(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    job_id = session.scalars(select(JobReport.job_id)).one()
+    # Queued while the job was in the person's locations, then they moved.
+    session.add(
+        TailoredCv(
+            applicant_id=applicant,
+            job_id=job_id,
+            status=TailoredCvStatus.pending.value,
+            input_hash="old",
+            prompt_version="p",
+        )
+    )
+    _away_from_the_job(session, applicant)
+
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    card = render_listing(listings[0], "<input>")
+    assert "Tailor my CV for this job" in card
+    assert "Tailored CV queued" not in card
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert run.outcomes.get("ready", 0) == 0
+
+
+async def test_the_job_page_follows_the_tailoring_scope(client: httpx.AsyncClient, session: Session) -> None:
+    applicant, job = await _person_on_a_job_without_a_report(session, client)
+    session.add(
+        JobReport(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            verdict="Apply",
+            score=Decimal("4.0"),
+            report={"verdict": "Apply"},
+            input_hash="h",
+            model="m",
+            prompt_version="p",
+        )
+    )
+    session.add(
+        ApplicantJobMatch(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            score=Decimal("0.8"),
+            reasons={"report": {"verdict": "Apply"}},
+            role_match=True,
+            location_fit=False,
+            salary_status="unknown",
+        )
+    )
+    session.flush()
+
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert "Tailor my CV for this job" in page
+    assert "Tailored CV queued" not in page
+
+    session.add(ApplicantProfile(applicant_id=applicant.id, experience_level="entry", tailor_outside_locations=True))
+    session.flush()
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert "Tailored CV queued." in page
+    assert "Tailor my CV for this job" not in page

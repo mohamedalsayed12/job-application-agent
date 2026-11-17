@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import uuid
 
-from app.models import TailoredCv, TailoredCvStatus, attempt_failed, auto_tailored
+from app.models import TailoredCv, TailoredCvStatus, attempt_failed
 
 _REASONS = {
     "posting_flagged": "The posting looked unsafe, so no CV was written.",
@@ -14,7 +14,7 @@ _REASONS = {
     "no_cv": "No CV is uploaded.",
     "unreadable": "The CV could not be read.",
 }
-# Unfinished packages. With no Apply/Consider listing or request behind one, the worker never picks it up.
+# Unfinished packages. With no automatic verdict or request behind one, the worker never picks it up.
 _UNFINISHED = frozenset(
     {TailoredCvStatus.pending.value, TailoredCvStatus.running.value, TailoredCvStatus.waiting_budget.value}
 )
@@ -32,33 +32,21 @@ def tailor_button(csrf: str, job_id: uuid.UUID, *, label: str = "Tailor my CV fo
     )
 
 
-def tailor_section(
-    job_id: uuid.UUID,
-    row: TailoredCv | None,
-    csrf: str,
-    *,
-    allowed: bool,
-    verdict: str | None = None,
-) -> str:
-    """The job page's tailored-CV area."""
-    return listing_tailor(job_id, row, csrf, verdict=verdict, allowed=allowed)
-
-
 def listing_tailor(
     job_id: uuid.UUID,
     row: TailoredCv | None,
     csrf: str,
     *,
-    verdict: str | None,
+    auto: bool,
     allowed: bool,
 ) -> str:
-    """Status for an Apply or Consider job, or the one-click button for any other listed job."""
-    due = auto_tailored(verdict) or (row is not None and row.requested_at is not None)
+    """Status for a job tailored with no click (`auto`, see `auto_tailored`), or the one-click button for any other job."""
+    due = auto or (row is not None and row.requested_at is not None)
     if not due and (row is None or row.status in _UNFINISHED):
         return f"<p>{tailor_button(csrf, job_id)}</p>" if allowed else ""
     if row is None and not allowed:
         return ""
-    block = tailored_block(job_id, row, verdict=verdict)
+    block = tailored_block(job_id, row, auto=auto)
     retry = row is not None and (
         row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft)
     )
@@ -67,9 +55,9 @@ def listing_tailor(
     return block
 
 
-def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | None = None) -> str:
+def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, auto: bool) -> str:
     if row is None:
-        if auto_tailored(verdict):
+        if auto:
             return '<p class="muted">Tailored CV queued.</p>'
         return ""
     status = row.status

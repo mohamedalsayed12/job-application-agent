@@ -31,6 +31,7 @@ from app.fetch.gateway import FetchGateway
 from app.matching.verdicts import job_text
 from app.models import (
     ApplicantJobMatch,
+    ApplicantProfile,
     CvFile,
     CvFileType,
     Job,
@@ -41,6 +42,7 @@ from app.models import (
     TailoredCv,
     TailoredCvStatus,
     attempt_failed,
+    auto_tailored,
 )
 from app.tailor import ai
 from app.tailor.ats import ats_report
@@ -162,6 +164,14 @@ def tailor_allowed(settings: Settings, applicant_id: uuid.UUID) -> bool:
     return allowed is None or applicant_id in allowed
 
 
+def tailors_outside_locations(session: Session, applicant_id: uuid.UUID) -> bool:
+    return bool(
+        session.scalar(
+            select(ApplicantProfile.tailor_outside_locations).where(ApplicantProfile.applicant_id == applicant_id)
+        )
+    )
+
+
 def base_cv(session: Session, applicant_id: uuid.UUID) -> CvFile | None:
     """The CV a package is tailored from. Tailoring reads the person's CV only here."""
     return session.scalar(select(CvFile).where(CvFile.applicant_id == applicant_id))
@@ -196,23 +206,33 @@ def request_tailored_cv(
 def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     """Packages due now: requests oldest first, then listed Apply jobs, then listed Consider jobs, best score first.
 
-    A closed job is never tailored. A job hidden from the listings is tailored only when the person asked and it is still open.
+    A closed job is never tailored. A job hidden from the listings, or outside the person's tailoring scope, is
+    tailored only when the person asked and it is still open.
     """
     allowed = settings.ai_applicants()
     is_open = Job.freshness == JobFreshness.open
     rows = {(row.applicant_id, row.job_id): row for row in session.scalars(select(TailoredCv))}
     rank: dict[tuple[uuid.UUID, uuid.UUID], tuple[int, float]] = {
         (applicant_id, job_id): (1 + TAILOR_VERDICTS.index(verdict), -float(score))
-        for applicant_id, job_id, verdict, score in session.execute(
-            select(JobReport.applicant_id, JobReport.job_id, JobReport.verdict, JobReport.score)
+        for applicant_id, job_id, verdict, score, location_fit, outside in session.execute(
+            select(
+                JobReport.applicant_id,
+                JobReport.job_id,
+                JobReport.verdict,
+                JobReport.score,
+                ApplicantJobMatch.location_fit,
+                ApplicantProfile.tailor_outside_locations,
+            )
             .join(
                 ApplicantJobMatch,
                 (ApplicantJobMatch.applicant_id == JobReport.applicant_id)
                 & (ApplicantJobMatch.job_id == JobReport.job_id),
             )
             .join(Job, Job.id == JobReport.job_id)
+            .outerjoin(ApplicantProfile, ApplicantProfile.applicant_id == JobReport.applicant_id)
             .where(JobReport.verdict.in_(TAILOR_VERDICTS), is_open)
         )
+        if auto_tailored(verdict, location_fit=location_fit, outside_locations=bool(outside))
     }
     rank |= {pair: (0, row.requested_at.timestamp()) for pair, row in rows.items() if row.requested_at is not None}
     pairs = sorted((pair for pair in rank if allowed is None or pair[0] in allowed), key=rank.__getitem__)
