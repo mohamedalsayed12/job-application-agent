@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: jaa
       POSTGRES_DB: jaa
     ports:
-      - "5434:5432"
+      - "5436:5432"
     volumes:
       - jaa_pgdata:/var/lib/postgresql/data
     healthcheck:

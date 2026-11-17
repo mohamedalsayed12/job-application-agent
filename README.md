@@ -20,7 +20,7 @@ Always-on agent quality stack (ponytail + pstack + thermos): [`docs/quality-stac
 docker compose up -d
 ```
 
-This starts `postgres:16` on port `5434` with user/password/db `jaa` / `jaa` / `jaa` (see `.env.example`).
+This starts `postgres:16` on port `5436` with user/password/db `jaa` / `jaa` / `jaa` (see `.env.example`).
 
 ### 2. Configure environment
 

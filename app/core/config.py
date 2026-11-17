@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = "postgresql+psycopg://jaa:jaa@localhost:5434/jaa"
+    database_url: str = "postgresql+psycopg://jaa:jaa@localhost:5436/jaa"
     admin_key: str = "change-me"
     session_secret: str = ""
     # Local development over plain http needs this false, or the browser drops the cookie.
