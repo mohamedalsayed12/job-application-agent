@@ -470,6 +470,43 @@ async def test_a_failed_package_can_be_tried_again(client: httpx.AsyncClient, se
     assert row.applicant_id == applicant.id
 
 
+async def test_an_apply_job_that_is_not_listed_offers_the_button(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    applicant, job = await _person_on_a_job_without_a_report(session, client)
+    session.execute(delete(ApplicantJobMatch))
+    session.add(
+        JobReport(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            verdict="Apply",
+            score=Decimal("4.0"),
+            report={"verdict": "Apply"},
+            input_hash="h",
+            model="m",
+            prompt_version="p",
+        )
+    )
+    # Left behind by an earlier cycle when the job was still listed.
+    session.add(
+        TailoredCv(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            status=TailoredCvStatus.waiting_budget.value,
+            input_hash="old",
+            prompt_version="p",
+        )
+    )
+    session.flush()
+
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert "Tailor my CV for this job" in page
+    assert "waiting on the monthly budget" not in page
+
+    await client.post(f"/jobs/{job.id}/tailor")
+    assert "Tailor my CV for this job" not in (await client.get(f"/jobs/{job.id}")).text
+
+
 async def test_people_outside_the_ai_list_get_no_button(
     client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

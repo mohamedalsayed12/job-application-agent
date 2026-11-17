@@ -13,6 +13,7 @@ import re
 from collections import Counter
 from typing import Any
 
+from app.tailor.preservation import PROTECTED_FIELDS, similarity
 from app.tailor.prompts import AI_PHRASE_REPLACEMENTS
 from app.tailor.resume import all_text
 
@@ -68,7 +69,7 @@ def voice_problems(master: dict[str, Any], tailored: dict[str, Any], *, posting:
 
 
 def restore_lines(master: dict[str, Any], tailored: dict[str, Any], findings: list[dict[str, str]]) -> dict[str, Any]:
-    """Put each flagged line back to the wording on the person's CV."""
+    """Put each flagged line back to the line on the person's CV it was rewritten from."""
     result = copy.deepcopy(tailored)
     restored_entries: set[tuple[str, int]] = set()
     for finding in findings:
@@ -81,37 +82,69 @@ def restore_lines(master: dict[str, Any], tailored: dict[str, Any], findings: li
             continue
         section = match.group("section")
         index = int(match.group("index"))
-        sources = master.get(section) or []
         targets = result.get(section) or []
-        if index >= len(sources) or index >= len(targets):
+        sources = _sources(master, tailored, section)
+        if index >= len(targets) or sources[index] is None:
             continue
-        row = match.group("row")
-        if row is None:
-            targets[index]["description"] = sources[index].get("description") or ""
+        source = sources[index]
+        if match.group("row") is None:
+            targets[index]["description"] = source.get("description") or ""
             continue
         if (section, index) in restored_entries:
             continue
         restored_entries.add((section, index))
-        source_rows = [str(item) for item in (sources[index].get("description") or [])]
-        target_rows = [str(item) for item in (targets[index].get("description") or [])]
         flagged = {finding["line"] for finding in findings if finding["path"].startswith(f"{section}[{index}].")}
-        missing = Counter(source_rows)
-        for line in target_rows:
-            if missing[line]:
-                missing[line] -= 1
-        replacements = list(missing.elements())
-        cursor = 0
-        kept: list[str] = []
-        for line in target_rows:
-            if line not in flagged:
-                kept.append(line)
-                continue
-            if cursor < len(replacements):
-                kept.append(replacements[cursor])
-                cursor += 1
-        kept.extend(replacements[cursor:])
-        targets[index]["description"] = kept
+        origins = _origins(source.get("description") or [], targets[index].get("description") or [])
+        targets[index]["description"] = [
+            origin if line in flagged else line
+            for line, origin in origins
+            if line not in flagged or origin is not None
+        ]
     return result
+
+
+def _sources(master: dict[str, Any], tailored: dict[str, Any], section: str) -> list[dict[str, Any] | None]:
+    """The master entry behind each tailored entry, matched on the fields the draft copies from it."""
+    def identity(entry: dict[str, Any]) -> list[str]:
+        # The draft holds "" where the master has no such field.
+        return [str(entry.get(field) or "") for field in PROTECTED_FIELDS[section]]
+
+    unused = list(master.get(section) or [])
+    found: list[dict[str, Any] | None] = []
+    for entry in tailored.get(section) or []:
+        source = next((item for item in unused if identity(item) == identity(entry)), None)
+        if source is not None:
+            unused.remove(source)
+        found.append(source)
+    return found
+
+
+def _origins(source_rows: list[Any], target_rows: list[Any]) -> list[tuple[str, str | None]]:
+    """Each tailored bullet with the person's bullet it came from: itself when unchanged, else the
+    closest one left, closest pairs first so a vague rewrite gets the bullet no other rewrite claims."""
+    targets = [str(row) for row in target_rows]
+    unused = Counter(str(row) for row in source_rows)
+    origins: list[str | None] = [None] * len(targets)
+    for position, row in enumerate(targets):
+        if unused[row]:
+            unused[row] -= 1
+            origins[position] = row
+    left = list(unused.elements())
+    rewrites = [position for position, origin in enumerate(origins) if origin is None]
+    ranked = sorted(
+        (
+            (similarity(left[source], targets[position]), position, source)
+            for position in rewrites
+            for source in range(len(left))
+        ),
+        key=lambda item: -item[0],
+    )
+    taken: set[int] = set()
+    for _, position, source in ranked:
+        if origins[position] is None and source not in taken:
+            origins[position] = left[source]
+            taken.add(source)
+    return list(zip(targets, origins, strict=True))
 
 
 def _changed(master: dict[str, Any], tailored: dict[str, Any]) -> list[tuple[str, str]]:
@@ -121,9 +154,9 @@ def _changed(master: dict[str, Any], tailored: dict[str, Any]) -> list[tuple[str
     if summary.strip() and summary != original_summary:
         found.append(("summary", summary))
     for section in ("workExperience", "personalProjects", "education"):
-        sources = master.get(section) or []
+        sources = _sources(master, tailored, section)
         for index, entry in enumerate(tailored.get(section) or []):
-            source = sources[index] if index < len(sources) else {}
+            source = sources[index] or {}
             if section == "education":
                 original = str(source.get("description") or "")
                 line = str(entry.get("description") or "")

@@ -21,6 +21,12 @@ def test_a_title_must_contain_the_company_name_as_a_word() -> None:
     assert not title_names_company("Homepage Email Database", "Home Mail Data")
 
 
+def test_a_title_sharing_only_a_word_like_group_names_someone_else() -> None:
+    assert not title_names_company("Other Holdings Group", "Acme Holdings Group")
+    assert not title_names_company("Smith Recruitment", "Jones Recruitment Services")
+    assert title_names_company("Acme Group | Home", "Acme Holdings Group")
+
+
 def test_a_job_board_link_is_not_the_employer_site() -> None:
     assert employer_domain("https://uk.linkedin.com/jobs/view/1", "", "https://uk.linkedin.com/jobs/1") is None
     assert employer_domain("https://uk.linkedin.com/jobs/1", "https://www.acme.example/about", "") == "acme.example"

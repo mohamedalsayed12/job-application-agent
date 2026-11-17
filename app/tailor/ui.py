@@ -14,6 +14,10 @@ _REASONS = {
     "no_cv": "No CV is uploaded.",
     "unreadable": "The CV could not be read.",
 }
+# Unfinished packages. With no Apply/Consider listing or request behind one, the worker never picks it up.
+_UNFINISHED = frozenset(
+    {TailoredCvStatus.pending.value, TailoredCvStatus.running.value, TailoredCvStatus.waiting_budget.value}
+)
 _SOURCE = {
     "advert": "the advert",
     "company": "the company website",
@@ -49,7 +53,8 @@ def listing_tailor(
     allowed: bool,
 ) -> str:
     """Status for an Apply or Consider job, or the one-click button for any other listed job."""
-    if row is None and not auto_tailored(verdict):
+    due = auto_tailored(verdict) or (row is not None and row.requested_at is not None)
+    if not due and (row is None or row.status in _UNFINISHED):
         return f"<p>{tailor_button(csrf, job_id)}</p>" if allowed else ""
     if row is None and not allowed:
         return ""

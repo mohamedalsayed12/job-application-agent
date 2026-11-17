@@ -222,6 +222,13 @@ _TERM_STOP = frozenset(
 )
 
 
+# Words many company names share. A title that matches only these could be any company's site.
+_COMPANY_FILLER = frozenset(
+    "limited group holdings company services solutions consulting consultancy recruitment international "
+    "global technologies technology systems partners associates management enterprises".split()
+)
+
+
 @dataclass(frozen=True, slots=True)
 class SiteTerms:
     row: CompanyResearch | None
@@ -246,7 +253,11 @@ def employer_domain(apply_url: str | None, named_url: str | None, posting: str) 
 
 
 def title_names_company(title: str, company_name: str) -> bool:
-    tokens = [token.casefold() for token in re.findall(r"[A-Za-z0-9]{4,}", company_name)]
+    tokens = [
+        token.casefold()
+        for token in re.findall(r"[A-Za-z0-9]{4,}", company_name)
+        if token.casefold() not in _COMPANY_FILLER
+    ]
     if not tokens and len(company_name.strip()) >= 3:
         tokens = [company_name.strip().casefold()]
     words = {word.casefold() for word in re.findall(r"[A-Za-z0-9]{3,}", title)}

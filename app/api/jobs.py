@@ -21,7 +21,7 @@ from app.applications.ui import apply_step
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
-from app.models import Applicant, Job, JobFreshness, JobReport, TailoredCv, TailoredCvStatus
+from app.models import Applicant, ApplicantJobMatch, Job, JobFreshness, JobReport, TailoredCv, TailoredCvStatus
 from app.summaries.generate import Shown, summary_for_view
 from app.tailor.run import request_tailored_cv, tailor_allowed
 from app.tailor.ui import tailor_section
@@ -84,8 +84,14 @@ async def job_page(
     settings = get_settings()
     shown = await summary_for_view(db, job, gateway=gateway, settings=settings, persist=db.commit)
     csrf = csrf_field(request)
+    # Only a listed job is tailored without a click, so a hidden job's verdict must not say "queued".
     verdict = db.scalar(
-        select(JobReport.verdict).where(JobReport.applicant_id == applicant.id, JobReport.job_id == job_id)
+        select(JobReport.verdict)
+        .join(
+            ApplicantJobMatch,
+            (ApplicantJobMatch.applicant_id == JobReport.applicant_id) & (ApplicantJobMatch.job_id == JobReport.job_id),
+        )
+        .where(JobReport.applicant_id == applicant.id, JobReport.job_id == job_id)
     )
     tailored = tailor_section(
         job_id,
