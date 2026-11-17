@@ -75,9 +75,11 @@ they cannot log in until an admin makes them a one-time link at
 because the app sends no email. The rules are in `MVP.md` decision D37.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
-certifications and licences, experience level and optional travel distance. They can upload one
-CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner can download it,
-and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
+certifications and licences, experience level and optional travel distance. They can keep up to 10
+CVs (PDF or DOCX, up to 5 MB each), label them by target job, and choose a primary CV. Uploading
+a CV or asking to fill the profile sends its text to the AI provider for editable suggestions.
+Tailoring and application preparation choose a CV for the job. Only its owner can download it.
+`/account` also deletes the account and all its CVs. The rules are in decisions D38, D43 and D61.
 
 Admins log in at `/admin/login` with `ADMIN_KEY`. The session lasts 12 hours. Scripts can send
 the key in an `X-Admin-Key` header instead. The key is not accepted in a URL.
