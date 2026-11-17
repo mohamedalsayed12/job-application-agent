@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -21,6 +22,7 @@ from app.interview.collect import collect_for_role, store_items
 from app.interview.normalize import normalize_item, queries_for
 from app.interview.plan import pack_from_payload_for_tests
 from app.interview.roles import role_key
+from app.interview.stance import read_stance
 from app.interview.service import enqueue, process_requests
 from app.main import app
 from app.models import (
@@ -143,7 +145,24 @@ def test_role_key_collapses_case_and_space() -> None:
 
 
 def test_queries_name_the_role() -> None:
-    assert "Backend Developer interview got the offer" in queries_for("Backend Developer")
+    queries = queries_for("Backend Developer")
+    assert queries[0] == 'Backend Developer interview "got the offer"'
+    assert all("preparation tips" not in query for query in queries)
+
+
+def test_normalize_reads_reddit_and_linkedin_post_urls() -> None:
+    reddit = normalize_item(
+        InterviewPlatform.reddit,
+        {"postUrl": "https://www.reddit.com/r/cscareerquestionsuk/comments/abc/offer/", "title": "Offer", "body": "I got the offer."},
+        max_snippet=200,
+    )
+    linkedin = normalize_item(
+        InterviewPlatform.linkedin,
+        {"post_url": "https://www.linkedin.com/posts/person-1", "text": "I got the offer for a graduate role."},
+        max_snippet=200,
+    )
+    assert reddit is not None and reddit.url.endswith("/offer/")
+    assert linkedin is not None and linkedin.url == "https://www.linkedin.com/posts/person-1"
 
 
 def test_normalize_rejects_non_http() -> None:
@@ -209,6 +228,123 @@ def test_ground_pack_accepts_evidence_urls() -> None:
     assert problems == []
 
 
+def test_success_themes_count_only_someone_who_passed_this_role(session: Session) -> None:
+    passer = "https://www.reddit.com/r/cscareerquestionsuk/comments/da/offer/"
+    scientist = "https://www.reddit.com/r/datascience/comments/ds/offer/"
+    engineer = "https://www.reddit.com/r/cscareerquestions/comments/swe/offer/"
+    coach = "https://www.youtube.com/watch?v=coach1"
+    tips = "https://www.youtube.com/watch?v=tips1"
+    store_items(
+        session,
+        InterviewPlatform.reddit,
+        [
+            {"id": "da", "url": passer, "title": "Got the offer", "body": "I got the offer for a data analyst role after the take-home."},
+            {"id": "ds", "url": scientist, "title": "Data science offer", "body": "I got the offer for a data scientist role."},
+            {"id": "swe", "url": engineer, "title": "Software offer", "body": "I got the offer as a software engineer."},
+        ],
+        role_key="data analyst",
+        started_at=DAY_1,
+        finished_at=DAY_1,
+        max_snippet=2000,
+    )
+    store_items(
+        session,
+        InterviewPlatform.youtube,
+        [
+            {"id": "coach1", "url": coach, "title": "Coach", "text": "I coach people to get the offer. Book a call."},
+            {"id": "tips1", "url": tips, "title": "Interview tips", "text": "Here are five ways to prepare for any interview."},
+        ],
+        role_key="data analyst",
+        started_at=DAY_1,
+        finished_at=DAY_1,
+        max_snippet=2000,
+    )
+    rows = list(session.scalars(select(InterviewEvidence)))
+    swe = read_stance("Data Analyst", "Software offer", "I got the offer as a software engineer.")
+    assert swe.role_fit == "adjacent" and swe.counts_as_passed is False
+    recruiter = read_stance(
+        "Graduate Software Engineer",
+        "Ex-Google Recruiter Explains: The Interview Secret to Getting Hired",
+        "Book a 1:1",
+    )
+    assert recruiter.voice == "recruiter" and recruiter.counts_as_passed is False
+    mentor = read_stance(
+        "Graduate Software Engineer",
+        "How to Pass Software Engineering Interviews Like the Top 1%",
+        "Apply for a FREE discovery call. I help software engineers get hired.",
+    )
+    assert mentor.voice == "coach" and mentor.counts_as_passed is False
+    pack = pack_from_payload_for_tests(
+        session,
+        role="Data Analyst",
+        role_key="data analyst",
+        payload={
+            "summary": "The sources mix first-hand offers with other jobs and a coach.",
+            "success_themes": [
+                {"theme": "Take-home", "detail": 'The writer said "I got the offer for a data analyst role"', "cites": [passer]},
+                {"theme": "Science", "detail": "A data scientist story", "cites": [scientist]},
+                {"theme": "Coaching", "detail": "Book a call", "cites": [coach]},
+            ],
+            "failure_themes": [{"theme": "Generic", "detail": "a tip with no writer", "cites": [tips]}],
+            "differentiators": [
+                {"theme": "Neighbour", "detail": "another job", "cites": [scientist]},
+                {"theme": "Seller", "detail": "a pitch", "cites": [coach]},
+            ],
+            "materials": [{"name": "Thread", "url": passer, "how_used": "read the offer"}],
+            "practice_plan": [{"order": 1, "method": "Redo the take-home", "detail": "time it", "resource_urls": [passer]}],
+        },
+        rows=rows,
+        settings=_settings(),
+        now=DAY_1,
+    )
+    assert isinstance(pack, InterviewIntelPack)
+    assert [theme["theme"] for theme in pack.success_themes] == ["Take-home"]
+    neighbour = next(theme for theme in pack.differentiators if theme["theme"] == "Neighbour")
+    seller = next(theme for theme in pack.differentiators if theme["theme"] == "Seller")
+    assert neighbour["detail"].startswith("Adjacent role, not this role.")
+    assert seller["detail"].startswith("Coach, not a person who passed.")
+    generic = next(theme for theme in pack.failure_themes if theme["theme"] == "Generic")
+    assert generic["detail"].startswith("Not a first-hand account.")
+
+    invented = pack_from_payload_for_tests(
+        session,
+        role="Data Analyst",
+        role_key="data analyst",
+        payload={
+            "summary": 'Someone wrote "this sentence was never in the post"',
+            "success_themes": [],
+            "failure_themes": [],
+            "differentiators": [],
+            "materials": [{"name": "Thread", "url": passer, "how_used": "read it"}],
+            "practice_plan": [{"order": 1, "method": "Read", "detail": "the thread", "resource_urls": [passer]}],
+        },
+        rows=rows,
+        settings=_settings(),
+        now=DAY_1,
+    )
+    assert isinstance(invented, list)
+    assert any("quote is not in the sources" in problem for problem in invented)
+
+    uncited = pack_from_payload_for_tests(
+        session,
+        role="Data Analyst",
+        role_key="data analyst",
+        payload={
+            "summary": "A claim with nowhere to look.",
+            "success_themes": [],
+            "failure_themes": [{"theme": "Bare", "detail": "no link", "cites": []}],
+            "differentiators": [],
+            "materials": [{"name": "Thread", "url": passer, "how_used": "read it"}],
+            "practice_plan": [{"order": 1, "method": "Read", "detail": "the thread", "resource_urls": [passer]}],
+        },
+        rows=rows,
+        settings=_settings(),
+        now=DAY_1,
+    )
+    assert isinstance(uncited, list)
+    assert any("no evidence url" in problem for problem in uncited)
+
+
 def test_store_items_creates_fetch_run_payload_and_evidence(session: Session) -> None:
     created = store_items(
         session,
@@ -231,7 +367,7 @@ async def test_collect_reserves_budget_and_stores_three_platforms(session: Sessi
     _policy(session)
     apify = _MultiApify(
         {
-            "trudax/reddit-scraper-lite": [_reddit_item(1, text="Got the offer after mock interviews.")],
+            "harshmaur/reddit-search-scraper": [_reddit_item(1, text="Got the offer after mock interviews.")],
             "streamers/youtube-scraper": [_youtube_item(1, text="I failed because I froze on system design.")],
             "apimaestro/linkedin-posts-search-scraper-no-cookies": [
                 _linkedin_item(1, text="Rejected after skipping behavioural prep.")
@@ -258,9 +394,19 @@ async def test_collect_reserves_budget_and_stores_three_platforms(session: Sessi
     assert report.stopped_by is None
     kinds = [row.kind for row in session.scalars(select(SpendLedger))]
     assert kinds == [SpendKind.interview_collect.value] * 3
-    actors = [req.url.path for req in apify.requests if req.method == "POST" and req.url.path.endswith("/runs")]
-    assert any("trudax~reddit-scraper-lite" in path for path in actors)
+    runs = [req for req in apify.requests if req.method == "POST" and req.url.path.endswith("/runs")]
+    actors = [req.url.path for req in runs]
+    assert any("harshmaur~reddit-search-scraper" in path for path in actors)
     assert any("streamers~youtube-scraper" in path for path in actors)
+    bodies = {req.url.path: json.loads(req.content) for req in runs}
+    reddit = next(body for path, body in bodies.items() if "harshmaur" in path)
+    linkedin = next(body for path, body in bodies.items() if "linkedin-posts-search" in path)
+    assert reddit["searchTerms"] == queries_for("Backend Developer")
+    assert reddit["crawlCommentsPerPost"] is False
+    assert reddit["searchComments"] is False
+    assert "searches" not in reddit
+    assert linkedin["keyword"] == queries_for("Backend Developer")[0]
+    assert "searchQueries" not in linkedin
 
 
 async def test_collect_stays_queued_when_budget_is_zero(session: Session) -> None:
@@ -269,7 +415,7 @@ async def test_collect_stays_queued_when_budget_is_zero(session: Session) -> Non
     request = enqueue(session, applicant_id=applicant, role="Backend Developer", now=DAY_1)
     assert request.status == InterviewRequestStatus.queued.value
 
-    apify = _MultiApify({"trudax/reddit-scraper-lite": [_reddit_item(1, text="x")]})
+    apify = _MultiApify({"harshmaur/reddit-search-scraper": [_reddit_item(1, text="x")]})
     gateway = apify.gateway()
     try:
         report = await process_requests(
@@ -329,7 +475,7 @@ async def test_cache_hit_skips_second_collect(session: Session) -> None:
     assert a.status == b.status == InterviewRequestStatus.ready.value
     assert a.pack_id == b.pack_id == pack.id
 
-    apify = _MultiApify({"trudax/reddit-scraper-lite": [_reddit_item(99, text="should not run")]})
+    apify = _MultiApify({"harshmaur/reddit-search-scraper": [_reddit_item(99, text="should not run")]})
     gateway = apify.gateway()
     try:
         report = await process_requests(

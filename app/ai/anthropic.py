@@ -39,20 +39,22 @@ async def send_anthropic_request(
     *,
     api_key: str,
     fallback_model: str,
+    timeout_s: float | None = None,
 ) -> AiCallResponse | AiCallFailure:
-    outcome = await gateway.fetch(
-        FetchRequest(
-            url=ANTHROPIC_MESSAGES_URL,
-            method="POST",
-            kind="api",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": ANTHROPIC_VERSION,
-                "Content-Type": "application/json",
-            },
-            body=json.dumps(body).encode("utf-8"),
-        )
+    extra = {} if timeout_s is None else {"timeout_s": timeout_s}
+    request = FetchRequest(
+        url=ANTHROPIC_MESSAGES_URL,
+        method="POST",
+        kind="api",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "Content-Type": "application/json",
+        },
+        body=json.dumps(body).encode("utf-8"),
+        **extra,
     )
+    outcome = await gateway.fetch(request)
     if isinstance(outcome, FetchRefusal):
         return AiCallFailure(reason=f"fetch:{outcome.reason}")
     return _parse_http(outcome, fallback_model=fallback_model)

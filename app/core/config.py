@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     gmail_token_key: str = ""
 
     # Interview intel: public Reddit, YouTube and LinkedIn posts through Apify (no Instagram/TikTok in v1).
-    interview_reddit_actor: str = "trudax/reddit-scraper-lite"
+    interview_reddit_actor: str = "harshmaur/reddit-search-scraper"
     interview_youtube_actor: str = "streamers/youtube-scraper"
     interview_linkedin_actor: str = "apimaestro/linkedin-posts-search-scraper-no-cookies"
     interview_max_per_platform: int = 25
