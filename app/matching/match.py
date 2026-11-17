@@ -332,8 +332,8 @@ def location_fit(wanted: list[Wanted], places: list[dict[str, Any]], remote_type
                 continue
             if place["city"] is None:
                 return True, f"anywhere in {place['country'] or place['region']}"
-            # A wish with no city is the whole country, so a named city in it still fits.
-            if not want.city:
+            whole_country = not want.city
+            if whole_country:
                 return True, f"in {place['city']}"
     if remote_type == "remote":
         for want in wanted:
