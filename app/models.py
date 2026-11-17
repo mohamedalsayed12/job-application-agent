@@ -111,7 +111,6 @@ class SpendKind(StrEnum):
 
 
 class ApplicationStatus(StrEnum):
-    preparing = "preparing"
     ready_to_fill = "ready_to_fill"
     filled_awaiting_review = "filled_awaiting_review"
     # Set only by the person ("I've applied"), never by the extension.
@@ -119,12 +118,6 @@ class ApplicationStatus(StrEnum):
     needs_input = "needs_input"
     failed = "failed"
     abandoned = "abandoned"
-
-
-class AtsKind(StrEnum):
-    greenhouse = "greenhouse"
-    lever = "lever"
-    unknown = "unknown"
 
 
 # Prefer-not-to-say default for optional demographic application answers.
@@ -757,6 +750,9 @@ class ApplicationAnswers(_UuidPk, Base):
     ethnicity: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     disability: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     veteran: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    saved_questions: Mapped[list[Any]] = mapped_column(
+        JSONB(), default=list, server_default=text("'[]'::jsonb")
+    )
     updated_at: Mapped[datetime] = _updated()
 
 
@@ -767,7 +763,6 @@ class Application(_UuidPk, Base):
     __table_args__ = (
         UniqueConstraint("applicant_id", "job_id", name="uq_application_applicant_job"),
         _text_in("status", ApplicationStatus),
-        _text_in("ats_kind", AtsKind, nullable=True),
         Index("ix_application_applicant_status", "applicant_id", "status"),
     )
 
@@ -775,7 +770,6 @@ class Application(_UuidPk, Base):
     job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
     apply_url: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(Text())
-    ats_kind: Mapped[str | None] = mapped_column(Text())
     schema_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     fill_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     missing_fields: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))

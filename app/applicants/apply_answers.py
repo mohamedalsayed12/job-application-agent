@@ -8,10 +8,13 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.applications.mapper import question_key
 from app.models import PREFER_NOT, ApplicationAnswers
 
 MAX_FIELD = 200
 MAX_URL = 500
+MAX_ANSWER = 2000
+MAX_SAVED = 40
 _DEMO_KEYS = ("free_school_meals", "gender", "ethnicity", "disability", "veteran")
 
 
@@ -84,6 +87,53 @@ def _url(value: str) -> str | None:
 
 def load_answers(session: Session, applicant_id: uuid.UUID) -> ApplicationAnswers | None:
     return session.scalar(select(ApplicationAnswers).where(ApplicationAnswers.applicant_id == applicant_id))
+
+
+def saved_pairs(row: ApplicationAnswers | None) -> list[tuple[str, str]]:
+    if row is None:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for item in row.saved_questions or []:
+        if isinstance(item, dict) and isinstance(item.get("question"), str) and isinstance(item.get("answer"), str):
+            pairs.append((item["question"], item["answer"]))
+    return pairs
+
+
+def save_question_answers(
+    session: Session, applicant_id: uuid.UUID, pairs: list[tuple[str, str]]
+) -> ApplicationAnswers:
+    """Remember free-text answers so a later form that asks the same thing can reuse them."""
+    if not pairs:
+        raise AnswersRefused("Write an answer for each question.")
+    if len(pairs) > MAX_SAVED:
+        raise AnswersRefused("Too many saved answers.")
+    row = load_answers(session, applicant_id)
+    if row is None:
+        row = ApplicationAnswers(
+            applicant_id=applicant_id,
+            free_school_meals=PREFER_NOT,
+            gender=PREFER_NOT,
+            ethnicity=PREFER_NOT,
+            disability=PREFER_NOT,
+            veteran=PREFER_NOT,
+        )
+        session.add(row)
+    kept: dict[str, dict[str, str]] = {}
+    for item in row.saved_questions or []:
+        if isinstance(item, dict) and isinstance(item.get("question"), str) and isinstance(item.get("answer"), str):
+            kept[question_key(item["question"])] = {"question": item["question"], "answer": item["answer"]}
+    for question, answer in pairs:
+        cleaned_question, cleaned_answer = question.strip(), answer.strip()
+        if not cleaned_question or not cleaned_answer:
+            raise AnswersRefused("Write an answer for each question.")
+        if len(cleaned_question) > 500 or len(cleaned_answer) > MAX_ANSWER:
+            raise AnswersRefused(f"Keep each question under 500 characters and each answer under {MAX_ANSWER}.")
+        kept[question_key(cleaned_question)] = {"question": cleaned_question, "answer": cleaned_answer}
+    if len(kept) > MAX_SAVED:
+        raise AnswersRefused("Too many saved answers.")
+    row.saved_questions = list(kept.values())
+    session.flush()
+    return row
 
 
 def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -> ApplicationAnswers:

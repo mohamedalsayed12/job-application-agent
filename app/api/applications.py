@@ -13,9 +13,8 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.api.jobs import get_gateway
+from app.applicants.apply_answers import AnswersRefused, save_question_answers
 from app.applications.extension_device import issue_token
-from app.applications.ui import applied_button
 from app.applications.prepare import (
     PrepareRefused,
     get_application,
@@ -23,16 +22,14 @@ from app.applications.prepare import (
     mark_submitted,
     prepare_application,
 )
-from app.core.config import get_settings
+from app.applications.ui import applied_button
 from app.core.db import get_db
-from app.fetch.gateway import FetchGateway
 from app.models import Applicant, Application, ApplicationStatus, Job, JobFreshness
 
 router = APIRouter(tags=["applications"])
 _CSRF = [Depends(require_csrf)]
 _SEE_OTHER = status.HTTP_303_SEE_OTHER
 _STATUS_LABEL = {
-    ApplicationStatus.preparing.value: "Preparing",
     ApplicationStatus.ready_to_fill.value: "Ready to fill",
     ApplicationStatus.filled_awaiting_review.value: "Filled — review before submit",
     ApplicationStatus.submitted.value: "Applied",
@@ -51,11 +48,18 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
     company = job.company_name if job else ""
     status_label = _STATUS_LABEL.get(app_row.status, app_row.status)
     missing = ""
-    if app_row.missing_fields:
-        items = "".join(f"<li>{_e(m)}</li>" for m in app_row.missing_fields)
+    if app_row.status == ApplicationStatus.needs_input.value and app_row.missing_fields:
+        fields = []
+        for index, question in enumerate(app_row.missing_fields):
+            fields.append(
+                f"<label>{_e(question)}"
+                f'<input type="hidden" name="question_{index}" value="{_e(question)}"/>'
+                f'<textarea name="answer_{index}" required maxlength="2000"></textarea></label>'
+            )
         missing = (
-            f'<p class="hint">Missing required answers:</p><ul>{items}</ul>'
-            '<p><a href="/profile/apply-answers">Update apply answers</a></p>'
+            '<form method="post" action="/applications/'
+            f'{_e(app_row.id)}/answers">{csrf_field(request)}{"".join(fields)}'
+            '<button type="submit" class="primary">Save answers</button></form>'
         )
     error = f'<p class="error">{_e(app_row.error)}</p>' if app_row.error else ""
     actions = [
@@ -90,11 +94,14 @@ def applications_page(
     cards = [_card(request, row, db.get(Job, row.job_id)) for row in rows]
     body = "".join(cards) or '<p class="muted">No applications prepared yet. Use Prepare apply on a listing.</p>'
     awaiting = sum(1 for r in rows if r.status == ApplicationStatus.filled_awaiting_review.value)
-    banner = (
-        f'<p class="notice">{awaiting} application(s) filled and waiting for your review before submit.</p>'
-        if awaiting
-        else ""
-    )
+    questions = [name for r in rows if r.status == ApplicationStatus.needs_input.value for name in r.missing_fields]
+    banner = ""
+    if questions:
+        banner += "<p class=\"notice\">Answer these questions, then fill again: " + ", ".join(_e(name) for name in questions) + "</p>"
+    if awaiting:
+        banner += (
+            f'<p class="notice">{awaiting} application(s) filled and waiting for your review before submit.</p>'
+        )
     return page(
         "Applications",
         f"""
@@ -112,21 +119,13 @@ def applications_page(
 
 
 @router.post("/applications", dependencies=_CSRF)
-async def prepare(
+def prepare(
     job_id: uuid.UUID = Form(...),
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
-    gateway: FetchGateway = Depends(get_gateway),
 ) -> RedirectResponse:
     try:
-        row = await prepare_application(
-            db,
-            applicant=applicant,
-            job_id=job_id,
-            gateway=gateway,
-            settings=get_settings(),
-            persist=db.commit,
-        )
+        row = prepare_application(db, applicant_id=applicant.id, job_id=job_id)
         db.commit()
     except PrepareRefused as exc:
         db.rollback()
@@ -150,6 +149,34 @@ def application_detail(
         header=applicant_bar(request, "applications"),
         narrow=True,
     )
+
+
+@router.post("/applications/{application_id}/answers", dependencies=_CSRF)
+async def save_missing_answers(
+    application_id: uuid.UUID,
+    request: Request,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    row = get_application(db, application_id, applicant.id)
+    if row is None or row.status != ApplicationStatus.needs_input.value:
+        return RedirectResponse("/applications", status_code=_SEE_OTHER)
+    form = await request.form()
+    pairs: list[tuple[str, str]] = []
+    index = 0
+    while f"question_{index}" in form and index < 40:
+        pairs.append((str(form.get(f"question_{index}") or ""), str(form.get(f"answer_{index}") or "")))
+        index += 1
+    try:
+        save_question_answers(db, applicant.id, pairs)
+    except AnswersRefused as exc:
+        db.rollback()
+        return RedirectResponse(f"/applications/{application_id}?answer_error={exc.message}", status_code=_SEE_OTHER)
+    row.status = ApplicationStatus.ready_to_fill.value
+    row.missing_fields = []
+    row.error = None
+    db.commit()
+    return RedirectResponse(f"/applications/{application_id}", status_code=_SEE_OTHER)
 
 
 @router.post("/applications/{application_id}/open-fill", dependencies=_CSRF)

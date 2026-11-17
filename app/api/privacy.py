@@ -70,9 +70,12 @@ sends Anthropic the job advert and your CV text, so Claude can suggest edits tha
 Edits that add a number, a skill or an employer your CV does not show are dropped. Nothing is invented that is not
 already in your CV. Your email address is only kept in the tailored file when
 it already appears in your uploaded CV.</p>
-<p>When you prepare an application, the service may call Greenhouse's public boards API or an Apify actor to read the
-application form questions for that job URL. Your answers are not sent to Apify. The fill happens in your browser via
-the extension; this service never clicks Submit for you.</p>
+<p>When you fill an application, the extension reads the questions on the employer's page in your browser and sends
+them to this service. Each answer comes only from your apply answers, answers you saved earlier, your email address or
+your CV. For questions it cannot match by itself, the service sends Anthropic those questions, the wording of the
+questions you answered before and your CV text, so Claude can point to one of your answers or quote your CV. Your saved
+answers themselves are not sent. Anything Claude returns that is not one of your answers or an exact quote from your CV
+is dropped. The fill happens in your browser; this service never clicks Submit for you.</p>
 <p>Finding contacts and public profile research runs through Apify's LinkedIn people actors (not by this app fetching
 linkedin.com). Sending approved mail uses Google's Gmail API when you have connected Gmail.</p>
 <p>When you ask for interview intel on a target role, the service collects public posts through Apify and sends those
