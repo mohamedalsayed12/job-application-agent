@@ -174,10 +174,12 @@ def test_d43_what_the_person_already_has_always_stays() -> None:
 
 class _Claude:
     def __init__(self, payload: dict | None = None) -> None:
-        self.payload, self.calls, self.sent = payload or FOUND, 0, ""
+        self.payload, self.calls, self.sent, self.broken = payload or FOUND, 0, "", False
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls += 1
+        if self.broken:
+            return httpx.Response(500, json={"type": "error", "error": {"type": "api_error", "message": "boom"}})
         self.sent = json.loads(request.content)["messages"][0]["content"]
         return httpx.Response(
             200,
@@ -253,6 +255,7 @@ async def test_d43_uploading_a_cv_fills_the_form_but_saves_nothing(
 
     assert response.status_code == 200
     assert "We read your CV and filled in target roles, locations, experience level, 3 skills, 1 certification or licence" in response.text
+    assert "Your CV file is already stored" in response.text
     assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in response.text
     assert "Python\nFastAPI\nPostgreSQL</textarea>" in response.text
     assert "Kubernetes" not in response.text
@@ -261,6 +264,73 @@ async def test_d43_uploading_a_cv_fills_the_form_but_saves_nothing(
     assert session.scalar(select(ApplicantPreference)) is None
     spend = session.scalars(select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_cv_read)).all()
     assert len(spend) == 1
+
+
+async def test_d43_suggestions_stay_after_refresh_until_save(
+    client: httpx.AsyncClient, session: Session, claude: _Claude
+) -> None:
+    _money(session, "2")
+    await _register_and_upload(client)
+
+    again = await client.get("/profile")
+    assert again.status_code == 200
+    assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in again.text
+    assert "Your CV file is already stored" in again.text
+    assert "Your CV:" in again.text and "cv.docx" in again.text
+    assert session.scalar(select(ApplicantPreference)) is None
+
+    claude.broken = True
+    failed = await client.post("/profile/cv/fill")
+    assert "Try again later" in failed.text
+    assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in failed.text
+    assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in (await client.get("/profile")).text
+
+    rejected = await client.post(
+        "/profile",
+        data={
+            "target_roles": "Edited Role Only",
+            "locations": "",
+            "experience_level": "entry",
+            "skills": "Python",
+            "salary_currency": "GBP",
+            "salary_period": "year",
+        },
+    )
+    assert rejected.status_code == 400
+    assert "Edited Role Only" in rejected.text
+    assert "Edited Role Only" in (await client.get("/profile")).text
+    assert "Junior Python Developer" not in (await client.get("/profile")).text
+
+    saved = await client.post(
+        "/profile",
+        data={
+            "target_roles": "Junior Python Developer\nGraduate Software Engineer",
+            "locations": "Manchester",
+            "experience_level": "entry",
+            "skills": "Python\nFastAPI\nPostgreSQL",
+            "salary_currency": "GBP",
+            "salary_period": "year",
+        },
+    )
+    assert saved.status_code == 303
+    assert session.scalar(select(ApplicantPreference)) is not None
+    after_save = await client.get("/profile")
+    assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in after_save.text
+    assert "Your CV file is already stored" not in after_save.text
+
+
+def test_d43_draft_cookie_budget_counts_unicode_escapes() -> None:
+    from app.api.profile import _MAX_SET_COOKIE_BYTES, _PROFILE_DRAFT, _set_cookie_bytes
+
+    fields = _fields(target_roles="软" * 500, locations="Manchester", skills="Python", experience_level="entry")
+    payload = {"notice": "filled", **fields.to_draft()}
+    base = {
+        "applicant": "00000000-0000-0000-0000-000000000001",
+        "version": 1,
+        "csrf": "c" * 43,
+    }
+    assert len(json.dumps(payload, ensure_ascii=False)) < 2500
+    assert _set_cookie_bytes({**base, _PROFILE_DRAFT: payload}) > _MAX_SET_COOKIE_BYTES
 
 
 async def test_d43_the_fill_button_reads_the_stored_cv_again(client: httpx.AsyncClient, session: Session, claude: _Claude) -> None:
