@@ -1,7 +1,8 @@
-"""D55: Apply/Consider jobs get a grounded tailored CV with ATS coverage."""
+"""D60: tailored CVs come from Resume-Matcher's path-diff pipeline, held to the master CV."""
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -14,7 +15,6 @@ from sqlalchemy.orm import Session
 
 from app.api.listings import load_listings, render_listing
 from app.applicants.cv import store_cv
-from app.fetch.gateway import FetchGateway
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.matching.report import write_reports
@@ -27,92 +27,142 @@ from app.models import (
     TailoredCv,
     TailoredCvStatus,
 )
-from app.tailor.ats import ats_report, coverage_for
-from app.tailor.company import official_domain_from_apply_url
-from app.tailor.draft import grounded_draft
+from app.tailor.ats import pdf_text
+from app.tailor.improver import Change, apply_diffs
+from app.tailor.preservation import finalize_ai_resume
+from app.tailor.refiner import remove_ai_phrases
 from app.tailor.render import render_docx, render_pdf
+from app.tailor.resume import ground_parsed
 from app.tailor.run import write_tailored_cvs
-from tests.jobs import _public_resolve
 from tests.test_cv_read import _docx
 from tests.test_fit_report import CV_LINES, _Ai, _person_with_a_cv, _report
 from tests.test_judge import _policy, _settings
 from tests.test_matching import SOON
 
-_DRAFT = {
-    "contact": {
+CV = "\n".join(CV_LINES)
+BULLET = "Built a REST API in Python with FastAPI and PostgreSQL for a student society."
+
+_PARSED = {
+    "personalInfo": {
         "name": "Mohammed Example",
-        "email": "",
+        "title": "",
+        "email": "mo@invented.example",
         "phone": "",
-        "location": "Manchester",
-        "links": [],
+        "location": "",
+        "website": "",
+        "linkedin": "",
+        "github": "",
     },
-    "summary": "Graduate who built a REST API in Python with FastAPI and PostgreSQL.",
-    "skills": ["Python", "FastAPI", "PostgreSQL"],
-    "experience": [
+    "summary": "",
+    "workExperience": [
         {
-            "employer": "student society",
+            "id": 1,
             "title": "",
-            "start": "2024",
-            "end": "Present",
-            "bullets": ["Built a REST API in Python with FastAPI and PostgreSQL for a student society."],
+            "company": "student society",
+            "location": "",
+            "years": "",
+            "description": [BULLET],
         }
     ],
     "education": [
         {
-            "school": "University of Manchester",
+            "id": 1,
+            "institution": "University of Manchester",
             "degree": "BSc Business Management",
-            "start": "2024",
-            "end": "2027",
-            "details": "",
+            "years": "2027",
+            "description": "",
         }
     ],
+    "personalProjects": [],
+    "additional": {
+        "technicalSkills": ["Python", "FastAPI", "PostgreSQL", "Kubernetes"],
+        "languages": [],
+        "certificationsTraining": [],
+        "awards": [],
+    },
+}
+MASTER = ground_parsed(_PARSED, CV)
+
+_KEYWORDS = {
+    "company": "Acme",
+    "role": "Backend Developer",
+    "required_skills": ["Python", "REST API"],
+    "preferred_skills": ["Kubernetes"],
+    "experience_requirements": [],
+    "education_requirements": [],
+    "key_responsibilities": [],
+    "keywords": ["teamwork"],
+    "experience_years": None,
+    "seniority_level": "entry",
+}
+
+_DIFFS = {
+    "changes": [
+        {
+            "path": "workExperience[0].description[0]",
+            "action": "replace",
+            "original": BULLET,
+            "value": "Spearheaded a Python web service with FastAPI and PostgreSQL for a student society.",
+            "reason": "posting wording",
+        },
+        {
+            "path": "workExperience[0].company",
+            "action": "replace",
+            "original": "student society",
+            "value": "Google",
+            "reason": "bigger name",
+        },
+        {
+            "path": "additional.technicalSkills",
+            "action": "reorder",
+            "original": None,
+            "value": ["PostgreSQL", "Kubernetes", "Python", "FastAPI"],
+            "reason": "relevance",
+        },
+    ],
+    "strategy_notes": "",
 }
 
 
+def _injected() -> dict:
+    out = copy.deepcopy(MASTER)
+    out["workExperience"][0]["description"] = [
+        "Spearheaded a REST API web service in Python with FastAPI and PostgreSQL for a student society."
+    ]
+    out["additional"]["technicalSkills"] = ["PostgreSQL", "Python", "FastAPI", "Docker"]
+    return out
+
+
 class _TailorAi(_Ai):
-    """Fit-report AI that also answers keyword and tailor prompts."""
+    """Fit-report AI that also answers the four tailoring prompts."""
 
     def __init__(self) -> None:
         super().__init__(judge_score=4.5, report=_report(score=4.5, verdict="Apply"))
         self.tailor_calls: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        # Company About / robots fetches hit this transport too; refuse them softly.
         if "api.anthropic.com" not in str(request.url):
             return httpx.Response(404, text="not found")
-        try:
-            body = json.loads(request.content)
-        except json.JSONDecodeError:
-            return httpx.Response(400, text="bad request")
-        system = body.get("system", "")
-        if "Career Ops" in system or "You evaluate one job" in system:
-            return super().__call__(request)
-        if "You extract hiring keywords" in system:
-            self.tailor_calls.append("keywords")
-            answer = {
-                "keywords": [
-                    {"term": "Python", "priority": "required", "rubric_bucket": "python"},
-                    {"term": "Teamwork", "priority": "preferred", "rubric_bucket": "teamwork"},
-                    {"term": "Kubernetes", "priority": "preferred", "rubric_bucket": "cloud_devops"},
-                ]
-            }
-        elif "You revise one structured CV" in system:
-            self.tailor_calls.append("revise")
-            answer = _DRAFT
-        elif "You tailor one CV" in system:
-            self.tailor_calls.append("tailor")
-            answer = _DRAFT
-        else:
-            return super().__call__(request)
-        return httpx.Response(
-            200,
-            json={
-                "model": "claude-haiku-5-5",
-                "content": [{"type": "text", "text": json.dumps(answer)}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 2000, "output_tokens": 800},
-            },
-        )
+        system = json.loads(request.content).get("system", "")
+        answers = {
+            "You are a JSON extraction engine": ("parse", lambda: _PARSED),
+            "You are an expert job description analyzer": ("keywords", lambda: _KEYWORDS),
+            "You are an expert resume editor": ("diffs", lambda: _DIFFS),
+            "You are a resume editor. Inject keywords": ("inject", _injected),
+        }
+        for prefix, (name, answer) in answers.items():
+            if system.startswith(prefix):
+                self.tailor_calls.append(name)
+                return httpx.Response(
+                    200,
+                    json={
+                        "model": "claude-haiku-5-5",
+                        "content": [{"type": "text", "text": json.dumps(answer())}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 2000, "output_tokens": 800},
+                    },
+                )
+        return super().__call__(request)
 
 
 async def _prepare(session: Session, ai: _TailorAi):
@@ -125,88 +175,125 @@ async def _prepare(session: Session, ai: _TailorAi):
     return applicant, gateway, settings
 
 
-def test_grounding_strips_invented_metrics() -> None:
-    cv = "\n".join(CV_LINES)
-    fake = {
-        "contact": {"name": "Mohammed Example", "email": "", "phone": "", "location": "", "links": []},
-        "summary": "Led a team of 40 engineers at Google.",
-        "skills": ["Python", "Rust"],
-        "experience": [
-            {
-                "employer": "Google",
-                "title": "Staff Engineer",
-                "start": "2010",
-                "end": "2020",
-                "bullets": ["Grew revenue by 900%."],
-            }
-        ],
-        "education": [],
-    }
-    out = grounded_draft(fake, cv=cv, profile="Target roles: Backend Developer")
-    assert out is not None
-    assert out["skills"] == ["Python"]
-    assert out["experience"] == []
-    assert out["summary"] == ""
+def _package(session: Session, applicant_id: uuid.UUID) -> TailoredCv:
+    return session.scalars(select(TailoredCv).where(TailoredCv.applicant_id == applicant_id)).one()
 
 
-def test_ats_coverage_honesty() -> None:
-    draft = grounded_draft(_DRAFT, cv="\n".join(CV_LINES), profile="")
-    assert draft is not None
-    pdf = render_pdf(draft)
-    assert render_docx(draft)
-    report = ats_report(
-        pdf_bytes=pdf,
-        draft=draft,
-        keywords=[
-            {"term": "Python", "priority": "required", "rubric_bucket": "python"},
-            {"term": "Kubernetes", "priority": "preferred", "rubric_bucket": "cloud_devops"},
-        ],
-        master_cv="\n".join(CV_LINES),
+def test_parsed_cv_keeps_only_what_the_cv_shows() -> None:
+    parsed = copy.deepcopy(_PARSED)
+    parsed["workExperience"].append(
+        {"id": 2, "title": "Staff Engineer", "company": "Google", "location": "", "years": "2010 - 2020",
+         "description": ["Grew revenue by 900%."]}
     )
-    by_term = {row["term"]: row["status"] for row in report["coverage"]}
-    assert by_term["Python"] == "covered"
-    assert by_term["Kubernetes"] == "missing (gap)"
-    assert report["checks"]["text_extracted"]
+
+    master = ground_parsed(parsed, CV)
+
+    assert [entry["company"] for entry in master["workExperience"]] == ["student society"]
+    assert master["additional"]["technicalSkills"] == ["Python", "FastAPI", "PostgreSQL"]
+    assert master["personalInfo"]["email"] == ""
+    assert master["personalInfo"]["name"] == "Mohammed Example"
 
 
-def test_missing_have_it_when_master_cv_has_term() -> None:
-    rows = coverage_for(
-        [{"term": "FastAPI", "priority": "required", "rubric_bucket": "apps_apis_tools"}],
-        extracted="Python and PostgreSQL",
-        master_cv="\n".join(CV_LINES),
-    )
-    assert rows[0]["status"] == "missing (have it)"
+def test_only_quoted_edits_on_allowed_paths_land() -> None:
+    changes = [
+        Change("workExperience[0].description[0]", "replace", BULLET, "Built a Python REST API.", ""),
+        Change("workExperience[0].company", "replace", "student society", "Google", ""),
+        Change("workExperience[0].description[0]", "replace", "text the CV never had", "Anything.", ""),
+        Change("additional.technicalSkills", "reorder", None, ["PostgreSQL", "Rust", "Python"], ""),
+    ]
+
+    tailored, applied, rejected = apply_diffs(MASTER, changes)
+
+    assert tailored["workExperience"][0]["description"] == ["Built a Python REST API."]
+    assert tailored["workExperience"][0]["company"] == "student society"
+    assert tailored["additional"]["technicalSkills"] == ["PostgreSQL", "Python", "FastAPI"]
+    assert len(applied) == 2 and len(rejected) == 2
+    assert MASTER["workExperience"][0]["description"] == [BULLET]
 
 
-def test_company_domain_skips_linkedin() -> None:
-    assert official_domain_from_apply_url("https://www.linkedin.com/jobs/view/123") is None
-    assert official_domain_from_apply_url("https://careers.acme.com/jobs/1") == "acme.com"
+def test_finalize_holds_the_cv_to_its_source() -> None:
+    candidate = copy.deepcopy(MASTER)
+    candidate["workExperience"][0]["company"] = "Google"
+    candidate["workExperience"][0]["description"] = [BULLET.replace("society.", "society, cutting costs by 40%.")]
+    candidate["education"] = []
+    candidate["additional"]["technicalSkills"] = ["Python"]
+
+    final = finalize_ai_resume(MASTER, candidate, allow_review_claims=False)
+
+    assert final["workExperience"][0]["company"] == "student society"
+    assert final["workExperience"][0]["description"] == [BULLET]
+    assert final["education"] == MASTER["education"]
+    assert final["additional"]["technicalSkills"] == ["Python", "FastAPI", "PostgreSQL"]
+
+
+def test_finalize_reverts_a_rewrite_that_drifts_from_every_source_row() -> None:
+    candidate = copy.deepcopy(MASTER)
+    candidate["workExperience"][0]["description"] = ["Managed a sales team across three regions."]
+
+    assert finalize_ai_resume(MASTER, candidate, allow_review_claims=False)["workExperience"][0]["description"] == [
+        BULLET
+    ]
+    assert finalize_ai_resume(MASTER, candidate, allow_review_claims=True)["workExperience"][0]["description"] == [
+        "Managed a sales team across three regions."
+    ]
+
+
+def test_stock_ai_wording_goes_unless_the_candidate_wrote_it() -> None:
+    data = {"summary": "Spearheaded a robust API with stakeholders."}
+
+    cleaned, removed = remove_ai_phrases(data, "", protected_text="")
+    kept, _ = remove_ai_phrases(data, "", protected_text="I built a robust test suite.")
+
+    assert cleaned["summary"] == "Led a strong API with team members."
+    assert removed == ["robust", "spearheaded", "stakeholder"]
+    assert kept["summary"] == "Led a robust API with team members."
+
+
+def test_rendered_cv_has_an_ats_readable_text_layer() -> None:
+    pdf = render_pdf(MASTER)
+
+    text = pdf_text(pdf)
+    assert "Mohammed Example" in text
+    assert "University of Manchester" in text
+    assert "PostgreSQL" in text
+    assert render_docx(MASTER).startswith(b"PK")
 
 
 async def test_apply_job_gets_ready_package(session: Session) -> None:
     ai = _TailorAi()
     applicant, gateway, settings = await _prepare(session, ai)
 
-    run = await write_tailored_cvs(
-        session, gateway=gateway, settings=settings, persist=session.flush, now=SOON
-    )
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
 
-    assert run.outcomes["ready"] == 1
-    assert "keywords" in ai.tailor_calls and "tailor" in ai.tailor_calls
-    row = session.scalars(select(TailoredCv)).one()
+    assert ai.tailor_calls == ["parse", "keywords", "diffs", "inject"]
+    row = _package(session, applicant)
     assert row.status == TailoredCvStatus.ready.value
-    assert row.pdf_content and row.docx_content
-    assert row.ats_report and row.keywords
-    spends = [
-        ledger.kind
-        for ledger in session.scalars(select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_cv_tailor))
-    ]
-    assert spends
+    text = " ".join(pdf_text(row.pdf_content).split())
+    assert "Led a REST API web service in Python with FastAPI and PostgreSQL for a student society." in text
+    assert "Spearheaded" not in text
+    assert "Google" not in text and "Docker" not in text and "Kubernetes" not in text
+    assert "mo@invented.example" not in text
+    assert row.draft["additional"]["technicalSkills"][0] == "PostgreSQL"
+    assert row.docx_content
+    status = {item["term"]: item["status"] for item in row.ats_report["coverage"]}
+    assert status == {
+        "Python": "covered",
+        "REST API": "covered",
+        "Kubernetes": "missing (gap)",
+        "teamwork": "missing (gap)",
+    }
+    assert row.ats_report["keyword_match"] == 50
+    assert any("Docker" in warning for warning in row.ats_report["warnings"])
+    assert row.cost_amount == Decimal("0.003") * 4
+    spends = session.scalars(
+        select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_cv_tailor, SpendLedger.related_item_id == row.job_id)
+    ).all()
+    assert len(spends) == 4
     listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
     html = render_listing(listings[0])
     assert "Tailored CV ready" in html
+    assert "Keyword match 50%" in html
     assert f"/jobs/{listings[0].job_id}/tailored.pdf" in html
-    assert row.company_research_available is False
 
 
 async def test_hash_reuse_skips_second_run(session: Session) -> None:
@@ -221,6 +308,29 @@ async def test_hash_reuse_skips_second_run(session: Session) -> None:
 
     assert run.outcomes.get("ready", 0) == 0
     assert ai.tailor_calls == first_calls
+
+
+async def test_a_cv_with_nothing_groundable_fails_the_package(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    monkeypatch.setitem(_PARSED, "workExperience", [])
+    monkeypatch.setitem(_PARSED, "education", [])
+    monkeypatch.setitem(_PARSED, "additional", {**_PARSED["additional"], "technicalSkills": ["Rust"]})
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    row = _package(session, applicant)
+    assert row.status == TailoredCvStatus.failed.value
+    assert row.draft == {"reason": "cv_not_parsed"}
+    assert ai.tailor_calls == ["parse"]
+    spent = session.scalars(
+        select(SpendLedger.actual_cost).where(
+            SpendLedger.kind == SpendKind.ai_cv_tailor, SpendLedger.related_item_id == row.job_id
+        )
+    ).all()
+    assert spent == [Decimal("0.003")]
 
 
 async def test_budget_wait_leaves_waiting_status(session: Session) -> None:
@@ -352,9 +462,9 @@ async def test_download_is_owner_only(session: Session) -> None:
     from app.main import app
 
     ai = _TailorAi()
-    _, gateway, settings = await _prepare(session, ai)
+    applicant, gateway, settings = await _prepare(session, ai)
     await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
-    job_id = session.scalars(select(TailoredCv)).one().job_id
+    job_id = _package(session, applicant).job_id
 
     def _db():
         yield session

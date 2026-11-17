@@ -137,15 +137,15 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 **Goal.** For jobs with fit verdict **Apply** or **Consider**, automatically produce a grounded tailored CV (PDF + DOCX) plus an ATS keyword coverage report.
 
-**Pipeline order**
-1. Gate (verdict + master CV + budget; hash reuse).
-2. Company research (mission/vision/values via fetch gateway; soft-fail if blocked).
-3. Company-aligned Claude pass (reframe only; no invented facts).
-4. Listing keyword extract mapped to a UK grad tech rubric + posting terms.
-5. Keyword-aligned Claude pass (literal posting terms where truthful).
-6. Grounding audit (strip unsupported claims).
-7. Render single-column ATS-friendly PDF + DOCX.
-8. ATS text-layer + keyword table; one revise loop for “have it but missing from PDF”.
+**Pipeline order** (Resume-Matcher's tailorer, MVP.md D60)
+1. Gate (verdict or request + master CV + budget; hash reuse).
+2. Parse the master CV into structured sections; keep only what the CV text shows.
+3. Extract the posting's required skills, preferred skills and keywords.
+4. Claude proposes path-based edits that quote what they replace; only quoted edits on allowed paths land.
+5. One keyword-injection pass for posting terms the master CV supports but the edit lost.
+6. Replace stock AI wording; remove skills the master CV never mentions.
+7. Hold the result to the master CV row by row (identity fields, years, numbers, similarity).
+8. Render single-column ATS-friendly PDF + DOCX; ATS text-layer checks + keyword coverage.
 
 **Locked choices**
 - Trigger: automatic after Apply/Consider fit reports.

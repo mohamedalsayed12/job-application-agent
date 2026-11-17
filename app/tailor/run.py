@@ -1,28 +1,35 @@
-"""Worker entry: tailor CVs for Apply / Consider fit reports (D55)."""
+"""Worker entry: tailor CVs with the Resume-Matcher pipeline (D60).
+
+Per package: parse the master CV into structure, extract the posting's keywords, ask for
+path-based edits, apply only the edits that quote their source, inject keywords the master CV
+already supports, strip stock AI wording and unsupported skills, then hold the result to the
+master CV row by row before rendering.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import uuid
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import islice
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallFailure
+from app.ai.anthropic import AiCallFailure, AiCallResponse
 from app.ai.injection import looks_like_injection
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.matching.verdicts import job_text, load_profiles
+from app.matching.verdicts import job_text
 from app.models import (
-    CompanyResearchStatus,
     CvFile,
     CvFileType,
     Job,
@@ -31,13 +38,19 @@ from app.models import (
     TailoredCv,
     TailoredCvStatus,
 )
-from app.tailor import ats as ats_mod
-from app.tailor import draft as draft_mod
-from app.tailor import keywords as keywords_mod
-from app.tailor.company import research_company, research_for_prompt
+from app.tailor import ai
+from app.tailor.ats import ats_report
+from app.tailor.improver import apply_diffs, verify_diff_result
+from app.tailor.preservation import finalize_ai_resume
+from app.tailor.refiner import (
+    analyze_keyword_gaps,
+    drop_fabricated_skills,
+    remove_ai_phrases,
+)
 from app.tailor.render import render_docx, render_pdf
+from app.tailor.resume import all_text
 
-PROMPT_VERSION = "cv-tailor-pipeline-v2"
+PROMPT_VERSION = "resume-matcher-959e458"
 TAILOR_VERDICTS = frozenset({"Apply", "Consider"})
 REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
@@ -54,34 +67,27 @@ class TailorRun:
 class _Work:
     applicant_id: uuid.UUID
     job_id: uuid.UUID
-    company_name: str
-    apply_url: str | None
     posting: str
-    profile: str
     cv: str
-    cv_bytes: bytes
     input_hash: str
-    prefer_apply: bool
 
 
-def package_hash(
-    *,
-    posting: str,
-    cv_bytes: bytes,
-    profile: str,
-    company_key: str,
-    research_digest: str = "",
-) -> str:
-    material = "\n".join(
-        [
-            PROMPT_VERSION,
-            company_key,
-            research_digest,
-            profile,
-            hashlib.sha256(cv_bytes).hexdigest(),
-            posting,
-        ]
-    )
+@dataclass
+class _Spend:
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    model: str | None = None
+
+    def add(self, response: AiCallResponse) -> None:
+        self.calls += 1
+        self.prompt_tokens += response.prompt_tokens
+        self.completion_tokens += response.completion_tokens
+        self.model = response.model or self.model
+
+
+def package_hash(*, posting: str, cv_bytes: bytes) -> str:
+    material = "\n".join([PROMPT_VERSION, hashlib.sha256(cv_bytes).hexdigest(), posting])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -192,7 +198,6 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
         return []
 
     applicant_ids = {applicant_id for applicant_id, _ in pairs}
-    profiles = load_profiles(session, applicant_ids)
     cvs = {
         row.applicant_id: row
         for row in session.scalars(select(CvFile).where(CvFile.applicant_id.in_(applicant_ids)))
@@ -220,8 +225,6 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
         except CvUnreadable:
             _ensure_skipped(session, applicant_id, job_id, reason="unreadable", now=now)
             continue
-        profile = profiles.get(applicant_id)
-        profile_blob = profile.text if profile is not None else ""
         posting = job_text(
             title=job.title,
             company=job.company_name,
@@ -237,12 +240,7 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
                 current.updated_at = now
                 session.flush()
             continue
-        wanted = package_hash(
-            posting=posting,
-            cv_bytes=cv_file.content,
-            profile=profile_blob,
-            company_key=job.company_name.strip().lower(),
-        )
+        wanted = package_hash(posting=posting, cv_bytes=cv_file.content)
         if current is not None and current.input_hash == wanted and current.status in {
             TailoredCvStatus.ready.value,
             TailoredCvStatus.skipped.value,
@@ -260,14 +258,9 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
                 _Work(
                     applicant_id=applicant_id,
                     job_id=job_id,
-                    company_name=job.company_name,
-                    apply_url=job.apply_url,
                     posting=posting,
-                    profile=profile_blob,
                     cv=text,
-                    cv_bytes=bytes(cv_file.content),
                     input_hash=wanted,
-                    prefer_apply=verdict == "Apply",
                 ),
             )
         )
@@ -356,145 +349,89 @@ async def _process_one(
     now: datetime,
     run: TailorRun,
 ) -> None:
-    research = await research_company(
-        session,
-        gateway,
-        company_name=item.company_name,
-        apply_url=item.apply_url,
-        now=now,
-    )
-    company_blob = research_for_prompt(research)
-    available = research.status == CompanyResearchStatus.ready
-    research_digest = hashlib.sha256(
-        f"{research.status}:{research.official_domain or ''}:{(research.research or {}).get('excerpt', '')}".encode()
-    ).hexdigest()
-    # Recompute hash with research so a later research change rebuilds the package.
-    item_hash = package_hash(
-        posting=item.posting,
-        cv_bytes=item.cv_bytes,
-        profile=item.profile,
-        company_key=item.company_name.strip().lower(),
-        research_digest=research_digest,
-    )
-    item = _Work(
-        applicant_id=item.applicant_id,
-        job_id=item.job_id,
-        company_name=item.company_name,
-        apply_url=item.apply_url,
-        posting=item.posting,
-        profile=item.profile,
-        cv=item.cv,
-        cv_bytes=item.cv_bytes,
-        input_hash=item_hash,
-        prefer_apply=item.prefer_apply,
-    )
-    row = _row_for(session, item)
-    if row.input_hash == item_hash and row.status == TailoredCvStatus.ready.value:
-        return
+    spend = _Spend()
 
-    kw_call = await _paid_ai(
-        gate,
-        cost,
-        settings,
-        related_item_id=item.job_id,
-        persist=persist,
-        call=lambda: keywords_mod.extract_keywords(
-            gateway, item.posting, settings=settings, api_key=api_key
-        ),
-    )
-    if isinstance(kw_call, AiCallFailure):
-        _fail(session, item, now=now, reason=kw_call.reason)
+    async def paid(call: Callable[[], Awaitable[Any]]) -> Any:
+        result = await _paid_ai(gate, cost, settings, related_item_id=item.job_id, persist=persist, call=call)
+        if not isinstance(result, AiCallFailure):
+            spend.add(result[1])
+        return result
+
+    def failed(reason: str) -> None:
+        _fail(session, item, now=now, reason=reason)
         run.outcomes["failed"] += 1
         persist()
-        return
-    keywords, kw_response = kw_call
 
-    draft_call = await _paid_ai(
-        gate,
-        cost,
-        settings,
-        related_item_id=item.job_id,
-        persist=persist,
-        call=lambda: draft_mod.tailor_draft(
-            gateway,
-            profile=item.profile,
-            cv=item.cv,
-            company=company_blob,
-            keywords=keywords,
-            posting=item.posting,
-            settings=settings,
-            api_key=api_key,
-        ),
+    key = {"settings": settings, "api_key": api_key}
+    parsed = await paid(lambda: ai.parse_master(gateway, item.cv, **key))
+    if isinstance(parsed, AiCallFailure):
+        return failed(parsed.reason)
+    master = parsed[0]
+    if master is None:
+        return failed("cv_not_parsed")
+
+    extracted = await paid(lambda: ai.extract_job_keywords(gateway, item.posting, **key))
+    if isinstance(extracted, AiCallFailure):
+        return failed(extracted.reason)
+    keywords = extracted[0]
+
+    diffs = await paid(
+        lambda: ai.generate_resume_diffs(gateway, master=master, posting=item.posting, keywords=keywords, **key)
     )
-    if isinstance(draft_call, AiCallFailure):
-        _fail(session, item, now=now, reason=draft_call.reason)
-        run.outcomes["failed"] += 1
-        persist()
-        return
-    draft, draft_response = draft_call
+    if isinstance(diffs, AiCallFailure):
+        return failed(diffs.reason)
+    tailored, applied, rejected = apply_diffs(master, diffs[0])
+    warnings = verify_diff_result(master, tailored, applied)
+    if rejected:
+        warnings.append(f"{len(rejected)} change(s) rejected during verification")
 
-    pdf = render_pdf(draft)
-    report = ats_mod.ats_report(pdf_bytes=pdf, draft=draft, keywords=keywords, master_cv=item.cv)
-    prompt_tokens = kw_response.prompt_tokens + draft_response.prompt_tokens
-    completion_tokens = kw_response.completion_tokens + draft_response.completion_tokens
-    total_cost = cost * 2
-    model = draft_response.model
-
-    if report["missing_have_it"]:
+    injectable = analyze_keyword_gaps(keywords, tailored, master).injectable
+    if injectable:
         try:
-            revised = await _paid_ai(
-                gate,
-                cost,
-                settings,
-                related_item_id=item.job_id,
-                persist=persist,
-                call=lambda: draft_mod.revise_draft(
-                    gateway,
-                    profile=item.profile,
-                    cv=item.cv,
-                    draft=draft,
-                    missing=report["missing_have_it"],
-                    settings=settings,
-                    api_key=api_key,
-                ),
+            injected = await paid(
+                lambda: ai.inject_keywords(
+                    gateway, tailored=tailored, keywords=injectable, master=master, posting=item.posting, **key
+                )
             )
         except BudgetWait:
-            # First draft is already grounded; ship it rather than discarding.
-            revised = AiCallFailure(reason="budget")
-        if not isinstance(revised, AiCallFailure):
-            draft, rev_response = revised
-            pdf = render_pdf(draft)
-            report = ats_mod.ats_report(
-                pdf_bytes=pdf, draft=draft, keywords=keywords, master_cv=item.cv
-            )
-            prompt_tokens += rev_response.prompt_tokens
-            completion_tokens += rev_response.completion_tokens
-            total_cost += cost
-            model = rev_response.model or model
+            # The edited CV is already grounded; ship it rather than discard it.
+            injected = AiCallFailure(reason="budget")
+        if isinstance(injected, AiCallFailure) or injected[0] is None:
+            reason = injected.reason if isinstance(injected, AiCallFailure) else "dropped_section"
+            warnings.append(f"Keyword injection skipped: {reason}")
+        else:
+            tailored = finalize_ai_resume(tailored, injected[0], allow_review_claims=True)
 
-    docx = render_docx(draft)
+    tailored, phrases = remove_ai_phrases(tailored, item.posting, protected_text=all_text(master))
+    tailored, fabricated = drop_fabricated_skills(tailored, master)
+    tailored = finalize_ai_resume(master, tailored, allow_review_claims=False)
+    if phrases:
+        warnings.append(f"Replaced stock AI wording: {', '.join(phrases)}")
+    if fabricated:
+        warnings.append(f"Removed skills the CV never mentions: {', '.join(fabricated)}")
+
+    pdf = render_pdf(tailored)
+    docx = render_docx(tailored)
     if len(pdf) > MAX_PDF_BYTES or len(docx) > MAX_PDF_BYTES:
-        _fail(session, item, now=now, reason="too_large")
-        run.outcomes["failed"] += 1
-        persist()
-        return
+        return failed("too_large")
 
+    row = _row_for(session, item)
     row.status = TailoredCvStatus.ready.value
-    row.input_hash = item_hash
-    row.draft = draft
-    row.keywords = {"items": keywords}
-    row.ats_report = report
-    row.company_research_id = research.id
-    row.company_research_available = available
+    row.input_hash = item.input_hash
+    row.draft = tailored
+    row.keywords = keywords
+    row.ats_report = ats_report(pdf_bytes=pdf, resume=tailored, master=master, keywords=keywords, warnings=warnings)
+    row.company_research_id = None
+    row.company_research_available = False
     row.pdf_content = pdf
     row.docx_content = docx
     row.pdf_size_bytes = len(pdf)
     row.docx_size_bytes = len(docx)
-    row.model = model
+    row.model = spend.model
     row.prompt_version = PROMPT_VERSION
-    row.prompt_tokens = prompt_tokens
-    row.completion_tokens = completion_tokens
-    row.cost_amount = total_cost
+    row.prompt_tokens = spend.prompt_tokens
+    row.completion_tokens = spend.completion_tokens
+    row.cost_amount = cost * spend.calls
     row.updated_at = now
     session.flush()
     run.outcomes["ready"] += 1

@@ -42,14 +42,10 @@ def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | 
         return '<p class="muted">Tailored CV could not be built for this posting.</p>'
     if row.status != TailoredCvStatus.ready.value:
         return '<p class="muted">Tailored CV pending.</p>'
-    research = (
-        "Company research used."
-        if row.company_research_available
-        else "Company research unavailable; keywords and CV only."
-    )
-    coverage = (row.ats_report or {}).get("coverage") or []
+    report = row.ats_report or {}
+    coverage = report.get("coverage") or []
     gaps = sum(1 for item in coverage if item.get("status") == "missing (gap)")
-    checks = (row.ats_report or {}).get("checks") or {}
+    checks = report.get("checks") or {}
     layer_ok = all(checks.values()) if checks else False
     if layer_ok and gaps == 0:
         ats = "ATS text layer and keywords look good."
@@ -57,9 +53,10 @@ def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | 
         ats = f"ATS text layer ok; {gaps} keyword gap(s)."
     else:
         ats = "ATS checks need a look."
+    match = f"Keyword match {report['keyword_match']}%." if coverage and "keyword_match" in report else ""
     jid = html.escape(str(job_id))
     return (
-        f"<p><b>Tailored CV ready.</b> {html.escape(research)} {html.escape(ats)} "
+        f"<p><b>Tailored CV ready.</b> {html.escape(ats)} {html.escape(match)} "
         f'<a href="/jobs/{jid}/tailored.pdf">PDF</a> · '
         f'<a href="/jobs/{jid}/tailored.docx">DOCX</a></p>'
     )

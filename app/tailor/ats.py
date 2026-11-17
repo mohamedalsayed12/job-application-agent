@@ -8,11 +8,15 @@ from typing import Any, Literal
 
 from pypdf import PdfReader
 
-Coverage = Literal["covered", "synonym-only", "missing (have it)", "missing (gap)"]
+from app.tailor.refiner import job_keyword_terms
+from app.tailor.resume import all_text, keyword_in_text
 
-_EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
+Coverage = Literal["covered", "missing (have it)", "missing (gap)"]
+
+_EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 _PHONE = re.compile(r"\+?\d[\d\s().-]{7,}\d")
-_FANCY_DASH = re.compile(r"[\u2013\u2014]")
+_FANCY_DASH = re.compile(r"[–—]")
+_PRIORITIES = (("required_skills", "required"), ("preferred_skills", "preferred"), ("keywords", "keyword"))
 
 
 def pdf_text(pdf_bytes: bytes) -> str:
@@ -20,87 +24,52 @@ def pdf_text(pdf_bytes: bytes) -> str:
     return "\n".join((page.extract_text() or "") for page in reader.pages)
 
 
-def coverage_for(
-    keywords: list[dict[str, str]],
-    *,
-    extracted: str,
-    master_cv: str,
-) -> list[dict[str, str]]:
-    rows = []
-    for item in keywords:
-        term = item.get("term", "").strip()
-        if not term:
-            continue
-        status = _status(term, extracted=extracted, master_cv=master_cv)
-        rows.append(
-            {
-                "term": term,
-                "priority": item.get("priority", "nice"),
-                "rubric_bucket": item.get("rubric_bucket", ""),
-                "status": status,
-            }
-        )
-    return rows
-
-
 def ats_report(
     *,
     pdf_bytes: bytes,
-    draft: dict[str, Any],
-    keywords: list[dict[str, str]],
-    master_cv: str,
+    resume: dict[str, Any],
+    master: dict[str, Any],
+    keywords: dict[str, Any],
+    warnings: list[str],
 ) -> dict[str, Any]:
+    """What an ATS reads from the PDF, and which posting terms it finds there."""
     extracted = pdf_text(pdf_bytes)
-    contact = draft.get("contact") if isinstance(draft.get("contact"), dict) else {}
-    email = str(contact.get("email", "")).strip()
-    phone = str(contact.get("phone", "")).strip()
+    personal = resume.get("personalInfo") or {}
+    email = str(personal.get("email", "")).strip()
+    phone = str(personal.get("phone", "")).strip()
     checks = {
         "text_extracted": bool(extracted.strip()),
-        "email_as_text": (not email) or (email.casefold() in extracted.casefold()) or bool(_EMAIL.search(extracted)),
-        "phone_as_text": (not phone) or (phone in extracted) or bool(_PHONE.search(extracted)),
+        "email_as_text": (not email) or email.casefold() in extracted.casefold() or bool(_EMAIL.search(extracted)),
+        "phone_as_text": (not phone) or phone in extracted or bool(_PHONE.search(extracted)),
         "ascii_dates": _FANCY_DASH.search(extracted) is None,
-        "no_cid_garbage": "(cid:" not in extracted and "\ufffd" not in extracted,
+        "no_cid_garbage": "(cid:" not in extracted and "�" not in extracted,
     }
-    coverage = coverage_for(keywords, extracted=extracted, master_cv=master_cv)
+    coverage = coverage_for(keywords, extracted=" ".join(extracted.split()), master_text=all_text(master))
+    covered = sum(row["status"] == "covered" for row in coverage)
     return {
         "extractor": "pypdf",
         "checks": checks,
+        "keyword_match": round(covered * 100 / len(coverage)) if coverage else 0,
         "coverage": coverage,
-        "missing_have_it": [row for row in coverage if row["status"] == "missing (have it)"],
+        "warnings": warnings,
         "passed": all(checks.values()),
     }
 
 
-def _status(term: str, *, extracted: str, master_cv: str) -> Coverage:
-    if _term_in(term, extracted):
+def coverage_for(keywords: dict[str, Any], *, extracted: str, master_text: str) -> list[dict[str, str]]:
+    priority: dict[str, str] = {}
+    for field, label in _PRIORITIES:
+        for term in keywords.get(field) or []:
+            priority.setdefault(term, label)
+    return [
+        {"term": term, "priority": priority[term], "status": _status(term, extracted, master_text)}
+        for term in job_keyword_terms(keywords)
+    ]
+
+
+def _status(term: str, extracted: str, master_text: str) -> Coverage:
+    if keyword_in_text(term, extracted):
         return "covered"
-    if _synonym_in(term, extracted):
-        return "synonym-only"
-    if _term_in(term, master_cv) or _synonym_in(term, master_cv):
+    if keyword_in_text(term, master_text):
         return "missing (have it)"
     return "missing (gap)"
-
-
-def _term_in(term: str, text: str) -> bool:
-    return term.casefold() in text.casefold()
-
-
-_SYNONYMS = {
-    "ci/cd": ("continuous integration", "continuous delivery", "github actions", "gitlab ci"),
-    "version control": ("git", "github", "gitlab"),
-    "teamwork": ("collaborat", "team player", "pair program"),
-    "communication": ("present", "wrote", "document"),
-    "problem-solving": ("debug", "troubleshoot", "solved"),
-    "testing": ("pytest", "unit test", "test-driven"),
-    "cloud": ("aws", "azure", "gcp", "kubernetes", "docker"),
-}
-
-
-def _synonym_in(term: str, text: str) -> bool:
-    lower = text.casefold()
-    key = term.casefold()
-    for needle, alts in _SYNONYMS.items():
-        if needle in key or key in needle:
-            if any(alt in lower for alt in alts):
-                return True
-    return False

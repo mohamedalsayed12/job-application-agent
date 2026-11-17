@@ -152,7 +152,7 @@ class Settings(BaseSettings):
 
     # D55: tailored CV for Apply / Consider jobs. Blank model = provider default.
     ai_tailor_model: str = ""
-    ai_tailor_max_output_tokens: int = 3500
+    ai_tailor_max_output_tokens: int = 8000
     ai_tailor_cv_chars: int = 12000
     ai_tailor_per_cycle: int = 5
 

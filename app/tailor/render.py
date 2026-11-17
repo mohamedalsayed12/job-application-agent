@@ -1,19 +1,65 @@
-"""Render a grounded structured CV to ATS-friendly PDF and DOCX bytes."""
+"""Render a structured CV to ATS-friendly single-column PDF and DOCX bytes."""
 
 from __future__ import annotations
 
 import io
-from typing import Any
+from typing import Any, Literal
 
 from docx import Document
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate
+
+Kind = Literal["name", "muted", "section", "body", "bullet"]
+
+_ADDITIONAL = (
+    ("languages", "Languages"),
+    ("certificationsTraining", "Certifications"),
+    ("awards", "Awards"),
+)
 
 
-def render_pdf(draft: dict[str, Any]) -> bytes:
+def blocks(resume: dict[str, Any]) -> list[tuple[Kind, str]]:
+    """The CV as an ordered list of styled lines, shared by both formats."""
+    out: list[tuple[Kind, str]] = []
+    personal = resume.get("personalInfo") or {}
+    if personal.get("name"):
+        out.append(("name", personal["name"]))
+    for fields in (("title",), ("email", "phone", "location"), ("website", "linkedin", "github")):
+        line = _join(personal.get(field) for field in fields)
+        if line:
+            out.append(("muted", line))
+    if resume.get("summary"):
+        out += [("section", "Profile"), ("body", resume["summary"])]
+    additional = resume.get("additional") or {}
+    if additional.get("technicalSkills"):
+        out += [("section", "Skills"), ("body", ", ".join(additional["technicalSkills"]))]
+    for section, heading, fields in (
+        ("workExperience", "Experience", ("title", "company", "location", "years")),
+        ("personalProjects", "Projects", ("name", "role", "years")),
+    ):
+        if resume.get(section):
+            out.append(("section", heading))
+            for entry in resume[section]:
+                out.append(("body", _join(entry.get(field) for field in fields)))
+                out += [("bullet", row) for row in entry.get("description") or []]
+    if resume.get("education"):
+        out.append(("section", "Education"))
+        for entry in resume["education"]:
+            out.append(("body", _join(entry.get(field) for field in ("degree", "institution", "years"))))
+            if entry.get("description"):
+                out.append(("muted", entry["description"]))
+    lists = [(label, additional[field]) for field, label in _ADDITIONAL if additional.get(field)]
+    if lists:
+        out.append(("section", "Additional"))
+        out += [("body", f"{label}: {', '.join(items)}") for label, items in lists]
+    return out
+
+
+def render_pdf(resume: dict[str, Any]) -> bytes:
     buffer = io.BytesIO()
+    personal = resume.get("personalInfo") or {}
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
@@ -21,113 +67,51 @@ def render_pdf(draft: dict[str, Any]) -> bytes:
         rightMargin=18 * mm,
         topMargin=16 * mm,
         bottomMargin=16 * mm,
-        title=_contact(draft).get("name") or "CV",
+        title=personal.get("name") or "CV",
     )
-    styles = getSampleStyleSheet()
-    name_style = ParagraphStyle("CvName", parent=styles["Heading1"], fontSize=16, spaceAfter=4)
-    section = ParagraphStyle("CvSection", parent=styles["Heading2"], fontSize=12, spaceBefore=10, spaceAfter=4)
-    body = ParagraphStyle("CvBody", parent=styles["Normal"], fontSize=10, leading=13)
-    muted = ParagraphStyle("CvMuted", parent=body, textColor="#333333")
-
+    sheet = getSampleStyleSheet()
+    body = ParagraphStyle("CvBody", parent=sheet["Normal"], fontSize=10, leading=13)
+    styles = {
+        "name": ParagraphStyle("CvName", parent=sheet["Heading1"], fontSize=16, spaceAfter=4),
+        "section": ParagraphStyle("CvSection", parent=sheet["Heading2"], fontSize=12, spaceBefore=10, spaceAfter=4),
+        "body": body,
+        "muted": ParagraphStyle("CvMuted", parent=body, textColor="#333333"),
+    }
     story: list = []
-    contact = _contact(draft)
-    if contact.get("name"):
-        story.append(Paragraph(_xml(contact["name"]), name_style))
-    line = " · ".join(
-        part for part in (contact.get("email"), contact.get("phone"), contact.get("location")) if part
-    )
-    if line:
-        story.append(Paragraph(_xml(line), muted))
-    if contact.get("links"):
-        story.append(Paragraph(_xml(" · ".join(contact["links"])), muted))
-    story.append(Spacer(1, 4 * mm))
-
-    if draft.get("summary"):
-        story.append(Paragraph("Profile", section))
-        story.append(Paragraph(_xml(draft["summary"]), body))
-
-    if draft.get("skills"):
-        story.append(Paragraph("Skills", section))
-        story.append(Paragraph(_xml(", ".join(draft["skills"])), body))
-
-    if draft.get("experience"):
-        story.append(Paragraph("Experience", section))
-        for job in draft["experience"]:
-            dates = " - ".join(part for part in (job.get("start"), job.get("end")) if part)
-            head = " · ".join(part for part in (job.get("title"), job.get("employer"), dates) if part)
-            story.append(Paragraph(_xml(head), body))
-            bullets = [
-                ListItem(Paragraph(_xml(bullet), body), leftIndent=8, value="bullet")
-                for bullet in job.get("bullets") or []
-            ]
-            if bullets:
-                story.append(ListFlowable(bullets, bulletType="bullet", start="bullet"))
-
-    if draft.get("education"):
-        story.append(Paragraph("Education", section))
-        for edu in draft["education"]:
-            dates = " - ".join(part for part in (edu.get("start"), edu.get("end")) if part)
-            head = " · ".join(part for part in (edu.get("degree"), edu.get("school"), dates) if part)
-            story.append(Paragraph(_xml(head), body))
-            if edu.get("details"):
-                story.append(Paragraph(_xml(edu["details"]), muted))
-
+    bullets: list = []
+    for kind, text in blocks(resume):
+        if kind == "bullet":
+            bullets.append(ListItem(Paragraph(_xml(text), body), leftIndent=8, value="bullet"))
+            continue
+        if bullets:
+            story.append(ListFlowable(bullets, bulletType="bullet", start="bullet"))
+            bullets = []
+        story.append(Paragraph(_xml(text), styles[kind]))
+    if bullets:
+        story.append(ListFlowable(bullets, bulletType="bullet", start="bullet"))
     doc.build(story)
     return buffer.getvalue()
 
 
-def render_docx(draft: dict[str, Any]) -> bytes:
+def render_docx(resume: dict[str, Any]) -> bytes:
     document = Document()
-    contact = _contact(draft)
-    if contact.get("name"):
-        document.add_heading(contact["name"], level=1)
-    line = " · ".join(
-        part for part in (contact.get("email"), contact.get("phone"), contact.get("location")) if part
-    )
-    if line:
-        document.add_paragraph(line)
-    if contact.get("links"):
-        document.add_paragraph(" · ".join(contact["links"]))
-
-    if draft.get("summary"):
-        document.add_heading("Profile", level=2)
-        document.add_paragraph(draft["summary"])
-
-    if draft.get("skills"):
-        document.add_heading("Skills", level=2)
-        document.add_paragraph(", ".join(draft["skills"]))
-
-    if draft.get("experience"):
-        document.add_heading("Experience", level=2)
-        for job in draft["experience"]:
-            dates = " - ".join(part for part in (job.get("start"), job.get("end")) if part)
-            head = " · ".join(part for part in (job.get("title"), job.get("employer"), dates) if part)
-            document.add_paragraph(head)
-            for bullet in job.get("bullets") or []:
-                document.add_paragraph(bullet, style="List Bullet")
-
-    if draft.get("education"):
-        document.add_heading("Education", level=2)
-        for edu in draft["education"]:
-            dates = " - ".join(part for part in (edu.get("start"), edu.get("end")) if part)
-            head = " · ".join(part for part in (edu.get("degree"), edu.get("school"), dates) if part)
-            document.add_paragraph(head)
-            if edu.get("details"):
-                document.add_paragraph(edu["details"])
-
+    for kind, text in blocks(resume):
+        if kind == "name":
+            document.add_heading(text, level=1)
+        elif kind == "section":
+            document.add_heading(text, level=2)
+        elif kind == "bullet":
+            document.add_paragraph(text, style="List Bullet")
+        else:
+            document.add_paragraph(text)
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
 
 
-def _contact(draft: dict[str, Any]) -> dict[str, Any]:
-    raw = draft.get("contact")
-    return raw if isinstance(raw, dict) else {}
+def _join(parts) -> str:
+    return " · ".join(str(part).strip() for part in parts if part and str(part).strip())
 
 
 def _xml(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
