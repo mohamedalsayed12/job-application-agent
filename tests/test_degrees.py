@@ -105,8 +105,8 @@ async def test_d45_matching_leaves_out_jobs_needing_another_subject(session: Ses
     )
     business = _applicant(session, roles=["Junior Backend Developer"], locations=["Manchester"])
     unstated = _applicant(session, roles=["Junior Backend Developer"], locations=["Manchester"])
-    session.add(ApplicantProfile(applicant_id=business, experience_level=ExperienceLevel.entry, degrees=BUSINESS))
-    session.add(ApplicantProfile(applicant_id=unstated, experience_level=ExperienceLevel.entry))
+    session.add(ApplicantProfile(applicant_id=business, experience_levels=[ExperienceLevel.entry], degrees=BUSINESS))
+    session.add(ApplicantProfile(applicant_id=unstated, experience_levels=[ExperienceLevel.entry]))
     session.flush()
 
     match_all(session, now=SOON)

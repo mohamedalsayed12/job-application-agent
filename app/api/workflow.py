@@ -117,7 +117,7 @@ def workflow_page(
     steps = [
         Step(
             "Build your profile from your CV",
-            "Set target roles, locations, experience level and skills, then keep your master CV attached.",
+            "Set target roles, locations, experience levels and skills, then keep your master CV attached.",
             "Profile needs attention",
             "/profile",
             "Review profile" if profile_ready else "Complete profile",

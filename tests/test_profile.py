@@ -20,7 +20,7 @@ from app.applicants.cv import MAX_CV_BYTES, MAX_UPLOAD_BODY_BYTES, CvRefused, ch
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
-from app.matching.match import match_role
+from tests.test_matching import _job, _matches, _posting, _role, _store
 from app.models import (
     Applicant,
     ApplicantCertification,
@@ -41,7 +41,7 @@ WORD_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 PROFILE = {
     "target_roles": "Backend Developer\nSoftware Engineer",
     "locations": "Manchester\nRemote",
-    "experience_level": "entry",
+    "experience_levels": "entry",
     "travel_distance": "25",
     "salary_amount": "32000",
     "salary_currency": "gbp",
@@ -120,7 +120,7 @@ async def test_t30_the_profile_saves_every_field(client: httpx.AsyncClient, sess
     assert preference.salary_currency == "GBP"
     assert preference.salary_period == "year"
     profile = session.scalar(select(ApplicantProfile).where(ApplicantProfile.applicant_id == applicant_id))
-    assert profile.experience_level == ExperienceLevel.entry
+    assert profile.experience_levels == [ExperienceLevel.entry]
     assert profile.travel_distance_miles == 25
     skills = session.scalars(select(ApplicantSkill.text_as_typed).where(ApplicantSkill.applicant_id == applicant_id))
     assert sorted(skills) == ["Python", "SQL"]
@@ -141,8 +141,39 @@ async def test_t30_the_saved_profile_shows_on_the_form(client: httpx.AsyncClient
     text = (await client.get("/profile")).text
     for expected in ("Backend Developer", "Manchester", 'value="25"', "32000", "Python", "AWS Cloud Practitioner", "DVLA", "2029-06-30"):
         assert expected in text
-    assert '<option value="entry" selected>Entry level (graduate or junior)</option>' in text
+    assert 'name="experience_levels" value="entry" checked/>' in text
     assert '<option value="licence" selected>Licence</option>' in text
+
+
+async def test_d63_several_levels_are_saved_and_shown_ticked(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    assert (await client.post("/profile", data={**PROFILE, "experience_levels": ["mid", "entry"]})).status_code == 303
+
+    profile = session.scalar(select(ApplicantProfile).where(ApplicantProfile.applicant_id == _applicant(session).id))
+    assert profile.experience_levels == ["entry", "mid"]
+    form = (await client.get("/profile")).text
+    for level, ticked in (("entry", True), ("mid", True), ("senior", False), ("internship", False)):
+        assert (f'name="experience_levels" value="{level}" checked/>' in form) is ticked
+    assert "Entry level (graduate, junior, entry)" in form
+    assert "Internship (students only)" in form
+
+
+async def test_d63_ticking_a_second_level_is_saved_shown_and_changes_the_matches(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    _store(session, [_posting(1), _posting(2, title="Junior Backend Developer")])
+    plain, junior = _job(session, 1).id, _job(session, 2).id
+    await _register(client)
+    no_salary = {**PROFILE, "salary_amount": ""}
+
+    assert (await client.post("/profile", data={**no_salary, "experience_levels": ["entry"]})).status_code == 303
+    assert set(_matches(session, _applicant(session).id)) == {junior}
+
+    assert (await client.post("/profile", data={**no_salary, "experience_levels": ["entry", "mid"]})).status_code == 303
+    form = (await client.get("/profile")).text
+    assert 'value="entry" checked/>' in form
+    assert 'value="mid" checked/>' in form
+    assert set(_matches(session, _applicant(session).id)) == {plain, junior}
 
 
 async def test_t30_saving_again_replaces_the_lists(client: httpx.AsyncClient, session: Session) -> None:
@@ -171,8 +202,8 @@ async def test_t30_salary_and_travel_are_optional(client: httpx.AsyncClient, ses
     [
         ({"target_roles": ""}, "target role"),
         ({"locations": " \n "}, "location"),
-        ({"experience_level": ""}, "experience level"),
-        ({"experience_level": "boss"}, "experience level"),
+        ({"experience_levels": []}, "experience level"),
+        ({"experience_levels": "boss"}, "experience level"),
         ({"travel_distance": "0"}, "Travel distance"),
         ({"travel_distance": "501"}, "Travel distance"),
         ({"travel_distance": "ten"}, "Travel distance"),
@@ -477,7 +508,7 @@ async def test_t32_deleting_needs_a_login(client: httpx.AsyncClient) -> None:
     ["Software Engineering Intern", "Backend Developer Internship", "Intern, Backend Engineer", "Backend Engineer Placement"],
 )
 def test_someone_who_chose_internship_is_matched_to_internships(title: str) -> None:
-    found = match_role(title, None, ["Backend Developer", "Software Engineer"], internship=True)
+    found = _role(title, None, ["Backend Developer", "Software Engineer"], [ExperienceLevel.internship])
     assert found is not None
     assert found.level == "internship in the title"
 
@@ -487,15 +518,15 @@ def test_someone_who_chose_internship_is_matched_to_internships(title: str) -> N
     ["Backend Developer", "Junior Backend Developer", "Senior Software Engineer", "Backend Engineer Apprentice", "Backend Engineering Degree Apprenticeship Placement", "Internal Tools Engineer", "Sales Intern"],
 )
 def test_someone_who_chose_internship_sees_only_internships_and_no_apprenticeships(title: str) -> None:
-    assert match_role(title, None, ["Backend Developer", "Software Engineer"], internship=True) is None
+    assert _role(title, None, ["Backend Developer", "Software Engineer"], [ExperienceLevel.internship]) is None
 
 
 def test_level_words_in_a_target_role_do_not_stop_someone_who_chose_internship() -> None:
-    assert match_role("Backend Engineer Intern", None, ["Junior Backend Developer"], internship=True) is not None
-    assert match_role("Software Engineer Intern", None, ["Software Engineering Internship"], internship=True) is not None
+    assert _role("Backend Engineer Intern", None, ["Junior Backend Developer"], [ExperienceLevel.internship]) is not None
+    assert _role("Software Engineer Intern", None, ["Software Engineering Internship"], [ExperienceLevel.internship]) is not None
 
 
 @pytest.mark.parametrize("title", ["Software Engineering Intern", "Backend Engineer Placement", "Backend Engineer Apprentice"])
 def test_everyone_else_still_never_sees_internships_or_apprenticeships(title: str) -> None:
-    assert match_role(title, None, ["Backend Developer", "Software Engineer"]) is None
-    assert match_role(title, None, ["Junior Backend Developer"]) is None
+    assert _role(title, None, ["Backend Developer", "Software Engineer"]) is None
+    assert _role(title, None, ["Junior Backend Developer"]) is None

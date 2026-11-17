@@ -42,7 +42,7 @@ PASSWORD = "correct horse battery"
 PROFILE = {
     "target_roles": "Backend Developer",
     "locations": "Manchester",
-    "experience_level": "entry",
+    "experience_levels": ["entry"],
     "travel_distance": "",
     "salary_amount": "",
     "salary_currency": "GBP",
