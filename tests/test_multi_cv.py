@@ -34,6 +34,7 @@ from app.fetch.gateway import FetchGateway
 from app.main import app
 from app.models import (
     Applicant,
+    ApplicantPreference,
     Application,
     ApplicationStatus,
     CvFile,
@@ -69,6 +70,16 @@ def test_two_jobs_get_different_cvs() -> None:
     assert pick_base_cv(cvs, title="Junior Data Analyst", advert="Prepare weekly sales reports") is analyst
     assert pick_base_cv(cvs, title="Backend Engineer", advert="Build HTTP services") is backend
     assert pick_base_cv(cvs) is backend
+
+
+def test_business_development_does_not_beat_the_primary_for_a_backend_engineer_job() -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 6, 1, tzinfo=UTC)
+    primary = _choice("Product Manager", True, older)
+    business = _choice("Business Development", False, newer)
+    developer = _choice("Backend Developer", False, newer)
+    assert pick_base_cv([business, primary], title="Backend Engineer", advert="Build HTTP services") is primary
+    assert pick_base_cv([primary, developer], title="Backend Engineer", advert="Build HTTP services") is developer
 
 
 def test_a_different_cv_changes_the_tailored_package_hash() -> None:
@@ -247,3 +258,18 @@ async def test_the_profile_lists_each_cv_and_another_person_cannot_download_it(
     assert PDF not in stranger.content
     missing = await client.get(f"/profile/cv/{uuid.uuid4()}")
     assert missing.status_code == 404
+
+
+async def test_a_non_numeric_cv_id_does_not_save(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    assert (await client.post("/profile", data=PROFILE)).status_code == 303
+    response = await client.post(
+        "/profile",
+        data={**PROFILE, "target_roles": "Data Analyst", "cv_id": ["not-a-number"], "cv_label": ["Business Development"]},
+    )
+    assert response.status_code == 400
+    session.expire_all()
+    person = _applicant(session)
+    preference = session.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == person.id))
+    assert preference is not None
+    assert preference.target_roles == ["Backend Developer", "Software Engineer"]

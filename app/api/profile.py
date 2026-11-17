@@ -433,18 +433,14 @@ def _lines(text: str) -> list[str]:
 
 
 def _save_cv_choices(db: Session, applicant_id: uuid.UUID, fields: ProfileFields) -> None:
-    labels: dict[uuid.UUID, str] = {}
-    for raw_id, label in zip(fields.cv_id, fields.cv_label, strict=False):
-        try:
-            labels[uuid.UUID(str(raw_id))] = label
-        except ValueError:
-            continue
-    primary = None
-    if fields.cv_primary:
-        try:
-            primary = uuid.UUID(str(fields.cv_primary))
-        except ValueError:
-            primary = None
+    try:
+        labels = {
+            uuid.UUID(str(raw_id)): label
+            for raw_id, label in zip(fields.cv_id, fields.cv_label, strict=True)
+        }
+        primary = uuid.UUID(str(fields.cv_primary)) if fields.cv_primary else None
+    except ValueError as exc:
+        raise CvRefused("One of these CVs isn't valid. Reload the page and try again.") from exc
     if labels or primary is not None:
         save_cv_choices(db, applicant_id, labels, primary)
 

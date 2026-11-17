@@ -22,6 +22,8 @@ from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.models import (
+    CvFile,
+    CvFileType,
     Job,
     OutreachChannel,
     OutreachContact,
@@ -85,7 +87,8 @@ async def draft_for_contact(
     patterns = library.for_role(contact.role_kind)
     quotes = list(research.quotes) if research else []
     about = research.about_text if research else None
-    digest = _digest(job, contact, research, channel, library.version)
+    chosen = base_cv(session, applicant_id, job)
+    digest = _digest(job, contact, research, channel, library.version, None if chosen is None else chosen.id)
     existing = session.scalar(
         select(OutreachDraft).where(
             OutreachDraft.applicant_id == applicant_id,
@@ -102,7 +105,7 @@ async def draft_for_contact(
     ):
         return DraftResult(draft=existing)
 
-    cv = _cv_excerpt(session, applicant_id, job, settings)
+    cv = _cv_excerpt(chosen, settings)
     sources = _sources_text(job, contact, about, quotes, cv)
     gate = BudgetGate(session, clock=clock)
     cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_outreach, units=Decimal(1), settings=settings)
@@ -185,6 +188,7 @@ def _digest(
     research: OutreachResearch | None,
     channel: OutreachChannel,
     pattern_version: str,
+    cv_id: UUID | None,
 ) -> str:
     payload = {
         "job": job.id.hex,
@@ -196,14 +200,12 @@ def _digest(
         "channel": channel.value,
         "patterns": pattern_version,
         "prompt": PROMPT_VERSION,
+        "cv": "" if cv_id is None else cv_id.hex,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def _cv_excerpt(session: Session, applicant_id: UUID, job: Job, settings: Settings) -> str:
-    from app.models import CvFileType
-
-    cv = base_cv(session, applicant_id, job)
+def _cv_excerpt(cv: CvFile | None, settings: Settings) -> str:
     if cv is None:
         return ""
     try:

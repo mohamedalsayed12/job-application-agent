@@ -193,7 +193,6 @@ _SPELLINGS = (
     (re.compile(r"\bback[- ]end\b|\bserver[- ]side\b"), "backend"),
     (re.compile(r"\bfront[- ]end\b"), "frontend"),
     (re.compile(r"\bfull[- ]stack\b"), "fullstack"),
-    (re.compile(r"\b(?:developer|programmer|engineering|development|dev|swe)\b"), "engineer"),
 )
 # Words that say the level or nothing at all, so they never decide which CV a job gets.
 _NOT_THE_JOB = frozenset(
