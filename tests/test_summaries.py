@@ -106,8 +106,8 @@ def _settings(**overrides: object) -> Settings:
 class _Provider:
     """Answers like the Messages API and counts the calls."""
 
-    def __init__(self, summary: str = GOOD, *, status: int = 200) -> None:
-        self.summary, self.status, self.calls = summary, status, 0
+    def __init__(self, summary: str = GOOD, *, status: int = 200, stop_reason: str = "end_turn") -> None:
+        self.summary, self.status, self.stop_reason, self.calls = summary, status, stop_reason, 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls += 1
@@ -118,7 +118,7 @@ class _Provider:
             json={
                 "model": "claude-haiku-5-5",
                 "content": [{"type": "text", "text": json.dumps({"summary": self.summary})}],
-                "stop_reason": "end_turn",
+                "stop_reason": self.stop_reason,
                 "usage": {"input_tokens": 400, "output_tokens": 60},
             },
         )
@@ -220,14 +220,24 @@ async def test_token_caps_stop_the_call(session: Session) -> None:
     assert provider.calls == 0
 
 
-async def test_a_provider_failure_saves_nothing_and_costs_nothing(session: Session) -> None:
+@pytest.mark.parametrize(
+    ("provider", "cost"),
+    [
+        (_Provider(status=500), Decimal("0")),
+        (_Provider(stop_reason="max_tokens"), Decimal("0.001")),
+        (_Provider(stop_reason="refusal"), Decimal("0.001")),
+    ],
+    ids=["http_500_is_free", "truncated_answer_is_billed", "refusal_is_billed"],
+)
+async def test_a_provider_failure_saves_nothing_and_records_what_was_billed(
+    session: Session, provider: _Provider, cost: Decimal
+) -> None:
     _policy(session, Decimal("5"))
     job = await _open_job(session)
-    provider = _Provider(status=500)
     shown = await _view(session, job, provider)
     assert shown.reason == Reason.provider_failed
     assert session.scalar(select(func.count()).select_from(JobSummary)) == 0
-    assert session.scalar(select(SpendLedger.actual_cost)) == Decimal("0")
+    assert session.scalar(select(SpendLedger.actual_cost)) == cost
 
 
 async def test_a_view_while_another_is_writing_waits_instead_of_paying_twice(session: Session) -> None:
