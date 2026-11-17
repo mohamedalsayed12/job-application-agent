@@ -65,10 +65,10 @@ together with each job advert. Your email address, name, locations, salary and C
 <p>For each job that first check scores 3.0 or more, the service writes a fuller fit report. For that it sends Anthropic
 the job advert with your target roles, experience level, skills, degrees, salary wish, wanted locations and the text of
 your CV, if you uploaded one. Your email address and name are never sent.</p>
-<p>When that fit report says Apply or Consider, the service may tailor a CV for that job. It may fetch the employer's public
-About pages (mission, vision, values) through the same safe fetch rules as other page reads. It then sends Anthropic the
-job advert, any company text it found, your profile summary and your CV text, so Claude can rephrase a grounded draft.
-Nothing is invented that is not already in your CV or profile. Your email address is only kept in the tailored file when
+<p>When that fit report says Apply or Consider, or when you ask for one, the service may tailor a CV for that job. It
+sends Anthropic the job advert and your CV text, so Claude can suggest edits that each quote the CV line they change.
+Edits that add a number, a skill or an employer your CV does not show are dropped. Nothing is invented that is not
+already in your CV. Your email address is only kept in the tailored file when
 it already appears in your uploaded CV.</p>
 <p>When you prepare an application, the service may call Greenhouse's public boards API or an Apify actor to read the
 application form questions for that job URL. Your answers are not sent to Apify. The fill happens in your browser via
