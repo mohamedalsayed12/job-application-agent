@@ -32,6 +32,7 @@ from app.main import app
 from app.models import (
     ApplicantPreference,
     BudgetPolicy,
+    CvFile,
     CvFileType,
     SpendKind,
     SpendLedger,
@@ -255,7 +256,7 @@ async def test_d43_uploading_a_cv_fills_the_form_but_saves_nothing(
 
     assert response.status_code == 200
     assert "We read your CV and filled in target roles, locations, experience level, 3 skills, 1 certification or licence" in response.text
-    assert "Your CV file is already stored" in response.text
+    assert "The file is saved" in response.text
     assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in response.text
     assert "Python\nFastAPI\nPostgreSQL</textarea>" in response.text
     assert "Kubernetes" not in response.text
@@ -275,8 +276,8 @@ async def test_d43_suggestions_stay_after_refresh_until_save(
     again = await client.get("/profile")
     assert again.status_code == 200
     assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in again.text
-    assert "Your CV file is already stored" in again.text
-    assert "Your CV:" in again.text and "cv.docx" in again.text
+    assert "The file is saved" in again.text
+    assert "cv.docx" in again.text
     assert session.scalar(select(ApplicantPreference)) is None
 
     claude.broken = True
@@ -316,7 +317,28 @@ async def test_d43_suggestions_stay_after_refresh_until_save(
     assert session.scalar(select(ApplicantPreference)) is not None
     after_save = await client.get("/profile")
     assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in after_save.text
-    assert "Your CV file is already stored" not in after_save.text
+    assert "The file is saved" not in after_save.text
+
+
+async def test_d43_a_second_cv_adds_to_the_draft_and_deleting_its_source_drops_it(
+    client: httpx.AsyncClient, session: Session, claude: _Claude
+) -> None:
+    _money(session, "2")
+    await _register_and_upload(client)
+    first = session.scalars(select(CvFile)).one()
+
+    claude.payload = {**FOUND, "target_roles": ["Data Analyst"], "skills": ["Python"], "certifications": []}
+    files = {"cv": ("two.docx", _docx(CV_LINES), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+    second_page = await client.post("/profile/cv", files=files)
+    assert "Junior Python Developer\nGraduate Software Engineer\nData Analyst</textarea>" in second_page.text
+    second = session.scalars(select(CvFile).where(CvFile.id != first.id)).one()
+
+    await client.post(f"/profile/cv/{first.id}/delete", data={})
+    assert "Data Analyst</textarea>" in (await client.get("/profile")).text
+    assert "Junior Python Developer" in (await client.get("/profile")).text
+
+    await client.post(f"/profile/cv/{second.id}/delete", data={})
+    assert "Junior Python Developer" not in (await client.get("/profile")).text
 
 
 def test_d43_draft_cookie_budget_counts_unicode_escapes() -> None:
@@ -338,7 +360,8 @@ async def test_d43_the_fill_button_reads_the_stored_cv_again(client: httpx.Async
     await _register_and_upload(client)
     again = await client.post("/profile/cv/fill")
     assert again.status_code == 200
-    assert "We read your CV and filled in" in again.text
+    assert "We read your CV but found nothing new" in again.text
+    assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in again.text
     assert claude.calls == 2
 
 
