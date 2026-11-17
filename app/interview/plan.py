@@ -205,7 +205,7 @@ async def write_pack(
         persist()
         result = await send_anthropic_request(gateway, body, api_key=api_key, fallback_model=model)
         if isinstance(result, AiCallFailure):
-            gate.settle(reservation, actual_cost=Decimal("0"))
+            gate.settle(reservation, consumed=result.billed)
             persist()
             report.stopped_by = result.reason
             return report

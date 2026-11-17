@@ -461,7 +461,7 @@ async def _paid_ai(
     persist()
     result = await call()
     if isinstance(result, AiCallFailure):
-        gate.settle(reservation, consumed=False)
+        gate.settle(reservation, consumed=result.billed)
         persist()
         return result
     gate.settle(reservation, actual_cost=cost, units=Decimal(1))

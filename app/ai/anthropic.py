@@ -31,6 +31,8 @@ class AiCallFailure:
     """The call did not yield usable JSON; ``reason`` says why."""
 
     reason: str
+    billed: bool = False
+    """Anthropic answered 200, so the tokens were charged even though the answer is unusable."""
 
 
 async def send_anthropic_request(
@@ -70,31 +72,31 @@ def _parse_http(
     try:
         data = json.loads(response.body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return AiCallFailure(reason="anthropic_invalid_json")
+        return AiCallFailure(reason="anthropic_invalid_json", billed=True)
     if not isinstance(data, dict):
-        return AiCallFailure(reason="anthropic_invalid_json")
+        return AiCallFailure(reason="anthropic_invalid_json", billed=True)
 
     # Refusal or truncation means the text may not match the schema.
     stop_reason = data.get("stop_reason")
     if stop_reason != "end_turn":
-        return AiCallFailure(reason=f"anthropic_stop_{stop_reason}")
+        return AiCallFailure(reason=f"anthropic_stop_{stop_reason}", billed=True)
 
     content = data.get("content")
     if not isinstance(content, list):
-        return AiCallFailure(reason="anthropic_bad_content")
+        return AiCallFailure(reason="anthropic_bad_content", billed=True)
     text = "".join(
         block.get("text", "")
         for block in content
         if isinstance(block, dict) and block.get("type") == "text"
     )
     if not text.strip():
-        return AiCallFailure(reason="anthropic_empty_content")
+        return AiCallFailure(reason="anthropic_empty_content", billed=True)
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        return AiCallFailure(reason="anthropic_content_not_json")
+        return AiCallFailure(reason="anthropic_content_not_json", billed=True)
     if not isinstance(payload, dict):
-        return AiCallFailure(reason="anthropic_content_not_object")
+        return AiCallFailure(reason="anthropic_content_not_object", billed=True)
 
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     model = data.get("model")

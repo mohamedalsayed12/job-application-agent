@@ -229,7 +229,7 @@ async def build_job_pack(
         gateway, body, api_key=settings.anthropic_api_key.strip(), fallback_model=model
     )
     if isinstance(answer, AiCallFailure):
-        gate.settle(reservation, actual_cost=Decimal(0))
+        gate.settle(reservation, consumed=answer.billed)
         session.commit()
         return JobPackResult(stopped_by=answer.reason)
     gate.settle(reservation, actual_cost=cost)

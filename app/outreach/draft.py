@@ -136,7 +136,7 @@ async def draft_for_contact(
         intent=intent_for(contact.role_kind),
     )
     if isinstance(call, AiCallFailure):
-        gate.settle(reservation, consumed=False)
+        gate.settle(reservation, consumed=call.billed)
         persist()
         return DraftResult(problem=call.reason)
 
