@@ -759,3 +759,35 @@ async def test_profile_card_and_ready_pack_page(client: httpx.AsyncClient, sessi
     assert "STAR practice helped people pass." in page.text
     assert "Practice plan" in page.text
     assert "STAR drills" in page.text
+
+
+def test_pass_requires_affirmative_outcome_for_same_role_and_employer() -> None:
+    for text in (
+        "I never got an offer after my Data Analyst interview.",
+        "If I got an offer as a Data Analyst I would celebrate.",
+        "I got an offer as a Software Engineer. Now I want to become a Data Analyst.",
+        "I passed my driving test. I am preparing for a Data Analyst interview.",
+        "I got an offer as a Software Engineer while preparing for Data Analyst interviews.",
+    ):
+        assert not read_stance("Data Analyst", "Interview", text).counts_as_passed
+    assert not read_stance(
+        "Data Analyst", "Acme", "I got an offer as a Data Analyst at Elsewhere. Acme rejected me.", company="Acme"
+    ).counts_as_passed
+    assert read_stance("Data Analyst", "Offer", "I passed the Data Analyst interview.").counts_as_passed
+
+
+def test_quotes_in_every_pack_field_require_source_text() -> None:
+    url = "https://example.com/story"
+    for section, field, links in (
+        ("success_themes", "theme", {"cites": [url]}),
+        ("materials", "name", {"url": url}),
+        ("materials", "how_used", {"url": url}),
+        ("practice_plan", "method", {"resource_urls": [url]}),
+        ("practice_plan", "detail", {"resource_urls": [url]}),
+    ):
+        for quote in ('"invented"', "“invented”", "‘invented’"):
+            problems = ground_pack(
+                {"summary": "Source overview", section: [{field: quote, **links}]},
+                {url}, {url: "Actual source text"},
+            )
+            assert any("quote is not in" in problem for problem in problems)

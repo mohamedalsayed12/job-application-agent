@@ -141,7 +141,7 @@ def read_stance(role: str, title: str, snippet: str, *, company: str | None = No
     body = _writer_text(title, snippet)
     voice = _voice(title, text, body)
     role_fit = _role_fit(canonical_role(role), text.casefold())
-    passed = voice == "first_hand" and role_fit == "same" and _passed(body, text)
+    passed = voice == "first_hand" and role_fit == "same" and _passed(body, canonical_role(role), company)
     employer_match = None
     if company is not None and company.strip():
         employer_match = _phrase(_SPACE.sub(" ", company.casefold()).strip(), text.casefold())
@@ -176,10 +176,22 @@ def _voice(title: str, text: str, body: str) -> str:
     return "unclear"
 
 
-def _passed(body: str, text: str) -> bool:
-    if _OFFER.search(body):
-        return True
-    return bool(_PASSED_INTERVIEW.search(body) and _INTERVIEW.search(text))
+def _passed(body: str, role: str, company: str | None) -> bool:
+    for sentence in re.split(r"[.!?;]+", body):
+        if _role_fit(role, sentence.casefold()) != "same":
+            continue
+        if company and not _phrase(company.casefold().strip(), sentence.casefold()):
+            continue
+        if re.search(r"\b(never|not|no|didn't|haven't|hadn't|would|could|if|wish|hope|hoping)\b", sentence, re.I):
+            continue
+        other_roles = [alias for family, aliases in _FAMILIES.items() if family != role for alias in aliases]
+        if any(_phrase(alias, sentence.casefold()) for alias in other_roles):
+            continue
+        if _OFFER.search(sentence):
+            return True
+        if re.search(r"\bi passed (?!on\b)(?:the |my |an )?(?:[\w-]+\s+){0,8}interview\b", sentence, re.I):
+            return True
+    return False
 
 
 def _role_fit(role: str, text: str) -> str:
