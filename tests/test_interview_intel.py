@@ -22,7 +22,7 @@ from app.fetch.gateway import FetchRefusal
 from app.interview.check import ground_pack
 from app.interview.collect import collect_for_role, store_items
 from app.interview.normalize import normalize_item, queries_for
-from app.interview.plan import pack_from_payload_for_tests
+from app.interview.plan import PROMPT_VERSION, fresh_pack, pack_from_payload_for_tests
 from app.interview.roles import role_key
 from app.interview.stance import read_stance
 from app.interview.service import enqueue, process_requests
@@ -269,7 +269,7 @@ def test_success_themes_count_only_someone_who_passed_this_role(session: Session
         session,
         InterviewPlatform.youtube,
         [
-            {"id": "coach1", "url": coach, "title": "Coach", "text": "I coach people to get the offer. Book a call."},
+            {"id": "coach1", "url": coach, "title": "Coach", "text": "I coach people to get the offer."},
             {"id": "tips1", "url": tips, "title": "Interview tips", "text": "Here are five ways to prepare for any interview."},
         ],
         role_key="data analyst",
@@ -378,6 +378,142 @@ def test_success_themes_count_only_someone_who_passed_this_role(session: Session
     )
     assert isinstance(uncited, list)
     assert any("no evidence url" in problem for problem in uncited)
+
+
+def test_only_the_writer_passing_counts() -> None:
+    role = "Data Analyst"
+    friend = read_stance(role, "Offer", "My friend got the offer for a data analyst role.")
+    assert friend.counts_as_passed is False
+    she = read_stance(role, "Offer", "She got the offer for a data analyst role.")
+    assert she.counts_as_passed is False
+    declined = read_stance(
+        "Software Engineer",
+        "Offer decision",
+        "I passed on the offer after the software engineer interview.",
+    )
+    assert declined.counts_as_passed is False
+    passed = read_stance(role, "Offer", "I got the offer for a data analyst role.")
+    assert passed.counts_as_passed is True
+    studied = read_stance(role, "Offer", "I studied every night and got the offer for a data analyst role.")
+    assert studied.counts_as_passed is True
+    own_work = read_stance(role, "Offer", "I finished my assignment and got the offer for a data analyst role.")
+    assert own_work.counts_as_passed is True
+    heard = read_stance(role, "Offer", "I was happy she got the offer for a data analyst role.")
+    assert heard.counts_as_passed is False
+    friend_story = read_stance(role, "Offer", "I heard my friend got the offer for a data analyst role.")
+    assert friend_story.counts_as_passed is False
+    tips = read_stance(role, "got the offer", "Here are five ways to prepare for any interview.")
+    assert tips.counts_as_passed is False
+    stored_tips = read_stance(role, "got the offer", "got the offer Here are five ways to prepare for any interview.")
+    assert stored_tips.counts_as_passed is False
+    stored_pass = read_stance(role, "got the offer", "got the offer I got the offer for a data analyst role.")
+    assert stored_pass.counts_as_passed is True
+
+
+def test_ordinary_engineering_is_not_a_course_seller() -> None:
+    passed = read_stance(
+        "Software Engineer",
+        "Offer",
+        "I use code daily. I got the offer as a software engineer.",
+    )
+    assert passed.voice == "first_hand"
+    assert passed.counts_as_passed is True
+    project = read_stance("Software Engineer", "Project", "I created a course project.")
+    assert project.voice != "course_seller"
+    assert project.counts_as_passed is False
+    for pitch in (
+        "Buy the course. I got the offer as a software engineer.",
+        "Enroll now. I got the offer as a software engineer.",
+        "Book a call. I got the offer as a software engineer.",
+        "Use this discount code. I got the offer as a software engineer.",
+    ):
+        stance = read_stance("Software Engineer", "Offer", pitch)
+        assert stance.voice == "course_seller"
+        assert stance.counts_as_passed is False
+
+
+def test_employer_match_is_a_whole_word() -> None:
+    meta = read_stance(
+        "Software Engineer",
+        "Offer",
+        "I got the offer as a software engineer working on metadata.",
+        company="Meta",
+    )
+    assert meta.employer_match is False
+    assert meta.counts_as_passed is False
+    arm = read_stance(
+        "Software Engineer",
+        "Offer",
+        "I got the offer as a software engineer and stayed warm.",
+        company="Arm",
+    )
+    assert arm.employer_match is False
+    assert arm.counts_as_passed is False
+    acme = read_stance(
+        "Software Engineer",
+        "Interview",
+        "I passed the Acme interview.",
+        company="Acme",
+    )
+    assert acme.employer_match is True
+    hired = read_stance(
+        "Software Engineer",
+        "Offer",
+        "I passed the Acme software engineer interview.",
+        company="Acme",
+    )
+    assert hired.employer_match is True
+    assert hired.counts_as_passed is True
+
+
+def _pack(session: Session, *, version: str, ready_at: datetime, expires_at: datetime, summary: str) -> InterviewIntelPack:
+    pack = InterviewIntelPack(
+        role_key="backend developer",
+        role_label="Backend Developer",
+        summary=summary,
+        source_hash=summary,
+        model="test",
+        prompt_version=version,
+        ready_at=ready_at,
+        expires_at=expires_at,
+    )
+    session.add(pack)
+    session.flush()
+    return pack
+
+
+def test_old_prompt_pack_is_not_served(session: Session) -> None:
+    old = _pack(
+        session,
+        version="interview-plan-v1",
+        ready_at=DAY_1,
+        expires_at=DAY_1 + timedelta(days=7),
+        summary="old",
+    )
+    assert fresh_pack(session, "backend developer", now=DAY_1) is None
+    applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    queued = enqueue(session, applicant_id=applicant, role="Backend Developer", now=DAY_1)
+    assert queued.status == InterviewRequestStatus.queued.value
+    assert queued.pack_id is None
+    assert old.prompt_version == "interview-plan-v1"
+
+    current = _pack(
+        session,
+        version=PROMPT_VERSION,
+        ready_at=DAY_1 - timedelta(days=1),
+        expires_at=DAY_1 + timedelta(days=7),
+        summary="current",
+    )
+    assert fresh_pack(session, "backend developer", now=DAY_1) is not None
+    assert fresh_pack(session, "backend developer", now=DAY_1).id == current.id
+    other = _applicant(session, roles=["Backend Developer"], locations=["Leeds"])
+    ready = enqueue(session, applicant_id=other, role="Backend Developer", now=DAY_1)
+    assert ready.status == InterviewRequestStatus.ready.value
+    assert ready.pack_id == current.id
+
+    current.expires_at = DAY_1
+    session.flush()
+    assert fresh_pack(session, "backend developer", now=DAY_1) is None
 
 
 def test_store_items_creates_fetch_run_payload_and_evidence(session: Session) -> None:

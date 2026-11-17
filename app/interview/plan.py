@@ -328,7 +328,11 @@ async def write_pack(
 def fresh_pack(session: Session, role_key: str, *, now: datetime) -> InterviewIntelPack | None:
     return session.scalar(
         select(InterviewIntelPack)
-        .where(InterviewIntelPack.role_key == role_key, InterviewIntelPack.expires_at > now)
+        .where(
+            InterviewIntelPack.role_key == role_key,
+            InterviewIntelPack.expires_at > now,
+            InterviewIntelPack.prompt_version == PROMPT_VERSION,
+        )
         .order_by(InterviewIntelPack.ready_at.desc())
         .limit(1)
     )

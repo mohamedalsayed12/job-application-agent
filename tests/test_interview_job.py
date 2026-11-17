@@ -15,6 +15,7 @@ from app.core.config import Settings
 from app.interview import job_pack
 from app.interview.collect import CollectReport
 from app.interview.collect import store_items
+from app.interview.plan import PROMPT_VERSION as ROLE_PROMPT_VERSION
 from app.models import (
     ApplicantJobMatch,
     BudgetPolicy,
@@ -56,7 +57,7 @@ async def test_job_pack_falls_back_without_company_stories_and_refreshes_on_adve
             summary="Practise clear examples.",
             source_hash="role-facts",
             model="test",
-            prompt_version="test",
+            prompt_version=ROLE_PROMPT_VERSION,
             ready_at=now,
             expires_at=now + timedelta(days=7),
         )
@@ -122,14 +123,24 @@ async def test_job_pack_falls_back_without_company_stories_and_refreshes_on_adve
         session, applicant_id=applicant_id, job=job, gateway=object(), settings=settings
     )
     assert again.pack is not None and again.pack.id == first.pack.id
+    assert again.pack.prompt_version == "interview-job-v2"
     assert len(prompts) == 1
+
+    again.pack.prompt_version = "interview-job-v1"
+    session.flush()
+    rebuilt = await job_pack.build_job_pack(
+        session, applicant_id=applicant_id, job=job, gateway=object(), settings=settings
+    )
+    assert rebuilt.pack is not None and rebuilt.pack.id != again.pack.id
+    assert rebuilt.pack.prompt_version == "interview-job-v2"
+    assert len(prompts) == 2
 
     job.description = "Build Python APIs and maintain CI pipelines."
     refreshed = await job_pack.build_job_pack(
         session, applicant_id=applicant_id, job=job, gateway=object(), settings=settings
     )
-    assert refreshed.pack is not None and refreshed.pack.id != first.pack.id
-    assert len(prompts) == 2
+    assert refreshed.pack is not None and refreshed.pack.id != rebuilt.pack.id
+    assert len(prompts) == 3
 
     store_items(
         session,

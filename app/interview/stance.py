@@ -1,8 +1,10 @@
 """Decide whether a public post is someone who passed this role.
 
 A success count needs all three: the writer lived it, they passed or got an offer,
-and the role is the one this pack is for. Recruiters, coaches and course sellers
-are named as what they are. A neighbouring job is adjacent, not the same role.
+and the role is the one this pack is for. The pass has to be the writer's own
+words in the post body. A friend, a title, or declining the offer does not count.
+Recruiters, coaches and course sellers are named as what they are.
+A neighbouring job is adjacent, not the same role.
 """
 
 from __future__ import annotations
@@ -19,15 +21,16 @@ _SECOND_HAND: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "course_seller",
         re.compile(
-            r"\b(my course|our course|enroll now|use (my )?code|link in bio|"
-            r"i (sell|created|launched) (a |my )?course)\b",
+            r"\b(my course|our course|buy (the |my |our )?course|enroll( now)?|"
+            r"discount code|use my code|promo code|link in bio|book a call|"
+            r"i (sell|launched) (a |my )?course|i created (a |my )?course(?!\s+project\b))\b",
             re.IGNORECASE,
         ),
     ),
     (
         "coach",
         re.compile(
-            r"\b(career coach|interview coach|i coach|my coaching|book a (call|session|1:1)|"
+            r"\b(career coach|interview coach|i coach|my coaching|book a (session|1:1)|"
             r"discovery call|i help (candidates|people|engineers|developers)( get hired| (land|get|pass)))\b",
             re.IGNORECASE,
         ),
@@ -42,17 +45,19 @@ _SECOND_HAND: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 _LIVED = re.compile(
-    r"\b(i (got|received|accepted) (an |the )?offer|got the offer|got an offer|"
-    r"they offered me|i was (rejected|offered)|i (passed|failed)|my interview|"
+    r"\b(i (got|received|accepted) (an |the )?offer|they offered me|"
+    r"i was (rejected|offered)|i (passed|failed)|my interview|"
     r"i interviewed|i got rejected)\b",
     re.IGNORECASE,
 )
+# The writer's "I" can have a few words before the offer. Stop at someone else's subject.
 _OFFER = re.compile(
-    r"\b(got the offer|got an offer|received (an |the )?offer|they offered me|"
-    r"i was offered|accepted the offer)\b",
+    r"\b(?:i\b(?:\s+(?!my\s+friend\b|she\b|he\b|they\b|someone\b|somebody\b)[\w']+\b[,;:]?){0,12}\s+"
+    r"(?:got|received|accepted)\s+(?:an |the )?offer|they offered me|i was offered)\b",
     re.IGNORECASE,
 )
-_PASSED_INTERVIEW = re.compile(r"\bi passed\b", re.IGNORECASE)
+# "passed on" is a decline, not a pass.
+_PASSED_INTERVIEW = re.compile(r"\bi passed\b(?!\s+on\b)", re.IGNORECASE)
 _INTERVIEW = re.compile(r"\binterviews?\b", re.IGNORECASE)
 
 # Neighbouring titles that must not count as each other. Aliases are the same role.
@@ -131,13 +136,15 @@ def canonical_role(role: str) -> str:
 
 
 def read_stance(role: str, title: str, snippet: str, *, company: str | None = None) -> EvidenceStance:
+    title = _SPACE.sub(" ", title).strip()
     text = _SPACE.sub(" ", f"{title}\n{snippet}").strip()
-    voice = _voice(_SPACE.sub(" ", title).strip(), text)
+    body = _writer_text(title, snippet)
+    voice = _voice(title, text, body)
     role_fit = _role_fit(canonical_role(role), text.casefold())
-    passed = voice == "first_hand" and role_fit == "same" and _passed(text)
+    passed = voice == "first_hand" and role_fit == "same" and _passed(body, text)
     employer_match = None
     if company is not None and company.strip():
-        employer_match = company.casefold().strip() in text.casefold()
+        employer_match = _phrase(_SPACE.sub(" ", company.casefold()).strip(), text.casefold())
         if employer_match is False:
             passed = False
     return EvidenceStance(
@@ -148,21 +155,31 @@ def read_stance(role: str, title: str, snippet: str, *, company: str | None = No
     )
 
 
-def _voice(title: str, text: str) -> str:
+def _writer_text(title: str, snippet: str) -> str:
+    """Drop a leading title. Stored snippets repeat it, and a title is not the writer passing."""
+    snippet = _SPACE.sub(" ", snippet).strip()
+    folded_title = title.casefold()
+    folded = snippet.casefold()
+    if folded_title and folded.startswith(folded_title):
+        return folded[len(folded_title) :].strip()
+    return snippet
+
+
+def _voice(title: str, text: str, body: str) -> str:
     """A title that already matches a second-hand pattern wins, in that pattern's order."""
     for sample in (title, text):
         for name, pattern in _SECOND_HAND:
             if pattern.search(sample):
                 return name
-    if _LIVED.search(text):
+    if _LIVED.search(body) or _OFFER.search(body):
         return "first_hand"
     return "unclear"
 
 
-def _passed(text: str) -> bool:
-    if _OFFER.search(text):
+def _passed(body: str, text: str) -> bool:
+    if _OFFER.search(body):
         return True
-    return bool(_PASSED_INTERVIEW.search(text) and _INTERVIEW.search(text))
+    return bool(_PASSED_INTERVIEW.search(body) and _INTERVIEW.search(text))
 
 
 def _role_fit(role: str, text: str) -> str:
