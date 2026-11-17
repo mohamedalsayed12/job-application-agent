@@ -118,6 +118,23 @@ def test_d43_a_file_without_readable_text_is_refused(content: bytes, file_type: 
         cv_text(content, file_type, max_chars=10_000)
 
 
+def test_d43_the_job_a_cv_is_written_for_must_appear_in_it() -> None:
+    text = "\n".join(["Data Analyst", *CV_LINES])
+    kept = grounded({**FOUND, "aimed_at": "Data Analyst"}, text)
+    invented = grounded({**FOUND, "aimed_at": "Astronaut"}, text)
+    assert kept.aimed_at == "Data Analyst"
+    assert invented.aimed_at == ""
+
+
+def test_d43_a_typed_location_and_level_stay() -> None:
+    have = _fields(locations="Leeds", experience_level="mid")
+    found = CvSuggestions(locations=["Manchester"], experience_level="senior")
+    merged, filled = fill_from_cv(have, found)
+    assert merged.locations == "Leeds"
+    assert merged.experience_level == "mid"
+    assert filled == []
+
+
 def test_d43_only_what_the_cv_says_is_kept_but_roles_may_be_inferred() -> None:
     found = grounded({**FOUND, "experience_level": "expert"}, "\n".join(CV_LINES))
     assert found.target_roles == ["Junior Python Developer", "Graduate Software Engineer"]
@@ -143,12 +160,12 @@ def test_d43_what_the_person_already_has_always_stays() -> None:
         certifications=[Certification("Full UK driving licence", "", True, ""), Certification("ITIL 4", "", False, "")],
     )
     merged, filled = fill_from_cv(have, found)
-    assert merged.target_roles == "Data Analyst"
+    assert merged.target_roles == "Data Analyst\nJunior Python Developer"
     assert merged.locations == "Manchester"
     assert merged.experience_level == "entry"
     assert merged.skills.splitlines() == ["python", "Excel", "FastAPI"]
     assert [row[0] for row in merged.certifications] == ["Full UK driving licence", "ITIL 4"]
-    assert filled == ["locations", "experience level", "1 skill", "1 certification or licence"]
+    assert filled == ["1 target role", "locations", "experience level", "1 skill", "1 certification or licence"]
 
 
 class _Claude:
@@ -262,3 +279,36 @@ async def test_d43_without_a_cv_the_fill_button_goes_back_to_the_profile(client:
     assert (await client.post("/register", data={"email": "cv@example.com", "password": PASSWORD})).status_code == 303
     response = await client.post("/profile/cv/fill")
     assert (response.status_code, response.headers["location"]) == (303, "/profile")
+
+
+async def test_d43_typed_answers_stay_and_an_empty_label_takes_the_title_in_the_cv(
+    client: httpx.AsyncClient, session: Session, claude: _Claude
+) -> None:
+    from tests.test_profile import PROFILE
+
+    _money(session, "2")
+    assert (await client.post("/register", data={"email": "cv@example.com", "password": PASSWORD})).status_code == 303
+    saved = await client.post("/profile", data={**PROFILE, "target_roles": "Data Analyst", "skills": "Excel"})
+    assert saved.status_code == 303
+    claude.payload = {**FOUND, "aimed_at": "Astronaut"}
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    first = await client.post(
+        "/profile/cv",
+        data={"label": "Nurse"},
+        files={"cv": ("cv.docx", _docx(CV_LINES), mime)},
+    )
+    assert first.status_code == 200
+    assert 'value="Nurse"' in first.text
+    assert 'value="Astronaut"' not in first.text
+    assert "Data Analyst\nJunior Python Developer\nGraduate Software Engineer</textarea>" in first.text
+    assert "Excel\nPython\nFastAPI\nPostgreSQL</textarea>" in first.text
+    assert session.scalar(select(ApplicantPreference)).target_roles == ["Data Analyst"]
+
+    claude.payload = {**FOUND, "aimed_at": "Data Analyst"}
+    second = await client.post(
+        "/profile/cv",
+        files={"cv": ("cv.docx", _docx(["Data Analyst", *CV_LINES]), mime)},
+    )
+    assert second.status_code == 200
+    assert 'value="Nurse"' in second.text
+    assert 'value="Data Analyst"' in second.text

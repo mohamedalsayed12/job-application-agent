@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.anthropic import AiCallResponse
+from app.applicants.cv import cvs_by_applicant, pick_base_cv
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
@@ -34,7 +35,7 @@ from app.matching.batches import Ask, Spend, ask_in_batches
 from app.matching.match import showable
 from app.matching.verdicts import REPORT_PROMPT_VERSION as PROMPT_VERSION
 from app.matching.verdicts import current_verdicts, digest, job_text, load_profiles
-from app.models import ApplicantPreference, CvFile, JobReport, SpendKind
+from app.models import ApplicantPreference, JobReport, SpendKind
 from app.quality.checks import JobFacts
 from app.summaries.check import unsupported
 
@@ -184,7 +185,7 @@ def load_readers(session: Session, *, cv_chars: int, applicant_ids: set[uuid.UUI
     """The profile the judge uses, plus salary wish and locations, plus the CV's text when one is uploaded."""
     profiles = load_profiles(session, applicant_ids)
     preferences = {row.applicant_id: row for row in session.scalars(select(ApplicantPreference))}
-    cvs = {row.applicant_id: row for row in session.scalars(select(CvFile).where(CvFile.applicant_id.in_(profiles)))}
+    cvs = {applicant_id: pick_base_cv(rows) for applicant_id, rows in cvs_by_applicant(session, profiles).items()}
     readers: dict[uuid.UUID, Reader] = {}
     for applicant_id, profile in profiles.items():
         preference = preferences[applicant_id]

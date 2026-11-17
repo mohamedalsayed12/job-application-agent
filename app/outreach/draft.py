@@ -15,13 +15,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai.anthropic import AiCallFailure, AiCallResponse, send_anthropic_request
+from app.applicants.cv import base_cv
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.models import (
-    CvFile,
     Job,
     OutreachChannel,
     OutreachContact,
@@ -102,7 +102,7 @@ async def draft_for_contact(
     ):
         return DraftResult(draft=existing)
 
-    cv = _cv_excerpt(session, applicant_id, settings)
+    cv = _cv_excerpt(session, applicant_id, job, settings)
     sources = _sources_text(job, contact, about, quotes, cv)
     gate = BudgetGate(session, clock=clock)
     cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_outreach, units=Decimal(1), settings=settings)
@@ -200,10 +200,10 @@ def _digest(
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def _cv_excerpt(session: Session, applicant_id: UUID, settings: Settings) -> str:
+def _cv_excerpt(session: Session, applicant_id: UUID, job: Job, settings: Settings) -> str:
     from app.models import CvFileType
 
-    cv = session.scalar(select(CvFile).where(CvFile.applicant_id == applicant_id))
+    cv = base_cv(session, applicant_id, job)
     if cv is None:
         return ""
     try:

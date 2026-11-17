@@ -262,22 +262,25 @@ async def test_t31_a_docx_is_accepted(client: httpx.AsyncClient) -> None:
     assert "wordprocessingml" in download.headers["content-type"]
 
 
-async def test_t31_a_new_upload_replaces_the_old_one(client: httpx.AsyncClient, session: Session) -> None:
+async def test_t31_a_second_upload_is_kept(client: httpx.AsyncClient, session: Session) -> None:
     await _register(client)
     await _upload(client, PDF)
     document = _docx()
     assert (await _upload(client, document, "cv.docx")).status_code == 303
-    assert _count(session, CvFile, _applicant(session).id) == 1
-    assert (await client.get("/profile/cv")).content == document
+    rows = list(session.scalars(select(CvFile).where(CvFile.applicant_id == _applicant(session).id)))
+    assert len(rows) == 2
+    assert {row.content for row in rows} == {PDF, document}
+    assert (await client.get("/profile/cv")).content == PDF
 
 
 async def test_t31_a_cv_can_be_deleted(client: httpx.AsyncClient, session: Session) -> None:
     await _register(client)
     await _upload(client, PDF)
-    assert (await client.post("/profile/cv/delete")).status_code == 303
+    cv_id = session.scalar(select(CvFile.id).where(CvFile.applicant_id == _applicant(session).id))
+    assert (await client.post(f"/profile/cv/{cv_id}/delete")).status_code == 303
     assert _count(session, CvFile, _applicant(session).id) == 0
     assert (await client.get("/profile/cv")).status_code == 404
-    assert (await client.post("/profile/cv/delete")).status_code == 303
+    assert (await client.post(f"/profile/cv/{cv_id}/delete")).status_code == 303
 
 
 async def test_t31_the_profile_page_never_loads_the_file(client: httpx.AsyncClient, session: Session) -> None:
@@ -370,8 +373,12 @@ async def test_t31_an_upload_of_unstated_size_is_refused(client: httpx.AsyncClie
 
 async def test_t31_uploads_are_limited(client: httpx.AsyncClient) -> None:
     await _register(client)
-    for _ in range(20):
+    for _ in range(10):
         assert (await _upload(client, PDF)).status_code == 303
+    for _ in range(10):
+        refused = await _upload(client, PDF)
+        assert refused.status_code == 400
+        assert "10" in refused.text
     assert (await _upload(client, PDF)).status_code == 429
 
 
@@ -409,8 +416,10 @@ async def test_t32_deleting_removes_everything_personal(
     client: httpx.AsyncClient, session: Session
 ) -> None:
     applicant = await _full_account(client, session)
+    await _upload(client, _docx())
     applicant_id = applicant.id
     models = (ApplicantPreference, ApplicantProfile, ApplicantSkill, ApplicantCertification, CvFile)
+    assert _count(session, CvFile, applicant_id) == 2
     assert all(_count(session, model, applicant_id) >= 1 for model in models)
 
     response = await client.post("/account/delete", data={"password": PASSWORD})

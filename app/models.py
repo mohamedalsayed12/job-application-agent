@@ -386,23 +386,28 @@ class ApplicantCertification(_UuidPk, Base):
 
 
 class CvFile(_UuidPk, Base):
-    """D38: the file itself lives here, loaded only when its owner downloads it."""
+    """D38, D61: one of a person's CVs. The file loads only when its content is read."""
 
     __tablename__ = "cv_file"
     __table_args__ = (
         _text_in("file_type", CvFileType),
         CheckConstraint("size_bytes BETWEEN 1 AND 5242880", name="size_bytes"),
+        Index("uq_cv_file_one_primary", "applicant_id", unique=True, postgresql_where=text("is_primary")),
     )
 
     applicant_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(),
         ForeignKey("applicant.id", ondelete="CASCADE"),
-        unique=True,
+        index=True,
     )
     content: Mapped[bytes] = mapped_column(LargeBinary(), deferred=True)
     file_type: Mapped[str] = mapped_column(Text())
     size_bytes: Mapped[int] = mapped_column(Integer())
     uploaded_at: Mapped[datetime] = mapped_column(TZ)
+    # The kind of job this CV is written for, such as "Data Analyst". It decides which CV a job gets.
+    label: Mapped[str] = mapped_column(Text(), default="", server_default=text("''"))
+    # Used for a job no label fits.
+    is_primary: Mapped[bool] = mapped_column(Boolean(), default=False, server_default=text("false"))
 
 
 class SpendLedger(_UuidPk, Base):
@@ -714,6 +719,8 @@ class TailoredCv(_UuidPk, Base):
         Uuid(), ForeignKey("company_research.id", ondelete="SET NULL")
     )
     company_research_available: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
+    # The person's CV this package was tailored from (D61).
+    cv_file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("cv_file.id", ondelete="SET NULL"))
     pdf_content: Mapped[bytes | None] = mapped_column(LargeBinary(), deferred=True)
     docx_content: Mapped[bytes | None] = mapped_column(LargeBinary(), deferred=True)
     pdf_size_bytes: Mapped[int | None] = mapped_column(Integer())
@@ -780,6 +787,8 @@ class Application(_UuidPk, Base):
     fill_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     missing_fields: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     error: Mapped[str | None] = mapped_column(Text())
+    # The person's CV the extension uploads when no tailored one is ready (D61).
+    cv_file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("cv_file.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 
