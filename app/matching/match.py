@@ -328,8 +328,13 @@ def location_fit(wanted: list[Wanted], places: list[dict[str, Any]], remote_type
             if _same_city(want, place):
                 return True, f"in {place['city']}"
         for place in places:
-            if remote_type != "remote" and place["city"] is None and _covers(place, want.country):
+            if remote_type == "remote" or not _covers(place, want.country):
+                continue
+            if place["city"] is None:
                 return True, f"anywhere in {place['country'] or place['region']}"
+            # A wish with no city is the whole country, so a named city in it still fits.
+            if not want.city:
+                return True, f"in {place['city']}"
     if remote_type == "remote":
         for want in wanted:
             if not places:
