@@ -78,11 +78,14 @@ async function fillActiveTab(applicationId) {
   }
   await inject(tab.id);
   let highlighted = "";
+  let filledAny = false;
+  let waitingForNext = false;
   // shortcut: two passes, so one Next click. Upgrade when a form has more than two steps.
   for (let pass = 0; pass < 2; pass += 1) {
     const scan = await chrome.tabs.sendMessage(tab.id, { type: "jaa-scan" });
     if (!scan?.fields?.length) {
       if (pass === 0) return { ok: false, error: "No form fields on this page." };
+      waitingForNext = true;
       break;
     }
     const planned = await api(`/extension/applications/${match.id}/plan`, {
@@ -94,7 +97,6 @@ async function fillActiveTab(applicationId) {
     const body = await planned.json();
     if (body.status === "needs_input") {
       await chrome.tabs.sendMessage(tab.id, { type: "jaa-notice", text: body.notice });
-      await reportStatus(match.id, "needs_input");
       return { ok: false, needsInput: true, error: body.notice };
     }
     const steps = body.plan?.steps || [];
@@ -117,8 +119,12 @@ async function fillActiveTab(applicationId) {
       return { ok: false, error: filled?.error || "Fill failed" };
     }
     highlighted = filled.highlighted || highlighted;
+    filledAny = true;
+    waitingForNext = Boolean(filled.advanced);
     if (!filled.advanced) break;
   }
+  if (!filledAny) return { ok: false, error: "No form fields on this page." };
+  if (waitingForNext) return { ok: false, error: "The next step is not filled yet. Click Fill again." };
   await reportStatus(match.id, "filled_awaiting_review");
   await chrome.action.setBadgeText({ text: "!" });
   await chrome.action.setBadgeBackgroundColor({ color: "#0a7" });

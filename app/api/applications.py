@@ -13,7 +13,12 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.applicants.apply_answers import AnswersRefused, save_question_answers
+from app.applicants.apply_answers import (
+    MAX_SAVED,
+    AnswersRefused,
+    SavedQuestion,
+    save_question_answers,
+)
 from app.applications.extension_device import issue_token
 from app.applications.prepare import (
     PrepareRefused,
@@ -21,6 +26,7 @@ from app.applications.prepare import (
     list_applications,
     mark_submitted,
     prepare_application,
+    store_fill_outcome,
 )
 from app.applications.ui import applied_button
 from app.core.db import get_db
@@ -162,19 +168,17 @@ async def save_missing_answers(
     if row is None or row.status != ApplicationStatus.needs_input.value:
         return RedirectResponse("/applications", status_code=_SEE_OTHER)
     form = await request.form()
-    pairs: list[tuple[str, str]] = []
+    pairs: list[SavedQuestion] = []
     index = 0
-    while f"question_{index}" in form and index < 40:
-        pairs.append((str(form.get(f"question_{index}") or ""), str(form.get(f"answer_{index}") or "")))
+    while f"question_{index}" in form and index < MAX_SAVED:
+        pairs.append(SavedQuestion(str(form.get(f"question_{index}") or ""), str(form.get(f"answer_{index}") or "")))
         index += 1
     try:
         save_question_answers(db, applicant.id, pairs)
     except AnswersRefused as exc:
         db.rollback()
         return RedirectResponse(f"/applications/{application_id}?answer_error={exc.message}", status_code=_SEE_OTHER)
-    row.status = ApplicationStatus.ready_to_fill.value
-    row.missing_fields = []
-    row.error = None
+    store_fill_outcome(row, None, reopen=True)
     db.commit()
     return RedirectResponse(f"/applications/{application_id}", status_code=_SEE_OTHER)
 

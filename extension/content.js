@@ -15,11 +15,21 @@ function ownText(el) {
 function isSubmitControl(el) {
   if (!el || el.nodeType !== 1 || el.id === "jaa-fill-notice") return false;
   const type = (el.getAttribute("type") || "").toLowerCase();
-  if (type === "submit") return true;
-  const tag = el.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return false;
-  if (!/^(BUTTON|A|DIV|SPAN)$/.test(tag)) return false;
+  if (type === "submit" || type === "image") return true;
+  if (el.tagName === "BUTTON") {
+    if (type !== "button" && type !== "reset") return true;
+    return SUBMIT_TEXT.test(ownText(el));
+  }
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return false;
+  if (!/^(A|DIV|SPAN)$/.test(el.tagName)) return false;
   return SUBMIT_TEXT.test(ownText(el));
+}
+
+function insideSubmit(el) {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    if (isSubmitControl(node)) return true;
+  }
+  return false;
 }
 
 function labelFor(el) {
@@ -60,10 +70,9 @@ function optionsFor(el) {
 
 function findNext() {
   for (const el of document.querySelectorAll("button, div, span")) {
-    if (isSubmitControl(el)) continue;
+    if (isSubmitControl(el) || insideSubmit(el) || el.id === "jaa-fill-notice") continue;
     if (el.tagName === "BUTTON" && (el.getAttribute("type") || "submit").toLowerCase() !== "button") continue;
-    const text = (el.innerText || "").replace(/\s+/g, " ").trim();
-    if (/^(next|continue)$/i.test(text)) return el;
+    if (/^(next|continue)$/i.test(ownText(el))) return el;
   }
   return null;
 }

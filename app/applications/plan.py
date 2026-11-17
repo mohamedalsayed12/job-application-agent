@@ -27,10 +27,11 @@ from app.applications.mapper import (
     matches_from_payload,
     unmatched,
 )
+from app.applications.prepare import store_fill_outcome
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.core.config import get_settings
 from app.fetch.gateway import FetchGateway
-from app.models import Applicant, Application, ApplicationStatus, CvFileType, SpendKind
+from app.models import Applicant, Application, CvFileType, SpendKind
 
 logger = logging.getLogger(__name__)
 
@@ -82,17 +83,9 @@ def _plain(content: bytes | None, file_type: str | None) -> str:
 
 def _remember(application: Application, plan: FillPlan) -> FillPlan:
     """A plan with a missing answer is stored and returned with no steps, so nothing is filled yet."""
+    store_fill_outcome(application, plan)
     if plan.missing:
-        shown = FillPlan(steps=[], missing=plan.missing, attach=plan.attach)
-        application.status = ApplicationStatus.needs_input.value
-        application.missing_fields = [question.label for question in plan.missing]
-        application.fill_plan_json = shown.to_json()
-        application.error = None
-        return shown
-    application.missing_fields = []
-    application.fill_plan_json = plan.to_json()
-    if application.status == ApplicationStatus.needs_input.value:
-        application.status = ApplicationStatus.ready_to_fill.value
+        return FillPlan(steps=[], missing=plan.missing, attach=plan.attach)
     return plan
 
 

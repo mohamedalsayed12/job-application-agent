@@ -120,7 +120,7 @@ def test_extension_fills_local_forms_and_never_submits(extension_app, tmp_path) 
                 extension_app,
             )
             page = context.pages[0] if context.pages else context.new_page()
-            for name in ("plain.html", "multi.html", "div.html"):
+            for name in ("plain.html", "multi.html", "div.html", "continue.html"):
                 page.goto(f"{extension_app}/{name}")
                 page.bring_to_front()
                 result = worker.evaluate("() => fillActiveTab()")
@@ -128,7 +128,7 @@ def test_extension_fills_local_forms_and_never_submits(extension_app, tmp_path) 
                 assert result.get("highlighted") == "submit", result
                 page.wait_for_selector("#jaa-fill-notice")
                 page.wait_for_selector("#submit[data-jaa-highlight=submit]")
-                _filled(page, email="ada@example.com", cv=name != "div.html")
+                _filled(page, email="ada@example.com", cv=name not in ("div.html", "continue.html"))
                 if name == "multi.html":
                     assert page.evaluate("() => window.__next") == 1
                     assert page.is_visible("#step2")

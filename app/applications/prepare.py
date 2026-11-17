@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.applications.mapper import FillPlan
 from app.models import Application, ApplicationStatus, Job
 
 
@@ -55,13 +56,28 @@ def prepare_application(session: Session, *, applicant_id: uuid.UUID, job_id: uu
         row = Application(applicant_id=applicant_id, job_id=job_id, apply_url=apply_url)
         session.add(row)
     row.apply_url = apply_url
-    row.status = ApplicationStatus.ready_to_fill.value
-    row.error = None
-    row.missing_fields = []
     row.schema_json = None
-    row.fill_plan_json = None
+    store_fill_outcome(row, None, reopen=True)
     session.flush()
     return row
+
+
+def store_fill_outcome(application: Application, plan: FillPlan | None, *, reopen: bool = False) -> None:
+    """Write status, missing questions, and the fill plan together. A submitted application stays submitted."""
+    if application.status == ApplicationStatus.submitted.value:
+        return
+    if plan is not None and plan.missing:
+        shown = FillPlan(steps=[], missing=plan.missing, attach=plan.attach)
+        application.status = ApplicationStatus.needs_input.value
+        application.missing_fields = [question.label for question in plan.missing]
+        application.fill_plan_json = shown.to_json()
+        application.error = None
+        return
+    if reopen or application.status != ApplicationStatus.filled_awaiting_review.value:
+        application.status = ApplicationStatus.ready_to_fill.value
+    application.missing_fields = []
+    application.fill_plan_json = plan.to_json() if plan is not None else None
+    application.error = None
 
 
 def set_application_status(

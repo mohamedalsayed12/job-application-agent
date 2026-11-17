@@ -750,7 +750,7 @@ class ApplicationAnswers(_UuidPk, Base):
     ethnicity: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     disability: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     veteran: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
-    saved_questions: Mapped[list[Any]] = mapped_column(
+    saved_questions: Mapped[list[dict[str, str]]] = mapped_column(
         JSONB(), default=list, server_default=text("'[]'::jsonb")
     )
     updated_at: Mapped[datetime] = _updated()

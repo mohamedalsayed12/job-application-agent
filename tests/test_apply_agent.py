@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -16,6 +17,8 @@ from app.api.forms import require_csrf
 from app.applicants.apply_answers import AnswersInput, save_answers
 from app.applications.extension_device import issue_token
 from app.applications.mapper import (
+    FillPlan,
+    FillStep,
     FormField,
     Match,
     build_fill_plan,
@@ -23,6 +26,7 @@ from app.applications.mapper import (
     match_answer_key,
     matches_from_payload,
 )
+from app.applications.prepare import store_fill_outcome
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
@@ -167,6 +171,35 @@ def test_an_invented_model_value_is_rejected() -> None:
     assert quoted.steps[0].source == "cv"
 
 
+def test_a_cv_quote_cannot_be_letters_inside_a_word() -> None:
+    field = _field("visa", "Do you need visa sponsorship?", "visa", "select", True, ["Yes", "No"])
+    plan = build_fill_plan(
+        [field],
+        facts_from_profile({"email": EMAIL}, []),
+        cv_text="North London knowledge and another note",
+        matches={"visa": Match(cv_quote="No")},
+    )
+    assert plan.steps == []
+    assert plan.missing[0].label == "Do you need visa sponsorship?"
+
+
+def test_a_complete_plan_reopens_a_failed_application() -> None:
+    row = Application(
+        applicant_id=uuid4(),
+        job_id=uuid4(),
+        apply_url="https://careers.example.com/jobs/1/apply",
+        status=ApplicationStatus.failed.value,
+        missing_fields=["Why"],
+        fill_plan_json={"steps": []},
+        error="nope",
+    )
+    store_fill_outcome(row, FillPlan(steps=[FillStep("f0", "fill", "Ada", "answers")], missing=[], attach=[]))
+    assert row.status == ApplicationStatus.ready_to_fill.value
+    assert row.missing_fields == []
+    assert row.error is None
+    assert row.fill_plan_json["steps"][0]["value"] == "Ada"
+
+
 async def test_prepare_readies_the_job_for_the_extension(client: httpx.AsyncClient, session: Session) -> None:
     await _register(client)
     job = _job(session)
@@ -198,7 +231,7 @@ async def test_extension_ready_cv_and_status(client: httpx.AsyncClient, session:
         job_id=job.id,
         apply_url=job.apply_url,
         status=ApplicationStatus.ready_to_fill.value,
-        fill_plan_json={"steps": [{"label": "First name", "name": "first_name", "action": "fill", "value": "Mo", "required": True}], "missing": []},
+        fill_plan_json=None,
         missing_fields=[],
     )
     session.add(app_row)
@@ -499,6 +532,7 @@ async def test_missing_answer_is_named_saved_and_reused(
     assert saved.status_code == 303
     session.refresh(row)
     assert row.status == ApplicationStatus.ready_to_fill.value
+    assert row.fill_plan_json is None
 
     again = await client.post(f"/extension/applications/{row.id}/plan", headers=headers, json=asked)
     assert again.status_code == 200

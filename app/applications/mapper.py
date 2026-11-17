@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.applicants.apply_answers import SavedQuestion, question_key
 from app.models import PREFER_NOT
 
 FieldType = Literal["text", "email", "tel", "url", "number", "date", "textarea", "select", "radio", "checkbox", "file"]
@@ -22,10 +23,6 @@ Source = Literal["answers", "saved", "account", "cv"]
 
 MAX_QUOTE = 200
 _PREFER_LABELS = ("prefer not", "decline", "do not wish", "do not want to answer", "rather not")
-_STOP_WORDS = frozenset(
-    "a about an and are as at be briefly by can could describe do does explain for from has have how i if in is it "
-    "kindly me my of on or our please s tell the this to us we what when where which who will with would you your".split()
-)
 
 
 class FormField(BaseModel):
@@ -136,7 +133,7 @@ def answer_fact_id(key: str) -> str:
     return "account:email" if key == "email" else f"answers:{key}"
 
 
-def facts_from_profile(answers: Mapping[str, object], saved: list[tuple[str, str]]) -> list[Fact]:
+def facts_from_profile(answers: Mapping[str, object], saved: list[SavedQuestion]) -> list[Fact]:
     facts: list[Fact] = []
     for key, raw in answers.items():
         if raw is None or key == "cv" or raw == "":
@@ -144,8 +141,8 @@ def facts_from_profile(answers: Mapping[str, object], saved: list[tuple[str, str
         value = {True: "Yes", False: "No"}.get(raw, str(raw))
         source: Source = "account" if key == "email" else "answers"
         facts.append(Fact(answer_fact_id(key), key.replace("_", " "), value, source))
-    for question, answer in saved:
-        cleaned_question, cleaned_answer = question.strip(), answer.strip()
+    for item in saved:
+        cleaned_question, cleaned_answer = item.question.strip(), item.answer.strip()
         if cleaned_question and cleaned_answer:
             facts.append(Fact(f"saved:{question_key(cleaned_question)}", cleaned_question, cleaned_answer, "saved"))
     return facts
@@ -170,13 +167,6 @@ def matches_from_payload(payload: Mapping[str, object]) -> dict[str, Match]:
             cv_quote=quote if isinstance(quote, str) else "",
         )
     return found
-
-
-def question_key(text: str) -> str:
-    """The same question in other words, punctuation or order gets the same key."""
-    words = re.findall(r"[a-z0-9]+", text.casefold())
-    content = sorted({word for word in words if word not in _STOP_WORDS})
-    return " ".join(content or words)
 
 
 def _norm(text: str) -> str:
@@ -218,12 +208,19 @@ def _known(form_field: FormField, facts: Mapping[str, Fact], saved: Mapping[str,
 
 
 def _cv_span(quote: str, cv_text: str) -> str | None:
-    """The quote as the CV writes it, when the CV has it word for word."""
+    """The quote as the CV writes it, when it is its own span and not letters inside a longer word."""
     quote = " ".join(quote.split())
     if not quote or len(quote) > MAX_QUOTE:
         return None
-    found = re.search(re.escape(quote), " ".join(cv_text.split()), re.IGNORECASE)
-    return found.group(0) if found else None
+    hay = " ".join(cv_text.split())
+    found = re.search(re.escape(quote), hay, re.IGNORECASE)
+    if found is None:
+        return None
+    before = hay[found.start() - 1] if found.start() else ""
+    after = hay[found.end()] if found.end() < len(hay) else ""
+    if (before and before.isalnum()) or (after and after.isalnum()):
+        return None
+    return found.group(0)
 
 
 def _grounded(form_field: FormField, match: Match | None, facts: Mapping[str, Fact], cv_text: str) -> tuple[str, Source] | None:
