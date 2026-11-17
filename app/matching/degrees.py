@@ -56,14 +56,18 @@ _DEGREE = re.compile(
     r"(?!\s+(?:Office|Excel|Word|Teams|Project|SQL|Access|Dynamics|Azure|Visio|PowerPoint|Outlook)\b)"
 )
 _SENTENCE_BREAK = re.compile(r"[!?;]\s|(?<!\be\.g)(?<!\bi\.e)\.\s")
-_NOT_A_QUALIFICATION = re.compile(r"\s+of\b", re.IGNORECASE)
+# "A high degree of skill", and a "degree apprenticeship", which is the job itself.
+_NOT_A_QUALIFICATION = re.compile(r"\s+(?:of|apprentice\w*)\b", re.IGNORECASE)
+# The degree the job leads to, or one that rules applicants out, is not one they must hold.
+_AWARDED_BEFORE = re.compile(r"\byou(?:'ll| will) (?:be awarded|gain|earn|receive)\b", re.IGNORECASE)
+_EXCLUDED_AFTER = re.compile(r"\b(?:not eligible|ineligible)\b", re.IGNORECASE)
 _OPTIONAL = re.compile(
     r"\b(?:prefer\w*|desirable|nice to have|bonus|a plus|advantage\w*|ideally|beneficial|"
     r"or equivalent|equivalent (?:\w+ )?experience|in lieu|instead of a degree|"
     r"experience (?:can|may|will|could) (?:replace|substitute)|or (?:a )?portfolio|bootcamp|self[- ]taught|"
     r"compelling narrative|alternative (?:chosen )?path|not (?:required|essential|necessary)|"
     r"no degree|don'?t need|do not need|doesn'?t need|regardless of|do not ask|don'?t ask|no formal|"
-    r"(?:level \d|qualification|apprenticeship|diploma|training|experience)\s+or)\b",
+    r"(?:level \d|qualification|apprenticeship|diploma|training|experience)\s+\(?or|or \d+\+? (?:years?|yrs?))\b",
     re.IGNORECASE,
 )
 # Experience offered after the degree can stand in for it, so the job stays (D45). Before the degree,
@@ -76,7 +80,7 @@ _EXPERIENCE_INSTEAD = re.compile(
 _STOP = re.compile(
     r"\b(?:experience\w*|skills?|knowledge|ability|proven|drive|track record|fluen\w*|minimum|certifications?|"
     r"you|we|what|with|plus|including|from|where|who|which|that|is|are|will|must|strong|excellent|and \d|"
-    r"a good level)\b|[!?;]|(?<!\be\.g)(?<!\bi\.e)\.(?=\s)",
+    r"a good level|a-levels?|gcses?)\b|[!?;•]|(?<!\be\.g)(?<!\bi\.e)\.(?=\s)",
     re.IGNORECASE,
 )
 _WORDS_BEFORE = re.compile(r"(?:[\w'-]+\W+){0,3}$")
@@ -113,7 +117,14 @@ def required_fields(description: str | None) -> list[frozenset[str]]:
         lead_in = text[max(0, match.start() - _OPTIONAL_BEFORE) : match.start()]
         lead_in = lead_in[max((brk.end() for brk in _SENTENCE_BREAK.finditer(lead_in)), default=0) :]
         follow_on = text[match.end() : match.end() + _OPTIONAL_AFTER]
-        if _OPTIONAL.search(lead_in) or _OPTIONAL.search(follow_on) or _EXPERIENCE_INSTEAD.search(follow_on):
+        sentence_on = follow_on[: next((brk.start() for brk in _SENTENCE_BREAK.finditer(follow_on)), None)]
+        if (
+            _OPTIONAL.search(lead_in)
+            or _OPTIONAL.search(follow_on)
+            or _EXPERIENCE_INSTEAD.search(follow_on)
+            or _AWARDED_BEFORE.search(lead_in)
+            or _EXCLUDED_AFTER.search(sentence_on)
+        ):
             continue
         if fields := fields_of(f"{before}{match.group()}{after}"):
             required.append(fields)

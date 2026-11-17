@@ -40,6 +40,10 @@ FILLER = "Build and run backend services in Python for our payments platform. " 
         ("Degree in Computer Science and strong technical skills.", [frozenset({Field.computing})]),
         ("Degree in Computer Engineering or a related field Introductory experience with embedded C",
          [frozenset({Field.computing, Field.engineering})]),
+        ("You will have gained or be on track to achieve a bachelor’s degree in a STEM Subject.", [STEM]),
+        (("About the candidate: A minimum 2.1 degree in Computer Science, Software Engineering or a related subject "
+          "An understanding of Agile software delivery"), [frozenset({Field.computing, Field.engineering})]),
+        ("Degree in Mathematics • AAA at A-level", [frozenset({Field.maths})]),
     ],
 )
 def test_d45_a_required_subject_is_read_from_the_advert(advert: str, fields: list[frozenset[str]]) -> None:
@@ -68,6 +72,19 @@ def test_d45_a_required_subject_is_read_from_the_advert(advert: str, fields: lis
         "Degree in Computer Science; experience can replace this.",
         "Computer Science degree, or a portfolio of work that shows your ability.",
         "A computer science or engineering degree, or similar technical experience.",
+        ("As this role is a funded Degree Apprenticeship, applicants who have already completed a degree in Software "
+         "Engineering, Data Science, or a closely related discipline are not eligible, in line with apprenticeship rules."),
+        ("On successful completion of the 3-year apprenticeship you will gain a L6 Bachelors Degree in Digital & "
+         "Technology Solutions Professional."),
+        ("On successful completion of the apprenticeship, you will be awarded with an Undergraduate Degree (Bachelor of "
+         "Science with Honours) in Digital and Technology Solutions Professional (Software Engineer pathway)."),
+        "For more on what you will study, please see the Software Engineering degree apprenticeship standard.",
+        ("Requirements • 2:1 or above at degree level • AAA at A-level (A in Maths) International equivalents are "
+         "accepted."),
+        "As a Digital & Technology Solutions Degree Apprentice, you’ll dive into coding.",
+        ("Must Have: A bachelor's degree in Computer Science or a related field, or 2+ years of relevant full-time "
+         "software engineering experience."),
+        "Professional software engineering experience (or a CS degree with internship experience for graduate roles)",
     ],
 )
 def test_d45_optional_or_subjectless_degrees_require_nothing(advert: str) -> None:
