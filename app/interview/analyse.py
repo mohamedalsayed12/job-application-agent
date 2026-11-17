@@ -12,13 +12,12 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallFailure, AiCallResponse, send_anthropic_request
+from app.ai.anthropic import INTERVIEW_TIMEOUT_S, AiCallFailure, AiCallResponse, send_anthropic_request
 from app.ai.injection import looks_like_injection
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.interview.plan import AI_TIMEOUT_S
 from app.interview.stance import read_stance
 from app.models import InterviewEvidence, InterviewOutcome, SpendKind
 
@@ -98,6 +97,7 @@ async def analyse_evidence(
     settings: Settings,
     persist: Callable[[], None],
     now: datetime,
+    role: str | None = None,
 ) -> AnalyseReport:
     report = AnalyseReport()
     rows = list(
@@ -155,7 +155,7 @@ async def analyse_evidence(
             build_body(batch, model=model, max_tokens=settings.interview_analyse_max_output_tokens),
             api_key=api_key,
             fallback_model=model,
-            timeout_s=AI_TIMEOUT_S,
+            timeout_s=INTERVIEW_TIMEOUT_S,
         )
         if isinstance(answer, AiCallFailure):
             gate.settle(reservation, actual_cost=Decimal("0"))
@@ -164,7 +164,7 @@ async def analyse_evidence(
             break
         share_prompt = answer.prompt_tokens // max(len(batch), 1)
         share_completion = answer.completion_tokens // max(len(batch), 1)
-        _apply(batch, answer, prompt_tokens=share_prompt, completion_tokens=share_completion)
+        _apply(batch, answer, prompt_tokens=share_prompt, completion_tokens=share_completion, role=role)
         used += answer.prompt_tokens + answer.completion_tokens
         report.labelled += len(batch)
         report.cost += cost
@@ -179,6 +179,7 @@ def _apply(
     *,
     prompt_tokens: int,
     completion_tokens: int,
+    role: str | None = None,
 ) -> None:
     by_id = {str(row.id): row for row in batch}
     for raw in answer.payload.get("items") or []:
@@ -190,15 +191,10 @@ def _apply(
         outcome = raw.get("outcome")
         if outcome not in OUTCOMES:
             outcome = InterviewOutcome.unclear.value
-        stance = read_stance(row.role_key, row.title, row.snippet)
-        if outcome == InterviewOutcome.success.value and not stance.counts_as_passed:
-            outcome = InterviewOutcome.unclear.value
+        stance = read_stance(role or row.role_key, row.title, row.snippet)
+        outcome = stance.outcome_for(outcome)
         row.outcome = outcome
-        reasons = _strings(raw.get("reasons"))
-        note = stance.note()
-        if note and note not in reasons:
-            reasons = [note, *reasons][:8]
-        row.reasons = reasons
+        row.reasons = stance.reasons_with_note(_strings(raw.get("reasons")))
         row.methods = _strings(raw.get("methods"))
         row.materials = _strings(raw.get("materials"))
         row.labelled = True

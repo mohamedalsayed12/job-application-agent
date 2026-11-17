@@ -12,7 +12,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallFailure, send_anthropic_request
+from app.ai.anthropic import INTERVIEW_TIMEOUT_S, AiCallFailure, send_anthropic_request
 from app.ai.injection import looks_like_injection
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
@@ -22,7 +22,7 @@ from app.interview.analyse import analyse_evidence
 from app.interview.check import ground_pack
 from app.interview.collect import collect_for_role
 from app.interview.normalize import queries_for_company
-from app.interview.plan import AI_TIMEOUT_S, PACK_SCHEMA, evidence_payload, fresh_pack, shape_pack, usable_evidence
+from app.interview.plan import PACK_SCHEMA, evidence_payload, fresh_pack, shape_pack, usable_evidence
 from app.interview.roles import role_key
 from app.matching.verdicts import job_text
 from app.models import (
@@ -146,6 +146,7 @@ async def build_job_pack(
         analysed = await analyse_evidence(
             session,
             role_key=key,
+            role=role,
             gateway=gateway,
             settings=settings,
             persist=session.commit,
@@ -181,7 +182,7 @@ async def build_job_pack(
     if int(used or 0) + estimate_tokens > settings.interview_plan_daily_token_cap:
         return JobPackResult(stopped_by="daily token cap")
 
-    evidence = evidence_payload(rows, company=job.company_name)
+    evidence = evidence_payload(rows, company=job.company_name, role=role)
     data = {
         "role_pack": {
             "summary": role_pack.summary,
@@ -229,7 +230,7 @@ async def build_job_pack(
         body,
         api_key=settings.anthropic_api_key.strip(),
         fallback_model=model,
-        timeout_s=AI_TIMEOUT_S,
+        timeout_s=INTERVIEW_TIMEOUT_S,
     )
     if isinstance(answer, AiCallFailure):
         gate.settle(reservation, actual_cost=Decimal(0))
@@ -243,6 +244,7 @@ async def build_job_pack(
         [*role_rows, *rows],
         company=job.company_name,
         company_urls={row.url for row in rows},
+        role=role,
     )
     texts = {row.url: f"{row.title}\n{row.snippet}" for row in [*role_rows, *rows]}
     if ground_pack(payload, urls, texts):

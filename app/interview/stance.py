@@ -72,6 +72,7 @@ _VOICE_NOTE = {
     "course_seller": "Course seller, not a person who passed.",
 }
 ADJACENT_NOTE = "Adjacent role, not this role."
+NOT_FIRST_HAND = "Not a first-hand account."
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +94,36 @@ class EvidenceStance:
             parts.append("Different employer.")
         return " ".join(parts)
 
+    def outcome_for(self, outcome: str) -> str:
+        """A model success counts only when this post is someone who passed this role."""
+        if outcome == "success" and not self.counts_as_passed:
+            return "unclear"
+        return outcome
+
+    def reasons_with_note(self, reasons: list[str]) -> list[str]:
+        note = self.note()
+        if note and note not in reasons:
+            reasons = [note, *reasons]
+        return reasons[:8]
+
+    @staticmethod
+    def reader_label(cited: list[EvidenceStance], detail: str = "") -> str:
+        """Reader-facing label for a theme. Kept beside detail, never inside it."""
+        notes: list[str] = []
+        for stance in cited:
+            note = stance.note()
+            if note and note not in notes and note not in detail:
+                notes.append(note)
+        if cited and all(stance.voice == "unclear" for stance in cited) and NOT_FIRST_HAND not in detail:
+            if NOT_FIRST_HAND not in notes:
+                notes.append(NOT_FIRST_HAND)
+        return " ".join(notes)
+
+    @staticmethod
+    def success_earned(cited: list[EvidenceStance | None]) -> bool:
+        """A success theme stands only when every cite is a post that counts."""
+        return bool(cited) and all(item is not None and item.counts_as_passed for item in cited)
+
 
 def canonical_role(role: str) -> str:
     stripped = _LEVEL.sub(" ", role.casefold())
@@ -100,15 +131,8 @@ def canonical_role(role: str) -> str:
 
 
 def read_stance(role: str, title: str, snippet: str, *, company: str | None = None) -> EvidenceStance:
-    if role.startswith("company:"):
-        pieces = role.split(":", 2)
-        if len(pieces) == 3:
-            role = pieces[2]
     text = _SPACE.sub(" ", f"{title}\n{snippet}").strip()
-    if re.search(r"\bex[- ][a-z]+ recruiter\b", title, re.IGNORECASE):
-        voice = "recruiter"
-    else:
-        voice = _voice(text)
+    voice = _voice(_SPACE.sub(" ", title).strip(), text)
     role_fit = _role_fit(canonical_role(role), text.casefold())
     passed = voice == "first_hand" and role_fit == "same" and _passed(text)
     employer_match = None
@@ -124,10 +148,12 @@ def read_stance(role: str, title: str, snippet: str, *, company: str | None = No
     )
 
 
-def _voice(text: str) -> str:
-    for name, pattern in _SECOND_HAND:
-        if pattern.search(text):
-            return name
+def _voice(title: str, text: str) -> str:
+    """A title that already matches a second-hand pattern wins, in that pattern's order."""
+    for sample in (title, text):
+        for name, pattern in _SECOND_HAND:
+            if pattern.search(sample):
+                return name
     if _LIVED.search(text):
         return "first_hand"
     return "unclear"

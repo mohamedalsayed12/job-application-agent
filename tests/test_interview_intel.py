@@ -14,9 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.accounts import throttle
+from app.ai.anthropic import INTERVIEW_TIMEOUT_S, send_anthropic_request
 from app.api.forms import require_csrf
 from app.core.config import Settings, get_settings
 from app.core.db import get_db
+from app.fetch.gateway import FetchRefusal
 from app.interview.check import ground_pack
 from app.interview.collect import collect_for_role, store_items
 from app.interview.normalize import normalize_item, queries_for
@@ -138,6 +140,22 @@ class _MultiApify(_Apify):
         if path.startswith("/v2/datasets/") and path.endswith("/items"):
             return httpx.Response(200, json=getattr(self, "_pending_items", []))
         return httpx.Response(404, json={"error": "unexpected"})
+
+
+async def test_shared_ai_timeout_stays_at_ten_seconds() -> None:
+    seen: list[float] = []
+
+    class _Gateway:
+        async def fetch(self, request):
+            seen.append(request.timeout_s)
+            return FetchRefusal(reason="timeout")
+
+    gateway = _Gateway()
+    await send_anthropic_request(gateway, {"model": "m"}, api_key="k", fallback_model="m")
+    await send_anthropic_request(
+        gateway, {"model": "m"}, api_key="k", fallback_model="m", timeout_s=INTERVIEW_TIMEOUT_S
+    )
+    assert seen == [10.0, INTERVIEW_TIMEOUT_S]
 
 
 def test_role_key_collapses_case_and_space() -> None:
@@ -274,6 +292,18 @@ def test_success_themes_count_only_someone_who_passed_this_role(session: Session
         "Apply for a FREE discovery call. I help software engineers get hired.",
     )
     assert mentor.voice == "coach" and mentor.counts_as_passed is False
+    titled = read_stance(
+        "Graduate Software Engineer",
+        "Ex-Google recruiter career coach on getting hired",
+        "I am a recruiter.",
+    )
+    assert titled.voice == "coach"
+    cached = read_stance(
+        "company:acme:backend developer",
+        "Offer",
+        "I got the offer as a backend developer at Acme.",
+    )
+    assert cached.role_fit == "adjacent"
     pack = pack_from_payload_for_tests(
         session,
         role="Data Analyst",
@@ -299,12 +329,17 @@ def test_success_themes_count_only_someone_who_passed_this_role(session: Session
     )
     assert isinstance(pack, InterviewIntelPack)
     assert [theme["theme"] for theme in pack.success_themes] == ["Take-home"]
+    assert pack.success_themes[0]["detail"] == 'The writer said "I got the offer for a data analyst role"'
+    assert "label" not in pack.success_themes[0]
     neighbour = next(theme for theme in pack.differentiators if theme["theme"] == "Neighbour")
     seller = next(theme for theme in pack.differentiators if theme["theme"] == "Seller")
-    assert neighbour["detail"].startswith("Adjacent role, not this role.")
-    assert seller["detail"].startswith("Coach, not a person who passed.")
+    assert neighbour["label"] == "Adjacent role, not this role."
+    assert neighbour["detail"] == "another job"
+    assert seller["label"] == "Coach, not a person who passed."
+    assert seller["detail"] == "a pitch"
     generic = next(theme for theme in pack.failure_themes if theme["theme"] == "Generic")
-    assert generic["detail"].startswith("Not a first-hand account.")
+    assert generic["label"] == "Not a first-hand account."
+    assert generic["detail"] == "a tip with no writer"
 
     invented = pack_from_payload_for_tests(
         session,

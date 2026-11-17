@@ -134,7 +134,13 @@ async def test_job_pack_falls_back_without_company_stories_and_refreshes_on_adve
     store_items(
         session,
         InterviewPlatform.reddit,
-        [{"url": "https://reddit.com/r/jobs/981", "title": "Acme interview", "body": "I passed the Acme interview."}],
+        [
+            {
+                "url": "https://reddit.com/r/jobs/981",
+                "title": "Acme interview",
+                "body": "I got the offer as a backend developer at Acme.",
+            }
+        ],
         role_key="company:acme:backend developer",
         started_at=now,
         finished_at=now,
@@ -150,3 +156,5 @@ async def test_job_pack_falls_back_without_company_stories_and_refreshes_on_adve
     assert with_story.pack is not None and with_story.pack.id != refreshed.pack.id
     company_data = json.loads(prompts[-1]["messages"][0]["content"].split("\n", 1)[1].rsplit("\n", 1)[0])
     assert company_data["company_interview_stories"][0]["url"] == story.url
+    assert company_data["company_interview_stories"][0]["role_fit"] == "same"
+    assert company_data["company_interview_stories"][0]["counts_as_passed"] is True

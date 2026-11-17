@@ -14,6 +14,9 @@ from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchRes
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2026-10-21"
+# The fetch gateway's 10s default aborted interview labelling and pack synthesis.
+# Callers pass this. Leaving timeout_s unset keeps every other model call at 10s.
+INTERVIEW_TIMEOUT_S = 30.0
 
 
 @dataclass(frozen=True, slots=True)

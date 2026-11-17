@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallFailure, AiCallResponse, send_anthropic_request
+from app.ai.anthropic import INTERVIEW_TIMEOUT_S, AiCallFailure, AiCallResponse, send_anthropic_request
 from app.ai.injection import looks_like_injection
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
@@ -24,8 +24,6 @@ from app.interview.stance import EvidenceStance, read_stance
 from app.models import InterviewEvidence, InterviewIntelPack, SpendKind
 
 PROMPT_VERSION = "interview-plan-v2"
-# The fetch gateway caps a call at 30s. Its 10s default aborted pack synthesis.
-AI_TIMEOUT_S = 30.0
 _THEME = {
     "type": "object",
     "additionalProperties": False,
@@ -113,14 +111,18 @@ def tokens_used_today(session: Session, now: datetime) -> int:
     return int(used or 0)
 
 
-def _stance_for(row: InterviewEvidence, *, company: str | None = None) -> EvidenceStance:
-    return read_stance(row.role_key, row.title, row.snippet, company=company)
+def _stance_for(
+    row: InterviewEvidence, *, company: str | None = None, role: str | None = None
+) -> EvidenceStance:
+    return read_stance(role or row.role_key, row.title, row.snippet, company=company)
 
 
-def evidence_payload(rows: list[InterviewEvidence], *, company: str | None = None) -> list[dict[str, Any]]:
+def evidence_payload(
+    rows: list[InterviewEvidence], *, company: str | None = None, role: str | None = None
+) -> list[dict[str, Any]]:
     payload = []
     for row in rows:
-        stance = _stance_for(row, company=company)
+        stance = _stance_for(row, company=company, role=role)
         payload.append(
             {
                 "url": row.url,
@@ -145,13 +147,16 @@ def shape_pack(
     *,
     company: str | None = None,
     company_urls: set[str] | None = None,
+    role: str | None = None,
 ) -> dict[str, Any]:
     """Drop success claims that are not a first-hand pass for this role, and label the rest."""
     company_norms = {_norm(url) for url in (company_urls or set())}
     stances: dict[str, EvidenceStance] = {}
     for row in rows:
         is_company = _norm(row.url) in company_norms
-        stances[_norm(row.url)] = _stance_for(row, company=company if is_company else None)
+        stances[_norm(row.url)] = _stance_for(
+            row, company=company if is_company else None, role=role
+        )
     shaped = dict(payload)
     for section in ("success_themes", "failure_themes", "differentiators"):
         kept: list[Any] = []
@@ -162,8 +167,12 @@ def shape_pack(
             theme = dict(theme)
             cites = [cite for cite in theme.get("cites") or [] if isinstance(cite, str)]
             cited = [stances[key] for cite in cites if (key := _norm(cite)) in stances]
-            theme["detail"] = _with_note(str(theme.get("detail") or ""), cited)
-            if section == "success_themes" and not _earned(cites, stances):
+            resolved = [stances.get(_norm(cite)) for cite in cites]
+            detail = str(theme.get("detail") or "")
+            label = EvidenceStance.reader_label(cited, detail)
+            if label:
+                theme["label"] = label
+            if section == "success_themes" and not EvidenceStance.success_earned(resolved):
                 continue
             kept.append(theme)
         shaped[section] = kept
@@ -173,28 +182,6 @@ def shape_pack(
         if note not in summary:
             shaped["summary"] = f"{summary} {note}".strip()
     return shaped
-
-
-_reject = EvidenceStance(voice="unclear", role_fit="other", counts_as_passed=False)
-
-
-def _earned(cites: list[str], stances: dict[str, EvidenceStance]) -> bool:
-    return bool(cites) and all(stances.get(_norm(cite), _reject).counts_as_passed for cite in cites)
-
-
-def _with_note(detail: str, cited: list[EvidenceStance]) -> str:
-    notes: list[str] = []
-    for stance in cited:
-        note = stance.note()
-        if note and note not in notes and note not in detail:
-            notes.append(note)
-    if cited and all(stance.voice == "unclear" for stance in cited):
-        plain = "Not a first-hand account."
-        if plain not in detail and plain not in notes:
-            notes.append(plain)
-    if not notes:
-        return detail
-    return f"{' '.join(notes)} {detail}".strip()
 
 
 def build_body(role: str, rows: list[InterviewEvidence], *, model: str, max_tokens: int) -> dict:
@@ -285,7 +272,7 @@ async def write_pack(
             return report
         persist()
         result = await send_anthropic_request(
-            gateway, body, api_key=api_key, fallback_model=model, timeout_s=AI_TIMEOUT_S
+            gateway, body, api_key=api_key, fallback_model=model, timeout_s=INTERVIEW_TIMEOUT_S
         )
         if isinstance(result, AiCallFailure):
             gate.settle(reservation, actual_cost=Decimal("0"))
