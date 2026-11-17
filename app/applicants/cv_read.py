@@ -178,7 +178,9 @@ def grounded(payload: dict, text: str) -> CvSuggestions:
     haystack = _key(text)
 
     def in_cv(value: str) -> bool:
-        return _key(value) in haystack
+        needle = _key(value)
+        # Its own word or phrase. "it" sits inside "with".
+        return bool(needle) and re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack) is not None
 
     certifications = []
     for item in payload.get("certifications") or []:

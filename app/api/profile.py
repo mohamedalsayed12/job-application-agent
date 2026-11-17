@@ -167,16 +167,17 @@ def _size_text(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes >= 1024 * 1024 else f"{max(size_bytes // 1024, 1)} KB"
 
 
-def _cv_row(request: Request, cv: CvFile) -> str:
-    checked = " checked" if cv.is_primary else ""
+def _cv_row(request: Request, cv: CvFile, *, label: str | None = None, checked: bool | None = None) -> str:
+    shown = cv.label if label is None else label
+    mark = " checked" if (cv.is_primary if checked is None else checked) else ""
     accept = ".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return f"""
 <div class="cv-current">
   <span>
     <input form="profile-form" type="hidden" name="cv_id" value="{cv.id}"/>
     <input form="profile-form" name="cv_label" aria-label="Job this CV is for" placeholder="Job this CV is for"
-      value="{html.escape(cv.label)}"/>
-    <label><input form="profile-form" type="radio" name="cv_primary" value="{cv.id}"{checked}/> Primary</label>
+      value="{html.escape(shown)}"/>
+    <label><input form="profile-form" type="radio" name="cv_primary" value="{cv.id}"{mark}/> Primary</label>
     <a href="/profile/cv/{cv.id}">cv.{html.escape(cv.file_type)}</a>, {_size_text(cv.size_bytes)},
     uploaded {cv.uploaded_at:%d %B %Y}.
   </span>
@@ -193,9 +194,25 @@ def _cv_row(request: Request, cv: CvFile) -> str:
 """
 
 
-def _cv_section(request: Request, cvs: list[CvFile], error: str | None) -> str:
+def _cv_section(request: Request, cvs: list[CvFile], error: str | None, fields: ProfileFields | None = None) -> str:
     message = f'<p class="error">{html.escape(error)}</p>' if error else ""
-    listed = "".join(_cv_row(request, cv) for cv in cvs)
+    # A failed save still has the labels just typed. The database copy is the one that was rolled back.
+    # A page built from the database leaves these as form markers, not a submitted list.
+    submitted = (
+        dict(zip(fields.cv_id, fields.cv_label, strict=False))
+        if fields is not None and isinstance(fields.cv_id, list) and fields.cv_id
+        else {}
+    )
+    chosen = fields.cv_primary if submitted and fields is not None and isinstance(fields.cv_primary, str) else None
+    listed = "".join(
+        _cv_row(
+            request,
+            cv,
+            label=submitted[str(cv.id)] if str(cv.id) in submitted else None,
+            checked=str(cv.id) == chosen if submitted else None,
+        )
+        for cv in cvs
+    )
     hint = (
         f"You can keep up to {MAX_CVS}. Delete one before uploading another."
         if len(cvs) >= MAX_CVS
@@ -332,7 +349,7 @@ def _profile_page(
     </table></div>
   </section>
 </form>
-{_cv_section(request, cvs_of(db, applicant.id), cv_error)}
+{_cv_section(request, cvs_of(db, applicant.id), cv_error, fields)}
 {interview_card(request, [line.strip() for line in fields.target_roles.splitlines() if line.strip()])}
 <div class="form-foot">
   <a class="button danger" href="/account#delete">Delete my account and data</a>

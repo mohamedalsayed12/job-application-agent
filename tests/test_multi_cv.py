@@ -82,6 +82,21 @@ def test_business_development_does_not_beat_the_primary_for_a_backend_engineer_j
     assert pick_base_cv([primary, developer], title="Backend Engineer", advert="Build HTTP services") is developer
 
 
+def test_a_stop_word_or_data_in_the_advert_does_not_beat_the_primary() -> None:
+    older = datetime(2026, 1, 1, tzinfo=UTC)
+    newer = datetime(2026, 6, 1, tzinfo=UTC)
+    primary = _choice("Product Manager", True, older)
+    support = _choice("IT Support", False, newer)
+    analyst = _choice("Data Analyst", False, newer)
+    assert pick_base_cv([support, primary], title="Staff Nurse", advert="It is a ward-based role") is primary
+    assert pick_base_cv([analyst, primary], title="Staff Nurse", advert="Record patient data on the ward") is primary
+    assert pick_base_cv([support, primary], title="IT Support", advert="Password resets") is support
+    nurse = _choice("Nurse", False, newer)
+    backend = _choice("Backend Engineer", False, newer)
+    assert pick_base_cv([nurse, primary], title="Ward Sister", advert="You will work as a nurse") is nurse
+    assert pick_base_cv([backend, primary], title="Site Reliability", advert="Build backend services") is backend
+
+
 def test_a_different_cv_changes_the_tailored_package_hash() -> None:
     posting = "Backend Engineer. Build HTTP services."
     assert package_hash(posting=posting, cv_bytes=PDF_A) != package_hash(posting=posting, cv_bytes=PDF_B)
@@ -273,3 +288,32 @@ async def test_a_non_numeric_cv_id_does_not_save(client: httpx.AsyncClient, sess
     preference = session.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == person.id))
     assert preference is not None
     assert preference.target_roles == ["Backend Developer", "Software Engineer"]
+
+
+async def test_a_failed_save_redisplays_the_submitted_cv_label(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    await _upload(client, PDF)
+    await _upload(client, _docx(), "cv.docx")
+    person = _applicant(session)
+    rows = list(session.scalars(select(CvFile).where(CvFile.applicant_id == person.id).order_by(CvFile.uploaded_at)))
+    first, second = rows
+    response = await client.post(
+        "/profile",
+        data={
+            **PROFILE,
+            "salary_amount": "nope",
+            "cv_id": [str(first.id), str(second.id)],
+            "cv_label": ["Ward Nurse", "Data Analyst"],
+            "cv_primary": str(second.id),
+        },
+    )
+    assert response.status_code == 400
+    assert 'value="Ward Nurse"' in response.text
+    assert 'value="Data Analyst"' in response.text
+    assert f'name="cv_primary" value="{second.id}" checked' in response.text
+    assert f'name="cv_primary" value="{first.id}" checked' not in response.text
+    session.expire_all()
+    assert session.get(CvFile, first.id).label == ""
+    assert session.get(CvFile, first.id).is_primary is True
+    assert session.get(CvFile, second.id).label == ""
+    assert session.get(CvFile, second.id).is_primary is False

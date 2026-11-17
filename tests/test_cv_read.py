@@ -124,6 +124,10 @@ def test_d43_the_job_a_cv_is_written_for_must_appear_in_it() -> None:
     invented = grounded({**FOUND, "aimed_at": "Astronaut"}, text)
     assert kept.aimed_at == "Data Analyst"
     assert invented.aimed_at == ""
+    inside = grounded({**FOUND, "aimed_at": "IT"}, "Worked with ward teams")
+    own_word = grounded({**FOUND, "aimed_at": "IT"}, "IT Support\nWorked with ward teams")
+    assert inside.aimed_at == ""
+    assert own_word.aimed_at == "IT"
 
 
 def test_d43_a_typed_location_and_level_stay() -> None:

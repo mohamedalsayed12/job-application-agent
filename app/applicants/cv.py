@@ -194,10 +194,14 @@ _SPELLINGS = (
     (re.compile(r"\bfront[- ]end\b"), "frontend"),
     (re.compile(r"\bfull[- ]stack\b"), "fullstack"),
 )
-# Words that say the level or nothing at all, so they never decide which CV a job gets.
+# Level words, closed-class words, and "data". "data" turns up in other jobs (patient data) and is not that job.
+# shortcut: a one- or two-letter token is never a match (it, Go, C#), upgrade when a label is only that name.
 _NOT_THE_JOB = frozenset(
     "graduate grad new junior jr entry level early career careers senior snr sr staff principal lead "
-    "trainee programme program scheme role cv resume and of the for in to a an with at".split()
+    "trainee programme program scheme role cv resume and of the for in to a an with at on by or as from "
+    "into over than then but not nor it is you our be are was were been being we they them their your "
+    "my he she his her its this that these those who what when where which how will can may must have "
+    "has had about data".split()
 )
 
 
@@ -205,7 +209,7 @@ def _job_words(text: str) -> set[str]:
     lowered = text.lower()
     for pattern, spelling in _SPELLINGS:
         lowered = pattern.sub(spelling, lowered)
-    return set(re.findall(r"[a-z0-9+#]+", lowered)) - _NOT_THE_JOB
+    return {word for word in re.findall(r"[a-z0-9+#]+", lowered) if len(word) > 2} - _NOT_THE_JOB
 
 
 def pick_base_cv[Cv: CvChoice](cvs: Sequence[Cv], *, title: str = "", advert: str = "") -> Cv | None:
