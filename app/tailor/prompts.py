@@ -15,7 +15,7 @@ PARSE_SYSTEM = "You are a JSON extraction engine. Output only valid JSON, no exp
 
 PARSE_RESUME_PROMPT = """Parse this resume into JSON. Output ONLY the JSON object, no other text.
 
-Map content to standard sections when possible. Put volunteering and other roles held in workExperience. Leave out content that fits no section.
+Map content to standard sections when possible. Put volunteering and other roles held in workExperience, except a society, club or committee role listed under a degree: that goes in the description of the education entry it sits directly beneath (the line after a degree belongs to that degree, not the next one). Leave out content that fits no section.
 
 Example output format:
 {schema}

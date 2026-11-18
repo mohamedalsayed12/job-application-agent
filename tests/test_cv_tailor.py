@@ -479,3 +479,29 @@ async def test_download_is_owner_only(session: Session) -> None:
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
+
+
+def test_wording_that_claims_a_posting_term_the_cv_lacks_goes_back() -> None:
+    from app.tailor.refiner import revert_unsupported_claims
+
+    master = {
+        "summary": "Python developer with automated testing experience.",
+        "workExperience": [{"id": 1, "description": ["Wrote tests for customer matching."]}],
+    }
+    tailored = {
+        "summary": "Python developer with JavaScript-adjacent, automated testing experience.",
+        "workExperience": [{"id": 1, "description": ["Wrote tests for customer matching to monitor data accuracy."]}],
+    }
+    keywords = {"required_skills": ["JavaScript"], "preferred_skills": [], "keywords": ["monitoring", "automation"]}
+    fixed, reverted = revert_unsupported_claims(tailored, master, keywords)
+    assert fixed == master | {"workExperience": [{"id": 1, "description": ["Wrote tests for customer matching."]}]}
+    assert sorted(reverted) == ["JavaScript", "monitoring"]
+
+
+def test_phrase_requirements_are_met_by_their_skill_words() -> None:
+    from app.tailor.resume import term_in_text
+
+    cv = "Python, SQL, PostgreSQL. Resolved data issues; communication gaps. JavaScript-free."
+    assert term_in_text("Knowledge of SQL databases", cv)
+    assert term_in_text("Good communication skills", cv)
+    assert not term_in_text("Knowledge of Javascript/Typescript", "I know JavaScript.")

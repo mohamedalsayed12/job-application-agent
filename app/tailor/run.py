@@ -46,6 +46,7 @@ from app.tailor.refiner import (
     analyze_keyword_gaps,
     drop_fabricated_skills,
     remove_ai_phrases,
+    revert_unsupported_claims,
 )
 from app.tailor.render import render_docx, render_pdf
 from app.tailor.resume import all_text
@@ -405,6 +406,9 @@ async def _process_one(
     tailored, phrases = remove_ai_phrases(tailored, item.posting, protected_text=all_text(master))
     tailored, fabricated = drop_fabricated_skills(tailored, master)
     tailored = finalize_ai_resume(master, tailored, allow_review_claims=False)
+    tailored, claimed = revert_unsupported_claims(tailored, master, keywords)
+    if claimed:
+        warnings.append(f"Reverted wording that claimed what the CV never shows: {', '.join(claimed)}")
     if phrases:
         warnings.append(f"Replaced stock AI wording: {', '.join(phrases)}")
     if fabricated:

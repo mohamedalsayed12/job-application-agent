@@ -61,7 +61,7 @@ def finalize_ai_resume(
         not isinstance(summary, str)
         or not summary.strip()
         or _novel_numbers(source_summary, summary)
-        or (not allow_review_claims and _similarity(source_summary, summary) < GROUNDING_THRESHOLD)
+        or (not allow_review_claims and similarity(source_summary, summary) < GROUNDING_THRESHOLD)
     ):
         result["summary"] = source_summary
     for section in _ENTRY_FIELDS:
@@ -107,7 +107,7 @@ def _merged_text(source: str, candidate: Any, allow_review_claims: bool) -> str:
         not isinstance(candidate, str)
         or not candidate.strip()
         or _novel_numbers(source, candidate)
-        or (not allow_review_claims and _similarity(source, candidate) < GROUNDING_THRESHOLD)
+        or (not allow_review_claims and similarity(source, candidate) < GROUNDING_THRESHOLD)
     ):
         return source
     return candidate
@@ -123,7 +123,7 @@ def _merge_rows(source_rows: Any, candidate_rows: Any, allow_review_claims: bool
     for position, candidate in enumerate(candidates[: len(sources)]):
         if not available:
             break
-        score, index = max((_similarity(sources[i], candidate), -i) for i in available)
+        score, index = max((similarity(sources[i], candidate), -i) for i in available)
         index = -index
         if not candidate.strip() and position in available:
             index = position
@@ -190,7 +190,7 @@ def _matching_source_index(
     if len(matches) <= 1:
         return matches[0] if matches else None
     text = _description_text(candidate)
-    return max(matches, key=lambda index: (_similarity(_description_text(sources[index]), text), -index))
+    return max(matches, key=lambda index: (similarity(_description_text(sources[index]), text), -index))
 
 
 def _field_identity(entry: dict[str, Any], section: str) -> tuple[str, ...] | None:
@@ -215,7 +215,7 @@ def _tokens(text: str) -> set[str]:
     }
 
 
-def _similarity(left: str, right: str) -> float:
+def similarity(left: str, right: str) -> float:
     left, right = _normalized(left), _normalized(right)
     if left == right:
         return 1.0

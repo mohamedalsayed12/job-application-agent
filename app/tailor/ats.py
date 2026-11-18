@@ -9,7 +9,7 @@ from typing import Any, Literal
 from pypdf import PdfReader
 
 from app.tailor.refiner import job_keyword_terms
-from app.tailor.resume import all_text, keyword_in_text
+from app.tailor.resume import all_text, term_in_text
 
 Coverage = Literal["covered", "missing (have it)", "missing (gap)"]
 
@@ -68,8 +68,8 @@ def coverage_for(keywords: dict[str, Any], *, extracted: str, master_text: str) 
 
 
 def _status(term: str, extracted: str, master_text: str) -> Coverage:
-    if keyword_in_text(term, extracted):
+    if term_in_text(term, extracted):
         return "covered"
-    if keyword_in_text(term, master_text):
+    if term_in_text(term, master_text):
         return "missing (have it)"
     return "missing (gap)"
