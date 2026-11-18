@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.applicants.levels import Levels, chosen_or_inferred, in_order, parse_levels
 from app.models import (
     ApplicantPreference,
     ApplicantProfile,
@@ -24,7 +25,7 @@ from app.models import (
     JobVerdict,
 )
 
-PROMPT_VERSION = "job-judge-v2"
+PROMPT_VERSION = "job-judge-v3"
 # D52: the full fit report. Shared here so matching can read reports without importing the writer.
 REPORT_PROMPT_VERSION = "fit-report-v1"
 # Operator's choice (2026-11-10): career-ops draws its apply line at 4.0; this product adds jobs from 3.0.
@@ -39,6 +40,7 @@ class Profile:
     text: str
     digest: str
     roles: tuple[str, ...] = ()
+    levels: Levels = frozenset()
 
 
 def job_text(
@@ -74,7 +76,7 @@ def load_profiles(session: Session, applicant_ids: set[uuid.UUID] | None = None)
         profile = profiles.get(preference.applicant_id)
         text = (
             f"Target roles: {', '.join(preference.target_roles)}\n"
-            f"Experience level: {profile.experience_level if profile else 'not given'}\n"
+            f"Experience levels wanted: {', '.join(in_order(profile.experience_levels)) if profile else 'not given'}\n"
             f"Skills: {', '.join(sorted(skills.get(preference.applicant_id, []), key=str.lower)) or 'none given'}\n"
             f"Degrees: {', '.join(profile.degrees) if profile and profile.degrees else 'none given'}\n"
             f"Sector: {preference.sector}"
@@ -85,6 +87,7 @@ def load_profiles(session: Session, applicant_ids: set[uuid.UUID] | None = None)
             text,
             digest(text),
             roles=tuple(preference.target_roles),
+            levels=chosen_or_inferred(parse_levels(profile.experience_levels) if profile else frozenset(), preference.target_roles),
         )
     return out
 

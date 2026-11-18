@@ -35,14 +35,6 @@ def job_keyword_terms(keywords: dict[str, Any]) -> list[str]:
     return list(terms)
 
 
-def keyword_match(resume: dict[str, Any], keywords: dict[str, Any]) -> float:
-    terms = job_keyword_terms(keywords)
-    if not terms:
-        return 0.0
-    text = all_text(resume)
-    return sum(keyword_in_text(term, text) for term in terms) / len(terms) * 100
-
-
 def analyze_keyword_gaps(keywords: dict[str, Any], tailored: dict[str, Any], master: dict[str, Any]) -> KeywordGaps:
     tailored_text, master_text = all_text(tailored), all_text(master)
     missing = [term for term in job_keyword_terms(keywords) if not keyword_in_text(term, tailored_text)]
