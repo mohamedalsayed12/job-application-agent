@@ -30,7 +30,7 @@ class Settings(BaseSettings):
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
     api_allowlist: str = (
-        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
+        "api.apify.com,api.anthropic.com,"
         "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com"
     )
 
@@ -58,11 +58,7 @@ class Settings(BaseSettings):
     indeed_country: str = "uk"  # actor enum uses uk, not ISO gb
     indeed_unit_price: Decimal = Decimal("0.0002")
     indeed_run_price: Decimal = Decimal("0.01")
-    # Post-MVP apply agent: Greenhouse boards API first, else Apify form-schema actor.
-    apply_form_actor: str = ""
-    apply_form_unit_price: Decimal = Decimal("0.01")
-    apply_form_run_price: Decimal = Decimal("0.02")
-    apply_form_wait_minutes: int = 5
+    # Apply fill: matching form questions the patterns miss to the person's own answers or CV text.
     ai_apply_map_unit_price: Decimal = Decimal("0.002")
     ai_apply_map_model: str = ""
     ai_apply_map_max_output_tokens: int = 800
@@ -166,8 +162,6 @@ class Settings(BaseSettings):
         "indeed_unit_price",
         "indeed_run_price",
         "usd_to_gbp",
-        "apply_form_unit_price",
-        "apply_form_run_price",
         "ai_apply_map_unit_price",
         "interview_collect_unit_price",
         "interview_collect_run_price",
@@ -222,6 +216,9 @@ class Settings(BaseSettings):
 
     def resolved_ai_outreach_model(self) -> str:
         return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_apply_map_model(self) -> str:
+        return self.ai_apply_map_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def gmail_seal_secret(self) -> str:
         return (self.gmail_token_key or self.session_secret).strip()

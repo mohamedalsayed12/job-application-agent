@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -12,7 +13,53 @@ from app.models import PREFER_NOT, ApplicationAnswers
 
 MAX_FIELD = 200
 MAX_URL = 500
+MAX_ANSWER = 2000
+MAX_SAVED = 40
 _DEMO_KEYS = ("free_school_meals", "gender", "ethnicity", "disability", "veteran")
+# shortcut: two different questions that keep the same content words share a key, upgrade when a saved answer fills the wrong question.
+_STOP_WORDS = frozenset(
+    "a about an and are as at be briefly by can could describe do does explain for from has have how i if in is it "
+    "kindly me my of on or our please s tell the this to us we what when where which who will with would you your".split()
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SavedQuestion:
+    question: str
+    answer: str
+
+
+def question_key(text: str) -> str:
+    """The same question in other words, punctuation, or order gets the same key."""
+    words = re.findall(r"[a-z0-9]+", text.casefold())
+    content = sorted({word for word in words if word not in _STOP_WORDS})
+    return " ".join(content or words)
+
+
+def _saved(raw: object) -> list[SavedQuestion]:
+    if not isinstance(raw, list):
+        return []
+    found: list[SavedQuestion] = []
+    for item in raw:
+        if isinstance(item, dict) and isinstance(item.get("question"), str) and isinstance(item.get("answer"), str):
+            found.append(SavedQuestion(item["question"], item["answer"]))
+    return found
+
+
+def _answers_row(session: Session, applicant_id: uuid.UUID) -> ApplicationAnswers:
+    row = load_answers(session, applicant_id)
+    if row is not None:
+        return row
+    row = ApplicationAnswers(
+        applicant_id=applicant_id,
+        free_school_meals=PREFER_NOT,
+        gender=PREFER_NOT,
+        ethnicity=PREFER_NOT,
+        disability=PREFER_NOT,
+        veteran=PREFER_NOT,
+    )
+    session.add(row)
+    return row
 
 
 class AnswersRefused(Exception):
@@ -86,11 +133,40 @@ def load_answers(session: Session, applicant_id: uuid.UUID) -> ApplicationAnswer
     return session.scalar(select(ApplicationAnswers).where(ApplicationAnswers.applicant_id == applicant_id))
 
 
-def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -> ApplicationAnswers:
-    row = load_answers(session, applicant_id)
+def saved_pairs(row: ApplicationAnswers | None) -> list[SavedQuestion]:
     if row is None:
-        row = ApplicationAnswers(applicant_id=applicant_id)
-        session.add(row)
+        return []
+    return _saved(row.saved_questions)
+
+
+def save_question_answers(
+    session: Session, applicant_id: uuid.UUID, pairs: list[SavedQuestion]
+) -> ApplicationAnswers:
+    """Remember free-text answers so a later form that asks the same thing can reuse them."""
+    if not pairs:
+        raise AnswersRefused("Write an answer for each question.")
+    if len(pairs) > MAX_SAVED:
+        raise AnswersRefused("Too many saved answers.")
+    row = _answers_row(session, applicant_id)
+    kept: dict[str, SavedQuestion] = {}
+    for item in _saved(row.saved_questions):
+        kept[question_key(item.question)] = item
+    for item in pairs:
+        cleaned_question, cleaned_answer = item.question.strip(), item.answer.strip()
+        if not cleaned_question or not cleaned_answer:
+            raise AnswersRefused("Write an answer for each question.")
+        if len(cleaned_question) > 500 or len(cleaned_answer) > MAX_ANSWER:
+            raise AnswersRefused(f"Keep each question under 500 characters and each answer under {MAX_ANSWER}.")
+        kept[question_key(cleaned_question)] = SavedQuestion(cleaned_question, cleaned_answer)
+    if len(kept) > MAX_SAVED:
+        raise AnswersRefused("Too many saved answers.")
+    row.saved_questions = [{"question": item.question, "answer": item.answer} for item in kept.values()]
+    session.flush()
+    return row
+
+
+def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -> ApplicationAnswers:
+    row = _answers_row(session, applicant_id)
     row.legal_first_name = _trim(raw.legal_first_name)
     row.legal_last_name = _trim(raw.legal_last_name)
     row.phone = _trim(raw.phone)

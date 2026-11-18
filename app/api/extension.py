@@ -8,12 +8,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.applicants.cv import application_cv
+from app.applications.cv_choice import choose_cv
 from app.applications.extension_device import applicant_for_token
-from app.applications.fill_safety import assert_plan_has_no_submit_clicks
+from app.applications.mapper import FormField
+from app.applications.plan import build_application_plan, notice_for
 from app.applications.prepare import (
     PrepareRefused,
     get_application,
@@ -21,7 +21,7 @@ from app.applications.prepare import (
     set_application_status,
 )
 from app.core.db import get_db
-from app.models import ApplicationStatus, CvFileType, TailoredCv, TailoredCvStatus
+from app.models import Applicant, ApplicationStatus, CvFileType
 
 router = APIRouter(prefix="/extension", tags=["extension"])
 
@@ -54,36 +54,29 @@ def ready_applications(
         for row in list_applications(db, applicant_id)
         if row.status == ApplicationStatus.ready_to_fill.value
     ]
-    out = []
-    for row in rows:
-        plan = row.fill_plan_json or {"steps": [], "missing": []}
-        assert_plan_has_no_submit_clicks(plan)
-        out.append(
-            {
-                "id": str(row.id),
-                "apply_url": row.apply_url,
-                "ats_kind": row.ats_kind,
-                "fill_plan": plan,
-            }
-        )
-    return out
+    return [{"id": str(row.id), "apply_url": row.apply_url} for row in rows]
 
 
-def _tailored_pdf(db: Session, applicant_id: uuid.UUID, application_id: uuid.UUID | None) -> bytes | None:
-    """The job's tailored CV (D55) when one is ready, so the form gets the version written for it."""
-    if application_id is None:
-        return None
+class PlanBody(BaseModel):
+    fields: list[FormField] = Field(min_length=1, max_length=80)
+
+
+@router.post("/applications/{application_id}/plan")
+async def plan_application(
+    application_id: uuid.UUID,
+    body: PlanBody,
+    applicant_id: uuid.UUID = Depends(_bearer_applicant),
+    db: Session = Depends(get_db),
+) -> dict:
     row = get_application(db, application_id, applicant_id)
-    if row is None:
-        return None
-    tailored = db.scalar(
-        select(TailoredCv).where(
-            TailoredCv.applicant_id == applicant_id,
-            TailoredCv.job_id == row.job_id,
-            TailoredCv.status == TailoredCvStatus.ready.value,
-        )
-    )
-    return bytes(tailored.pdf_content) if tailored is not None and tailored.pdf_content else None
+    applicant = db.get(Applicant, applicant_id)
+    if row is None or applicant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
+    if row.status in (ApplicationStatus.submitted.value, ApplicationStatus.filled_awaiting_review.value):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="This application is no longer being filled.")
+    plan = await build_application_plan(db, applicant, row, body.fields)
+    db.commit()
+    return {"status": row.status, "plan": plan.to_json(), "notice": notice_for(plan)}
 
 
 @router.get("/cv")
@@ -92,15 +85,15 @@ def download_cv(
     applicant_id: uuid.UUID = Depends(_bearer_applicant),
     db: Session = Depends(get_db),
 ) -> Response:
-    tailored = _tailored_pdf(db, applicant_id, application_id)
-    if tailored is not None:
-        content, file_type = tailored, CvFileType.pdf.value
-    else:
-        application = get_application(db, application_id, applicant_id) if application_id else None
-        cv = application_cv(db, applicant_id, application)
-        if cv is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No CV uploaded")
-        content, file_type = bytes(cv.content), cv.file_type
+    row = None
+    if application_id is not None:
+        row = get_application(db, application_id, applicant_id)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
+    chosen = choose_cv(db, applicant_id, row)
+    if chosen is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No CV uploaded")
+    content, file_type = chosen.content, chosen.file_type
     media = "application/pdf" if file_type == CvFileType.pdf.value else (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )

@@ -1,119 +1,191 @@
 /* Fills the open apply page from a fill plan. Never clicks Submit. */
 const ALLOWED_ACTIONS = new Set(["fill", "select", "check", "upload_cv"]);
+const SUBMIT_TEXT = /\b(submit|apply now|send application|complete application|finish application)\b/i;
+const fields = new Map();
 
-function isSubmitControl(el) {
-  if (!el) return true;
-  const tag = el.tagName || "";
-  const typeAttr = el.getAttribute?.("type") || "";
-  const text = (el.innerText || el.value || "").trim();
-  const name = el.getAttribute?.("name") || "";
-  const idAttr = el.id || "";
-  if (String(typeAttr).toLowerCase() === "submit") return true;
-  const hay = `${text} ${name} ${idAttr}`;
-  return /\b(submit|apply now|send application|complete application|finish application)\b/i.test(hay)
-    && /^(BUTTON|INPUT|A)$/i.test(tag);
+function ownText(el) {
+  return [...el.childNodes]
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function findField(step) {
-  const name = step.name;
-  if (name) {
-    const byName = document.querySelector(`[name="${CSS.escape(name)}"]`);
-    if (byName) return byName;
-    const byId = document.getElementById(name);
-    if (byId) return byId;
+function isSubmitControl(el) {
+  if (!el || el.nodeType !== 1 || el.id === "jaa-fill-notice") return false;
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  if (type === "submit" || type === "image") return true;
+  if (el.tagName === "BUTTON") {
+    if (type !== "button" && type !== "reset") return true;
+    return SUBMIT_TEXT.test(ownText(el));
   }
-  const label = (step.label || "").toLowerCase();
-  if (!label) return null;
-  for (const lab of document.querySelectorAll("label")) {
-    if ((lab.textContent || "").toLowerCase().includes(label)) {
-      const forId = lab.getAttribute("for");
-      if (forId) {
-        const el = document.getElementById(forId);
-        if (el) return el;
-      }
-      const nested = lab.querySelector("input, textarea, select");
-      if (nested) return nested;
-    }
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return false;
+  if (!/^(A|DIV|SPAN)$/.test(el.tagName)) return false;
+  return SUBMIT_TEXT.test(ownText(el));
+}
+
+function insideSubmit(el) {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    if (isSubmitControl(node)) return true;
+  }
+  return false;
+}
+
+function labelFor(el) {
+  const labelled = el.labels && el.labels[0] && el.labels[0].innerText;
+  if (labelled && labelled.trim()) return labelled.trim();
+  const aria = el.getAttribute("aria-label");
+  if (aria) return aria.trim();
+  const byId = el.getAttribute("aria-labelledby");
+  if (byId) {
+    const node = document.getElementById(byId);
+    if (node && node.innerText.trim()) return node.innerText.trim();
+  }
+  return (el.getAttribute("placeholder") || "").trim();
+}
+
+function fieldType(el) {
+  const tag = el.tagName;
+  if (tag === "TEXTAREA") return "textarea";
+  if (tag === "SELECT") return "select";
+  const type = (el.getAttribute("type") || "text").toLowerCase();
+  if (["hidden", "submit", "button", "reset", "image", "password"].includes(type)) return null;
+  if (type === "radio") return "radio";
+  if (type === "checkbox") return "checkbox";
+  if (type === "file") return "file";
+  if (["email", "tel", "url", "number", "date"].includes(type)) return type;
+  return "text";
+}
+
+function optionsFor(el) {
+  if (el.tagName === "SELECT") {
+    return [...el.options].map((option) => option.text.trim()).filter(Boolean);
+  }
+  if ((el.getAttribute("type") || "").toLowerCase() !== "radio" || !el.name) return [];
+  return [...document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)]
+    .map((radio) => labelFor(radio) || radio.value)
+    .filter(Boolean);
+}
+
+function findNext() {
+  for (const el of document.querySelectorAll("button, div, span")) {
+    if (isSubmitControl(el) || insideSubmit(el) || el.id === "jaa-fill-notice") continue;
+    if (el.tagName === "BUTTON" && (el.getAttribute("type") || "submit").toLowerCase() !== "button") continue;
+    if (/^(next|continue)$/i.test(ownText(el))) return el;
   }
   return null;
 }
 
-function setValue(el, value) {
-  if (isSubmitControl(el)) return;
-  const tag = el.tagName.toLowerCase();
-  if (tag === "select") {
-    const want = value.toLowerCase();
-    const match = [...el.options].find((o) => o.text.trim().toLowerCase() === want);
-    if (match) {
-      el.value = match.value;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+function scan() {
+  fields.clear();
+  const found = [];
+  const seenRadio = new Set();
+  let index = 0;
+  for (const el of document.querySelectorAll("input, textarea, select")) {
+    if (isSubmitControl(el)) continue;
+    const type = fieldType(el);
+    if (!type) continue;
+    if (type === "radio") {
+      if (!el.name || seenRadio.has(el.name)) continue;
+      seenRadio.add(el.name);
     }
-    return;
+    const id = `f${index}`;
+    index += 1;
+    fields.set(id, el);
+    found.push({
+      id,
+      label: labelFor(el),
+      name: el.name || "",
+      type,
+      required: Boolean(el.required),
+      options: optionsFor(el),
+    });
   }
-  if (el.type === "checkbox" || el.type === "radio") {
-    const want = /^(yes|true|1)$/i.test(value);
-    if (el.type === "radio") {
-      const group = document.querySelectorAll(`input[type=radio][name="${CSS.escape(el.name)}"]`);
-      for (const radio of group) {
-        if (isSubmitControl(radio)) continue;
-        const label = (radio.labels?.[0]?.textContent || radio.value || "").toLowerCase();
-        const wantText = value.toLowerCase();
-        if (label === wantText || label.startsWith(wantText + " ") || label.endsWith(" " + wantText)) {
-          radio.checked = true;
-          radio.dispatchEvent(new Event("change", { bubbles: true }));
-          return;
-        }
-        if (want && /^(yes|true)$/i.test(label.trim())) {
-          radio.checked = true;
-          radio.dispatchEvent(new Event("change", { bubbles: true }));
-          return;
-        }
-      }
-    } else {
-      el.checked = want;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    return;
-  }
-  el.focus();
-  el.value = value;
+  return { fields: found, hasNext: Boolean(findNext()) };
+}
+
+function setText(el, value) {
+  const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, "value");
+  if (setter && setter.set) setter.set.call(el, value);
+  else el.value = value;
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function uploadCv(el, apiBase, token, applicationId) {
-  if (isSubmitControl(el) || el.type !== "file") return;
-  const query = applicationId ? `?application_id=${encodeURIComponent(applicationId)}` : "";
-  const response = await fetch(`${apiBase.replace(/\/$/, "")}/extension/cv${query}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok) throw new Error("Could not download CV");
-  const blob = await response.blob();
-  const name = (response.headers.get("Content-Disposition") || "").includes(".docx") ? "cv.docx" : "cv.pdf";
-  const file = new File([blob], name, { type: blob.type || "application/pdf" });
+function selectValue(el, value) {
+  const want = String(value || "").trim().toLowerCase();
+  if (el.tagName === "SELECT") {
+    const match = [...el.options].find((option) => option.text.trim().toLowerCase() === want);
+    if (!match) return;
+    el.value = match.value;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return;
+  }
+  if ((el.getAttribute("type") || "").toLowerCase() !== "radio" || !el.name) return;
+  for (const radio of document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)) {
+    const label = (labelFor(radio) || radio.value || "").trim().toLowerCase();
+    if (label === want) {
+      radio.checked = true;
+      radio.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+  }
+}
+
+function checkValue(el, value) {
+  const yes = /^(yes|true|1)$/i.test(String(value || "").trim());
+  el.checked = yes;
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function uploadCv(el, cv) {
+  if (!cv || el.type !== "file" || isSubmitControl(el)) return;
+  const binary = atob(cv.base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const file = new File([bytes], cv.name, { type: cv.type || "application/pdf" });
   const transfer = new DataTransfer();
   transfer.items.add(file);
   el.files = transfer.files;
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function applyPlan(plan, apiBase, token, applicationId) {
-  for (const step of plan.steps || []) {
+function applySteps(steps, cv) {
+  for (const step of steps || []) {
     if (!ALLOWED_ACTIONS.has(step.action)) continue;
-    const el = findField(step);
+    const el = fields.get(step.field_id);
     if (!el || isSubmitControl(el)) continue;
-    if (step.action === "upload_cv") {
-      await uploadCv(el, apiBase, token, applicationId);
-    } else {
-      setValue(el, String(step.value || ""));
-    }
+    if (step.action === "upload_cv") uploadCv(el, cv);
+    else if (step.action === "select") selectValue(el, step.value);
+    else if (step.action === "check") checkValue(el, step.value);
+    else setText(el, String(step.value || ""));
   }
-  for (const el of document.querySelectorAll('button, input[type=submit], a')) {
-    if (isSubmitControl(el)) {
-      el.scrollIntoView({ block: "center", behavior: "smooth" });
-      break;
-    }
+}
+
+function showNotice(text) {
+  let el = document.getElementById("jaa-fill-notice");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "jaa-fill-notice";
+    el.setAttribute("role", "status");
+    el.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#0a7;color:#fff;padding:12px 16px;font:16px system-ui";
+    (document.body || document.documentElement).appendChild(el);
   }
+  el.textContent = text;
+}
+
+function highlightSubmit() {
+  for (const el of document.querySelectorAll("button, input, a, div, span")) {
+    if (!isSubmitControl(el)) continue;
+    el.scrollIntoView({ block: "center" });
+    el.style.setProperty("outline", "3px solid #0a7");
+    el.style.setProperty("outline-offset", "3px");
+    el.setAttribute("data-jaa-highlight", "submit");
+    return el.id || el.tagName;
+  }
+  return "";
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -121,14 +193,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (message?.type === "jaa-scan") {
+    sendResponse(scan());
+    return false;
+  }
+  if (message?.type === "jaa-notice") {
+    showNotice(message.text || "");
+    sendResponse({ ok: true });
+    return false;
+  }
   if (message?.type !== "jaa-fill") return;
-  (async () => {
-    try {
-      await applyPlan(message.plan, message.apiBase, message.token, message.applicationId);
-      sendResponse({ ok: true });
-    } catch (err) {
-      sendResponse({ ok: false, error: String(err) });
+  try {
+    applySteps(message.steps, message.cv);
+    const next = !message.final && findNext();
+    if (next) {
+      next.click();
+      sendResponse({ ok: true, advanced: true });
+      return;
     }
-  })();
-  return true;
+    const highlighted = highlightSubmit();
+    showNotice(message.notice || "Everything is filled in. Review the form and click Submit yourself.");
+    sendResponse({ ok: true, advanced: false, highlighted });
+  } catch (err) {
+    sendResponse({ ok: false, error: String(err) });
+  }
+  return false;
 });
