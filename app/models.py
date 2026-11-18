@@ -335,7 +335,12 @@ class JobSkill(_UuidPk, Base):
 class ApplicantProfile(_UuidPk, Base):
     __tablename__ = "applicant_profile"
     __table_args__ = (
-        _text_in("experience_level", ExperienceLevel),
+        CheckConstraint(
+            "cardinality(experience_levels) > 0 AND experience_levels <@ ARRAY["
+            + ", ".join(f"'{level.value}'" for level in ExperienceLevel)
+            + "]::text[]",
+            name="experience_levels",
+        ),
         CheckConstraint(
             "travel_distance_miles IS NULL OR travel_distance_miles BETWEEN 1 AND 500",
             name="travel_distance_miles",
@@ -347,9 +352,10 @@ class ApplicantProfile(_UuidPk, Base):
         ForeignKey("applicant.id", ondelete="CASCADE"),
         unique=True,
     )
-    experience_level: Mapped[str] = mapped_column(Text())
+    # D63: every level the person wants, at least one.
+    experience_levels: Mapped[list[str]] = mapped_column(ARRAY(Text()))
     travel_distance_miles: Mapped[int | None] = mapped_column(Integer())
-    # As typed, such as "BSc Business Management". Studying for one counts (D45).
+    # As typed, such as "BSc Business Management". Studying for one counts. Used only in the AI score (D62).
     degrees: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     updated_at: Mapped[datetime] = _updated()
 

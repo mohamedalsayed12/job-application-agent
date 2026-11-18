@@ -21,11 +21,13 @@ from sqlalchemy.orm import Session
 
 from app.ai.anthropic import AiCallFailure, send_anthropic_request
 from app.applicants.cv_read import ReadOutcome
+from app.applicants.levels import Levels, parse_levels
 from app.applicants.profile import MAX_ITEM_LENGTH
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
+from app.matching.match import training_title_shuts_out
 from app.matching.titles import NOT_ENTRY_TITLE
 from app.models import ExperienceLevel, SpendKind
 
@@ -44,9 +46,9 @@ Rules:
   such as "Junior Python Developer" or "Graduate Data Analyst". No company, no parentheses.
   Cover the different names employers give the same job, and jobs their degree leads to as well as their skills.
   Leave out titles already in target_roles.
-- Match experience_level. "entry" means graduate, junior or entry-level titles: never senior, lead, manager, head or
-  architect titles, and never internships, placements or apprenticeships. "internship" means internship and placement
-  titles.
+- Each title fits at least one of experience_levels. "entry" means graduate, junior or entry-level titles: never
+  senior, lead, manager, head or architect titles. "mid" and "senior" mean titles at those levels. "internship" means
+  internship and placement titles, and only someone who lists it gets them. Never suggest apprenticeships.
 - because: for each role, the skills or degrees from the profile that make them fit it, copied exactly as the profile
   writes them. A role with nothing from the profile behind it must be left out.
 - places: up to 5 towns or cities within travel_miles of the places in locations that job adverts name instead,
@@ -87,7 +89,7 @@ class ProfileAsk:
 
     skills: tuple[str, ...]
     degrees: tuple[str, ...]
-    experience_level: str
+    experience_levels: tuple[str, ...]
     target_roles: tuple[str, ...]
     locations: tuple[str, ...]
     travel_miles: int | None
@@ -113,15 +115,23 @@ def _clean(value: object) -> str:
     return " ".join(value.split()) if isinstance(value, str) else ""
 
 
-def _senior(title: str, level: str) -> bool:
-    """The titles matching would hide for this level (D38): for an internship, the student words are allowed."""
-    return bool(NOT_ENTRY_TITLE.search(_STUDENT_WORDS.sub("", title) if level == ExperienceLevel.internship else title))
+def _hidden(title: str, levels: Levels) -> bool:
+    """The titles matching would hide whatever the advert says (D63).
+
+    Someone who wants only entry level or internships never sees senior titles; anyone who also wants mid or senior can.
+    """
+    if training_title_shuts_out(title, levels):
+        return True
+    if levels - {ExperienceLevel.entry, ExperienceLevel.internship}:
+        return False
+    return bool(NOT_ENTRY_TITLE.search(_STUDENT_WORDS.sub("", title) if ExperienceLevel.internship in levels else title))
 
 
 def checked(payload: dict, ask: ProfileAsk) -> SearchIdeas:
     """Keeps roles that rest on the person's own skills or degrees and that matching would show them."""
     owned = {_key(item): item for item in (*ask.skills, *ask.degrees)}
     seen = {_key(role) for role in ask.target_roles}
+    levels = parse_levels(ask.experience_levels)
     roles: list[RoleIdea] = []
     for item in payload.get("roles") or []:
         if not isinstance(item, dict):
@@ -129,7 +139,7 @@ def checked(payload: dict, ask: ProfileAsk) -> SearchIdeas:
         title = _clean(item.get("title"))
         keys = (_key(_clean(text)) for text in item.get("because") or [])
         because = tuple(dict.fromkeys(owned[key] for key in keys if key in owned))
-        if not title or len(title) > MAX_ITEM_LENGTH or _key(title) in seen or not because or _senior(title, ask.experience_level):
+        if not title or len(title) > MAX_ITEM_LENGTH or _key(title) in seen or not because or _hidden(title, levels):
             continue
         seen.add(_key(title))
         roles.append(RoleIdea(title, because))
@@ -154,7 +164,7 @@ def build_body(ask: ProfileAsk, *, model: str, max_tokens: int) -> dict:
         {
             "skills": ask.skills,
             "degrees": ask.degrees,
-            "experience_level": ask.experience_level,
+            "experience_levels": ask.experience_levels,
             "target_roles": ask.target_roles,
             "locations": ask.locations,
             "travel_miles": ask.travel_miles or DEFAULT_COMMUTE_MILES,

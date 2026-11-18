@@ -17,7 +17,7 @@ from tests.test_profile import PASSWORD
 ASK = ProfileAsk(
     skills=("Python", "SQL", "Excel"),
     degrees=("BSc Business Management",),
-    experience_level="entry",
+    experience_levels=("entry",),
     target_roles=("Junior Python Developer",),
     locations=("Manchester",),
     travel_miles=None,
@@ -44,7 +44,7 @@ IDEAS = {
 }
 
 
-def test_d62_roles_must_rest_on_the_profile_and_suit_an_entry_level_person() -> None:
+def test_d64_roles_must_rest_on_the_profile_and_suit_an_entry_level_person() -> None:
     found = checked(IDEAS, ASK)
     assert found.roles == (
         RoleIdea("Graduate Data Analyst", ("SQL", "Excel")),
@@ -53,13 +53,13 @@ def test_d62_roles_must_rest_on_the_profile_and_suit_an_entry_level_person() -> 
     assert found.places == ("Salford", "Stockport")
 
 
-def test_d62_places_beyond_the_travel_distance_or_near_nowhere_listed_are_dropped() -> None:
+def test_d64_places_beyond_the_travel_distance_or_near_nowhere_listed_are_dropped() -> None:
     assert checked(IDEAS, _ask(travel_miles=40)).places == ("Salford", "Stockport", "Leeds")
     assert checked(IDEAS, _ask(travel_miles=5)).places == ("Salford",)
 
 
-def test_d62_an_internship_seeker_gets_internships_but_not_senior_roles() -> None:
-    found = checked(IDEAS, _ask(experience_level="internship"))
+def test_d64_an_internship_seeker_gets_internships_but_not_senior_roles() -> None:
+    found = checked(IDEAS, _ask(experience_levels=("internship",)))
     assert [role.title for role in found.roles] == [
         "Graduate Data Analyst",
         "Junior Business Analyst",
@@ -67,7 +67,17 @@ def test_d62_an_internship_seeker_gets_internships_but_not_senior_roles() -> Non
     ]
 
 
-def test_d62_no_places_are_suggested_without_a_place_to_start_from() -> None:
+def test_d64_someone_who_also_wants_mid_level_may_get_titles_above_entry() -> None:
+    found = checked(IDEAS, _ask(experience_levels=("entry", "mid")))
+    assert [role.title for role in found.roles] == [
+        "Graduate Data Analyst",
+        "Junior Business Analyst",
+        "Senior Data Analyst",
+        "Graduate Project Manager",
+    ]
+
+
+def test_d64_no_places_are_suggested_without_a_place_to_start_from() -> None:
     assert checked(IDEAS, _ask(locations=())).places == ()
 
 
@@ -84,7 +94,7 @@ def claude() -> _Claude:
 FORM = {
     "target_roles": "Junior Python Developer",
     "locations": "Manchester",
-    "experience_level": "entry",
+    "experience_levels": "entry",
     "skills": "Python\nSQL\nExcel",
     "degrees": "BSc Business Management",
 }
@@ -94,7 +104,7 @@ async def _register(client: httpx.AsyncClient) -> None:  # noqa: F811
     assert (await client.post("/register", data={"email": "ideas@example.com", "password": PASSWORD})).status_code == 303
 
 
-async def test_d62_suggestions_fill_the_form_and_save_nothing(
+async def test_d64_suggestions_fill_the_form_and_save_nothing(
     client: httpx.AsyncClient, session: Session, claude: _Claude  # noqa: F811
 ) -> None:
     _money(session, "2")
@@ -112,7 +122,7 @@ async def test_d62_suggestions_fill_the_form_and_save_nothing(
     assert len(spend) == 1
 
 
-async def test_d62_without_skills_or_a_degree_the_ai_is_not_asked(
+async def test_d64_without_skills_or_a_degree_the_ai_is_not_asked(
     client: httpx.AsyncClient, session: Session, claude: _Claude  # noqa: F811
 ) -> None:
     _money(session, "2")
@@ -122,7 +132,7 @@ async def test_d62_without_skills_or_a_degree_the_ai_is_not_asked(
     assert claude.calls == 0
 
 
-async def test_d62_with_no_money_left_the_profile_is_not_sent(
+async def test_d64_with_no_money_left_the_profile_is_not_sent(
     client: httpx.AsyncClient, session: Session, claude: _Claude  # noqa: F811
 ) -> None:
     _money(session, "0")
@@ -132,7 +142,7 @@ async def test_d62_with_no_money_left_the_profile_is_not_sent(
     assert claude.calls == 0
 
 
-def test_d62_suggestions_stop_at_the_profile_limits() -> None:
+def test_d64_suggestions_stop_at_the_profile_limits() -> None:
     full = _fields(target_roles="\n".join(f"Role {n}" for n in range(10)), locations="Manchester")
     merged, notice = add_ideas(full, SearchIdeas((RoleIdea("Graduate Data Analyst", ("SQL",)),), ("Salford",)), Settings())
     assert merged.target_roles.count("\n") == 9
@@ -140,7 +150,7 @@ def test_d62_suggestions_stop_at_the_profile_limits() -> None:
     assert "20 LinkedIn searches a day" in notice
 
 
-async def test_d62_unsaved_form_text_is_held_to_the_profile_limits(
+async def test_d64_unsaved_form_text_is_held_to_the_profile_limits(
     client: httpx.AsyncClient, session: Session, claude: _Claude  # noqa: F811
 ) -> None:
     _money(session, "2")

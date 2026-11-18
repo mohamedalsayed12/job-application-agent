@@ -27,8 +27,8 @@ from app.applicants.cv import (
     store_cv,
 )
 from app.applicants.cv_read import CvRead, CvSuggestions, ReadOutcome, read_cv
+from app.applicants.levels import LEVELS, chosen_or_inferred, in_order
 from app.applicants.profile import (
-    EXPERIENCE_LABELS,
     MAX_ITEM_LENGTH,
     MAX_DEGREES,
     MAX_LOCATIONS,
@@ -90,7 +90,7 @@ class ProfileFields:
         salary_amount: str = Form(""),
         salary_currency: str = Form("GBP"),
         salary_period: str = Form("year"),
-        experience_level: str = Form(""),
+        experience_levels: list[str] = Form(default=[]),
         travel_distance: str = Form(""),
         skills: str = Form(""),
         cert_name: list[str] = Form(default=[]),
@@ -104,7 +104,7 @@ class ProfileFields:
         self.salary_amount = salary_amount
         self.salary_currency = salary_currency
         self.salary_period = salary_period
-        self.experience_level = experience_level
+        self.experience_levels = experience_levels
         self.travel_distance = travel_distance
         self.skills = skills
         self.degrees = degrees
@@ -123,7 +123,7 @@ def _saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
         salary_amount=str(preference.salary_amount) if preference and preference.salary_amount is not None else "",
         salary_currency=(preference.salary_currency if preference else None) or "GBP",
         salary_period=(preference.salary_period if preference else None) or "year",
-        experience_level=profile.experience_level if profile else "",
+        experience_levels=list(profile.experience_levels) if profile else [],
         travel_distance=str(profile.travel_distance_miles or "") if profile else "",
         skills="\n".join(saved.skills),
         cert_name=[item.name for item in certifications],
@@ -203,6 +203,10 @@ _PROFILE_STYLE = """<style>
 .notice { background: var(--primary-soft); color: var(--text); border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; }
 .skill-find { display: flex; gap: 0.5rem; align-items: end; }
 .skill-find label { flex: 1; }
+.checks { border: 0; padding: 0; margin: 0.75rem 0 0; }
+.checks legend { font-size: 0.85rem; font-weight: 600; padding: 0; }
+.check { display: flex; align-items: center; gap: 0.5rem; font-weight: 400; margin-top: 0.35rem; }
+.check input { display: inline; width: auto; margin: 0; }
 .certs td { padding: 0.3rem; }
 .certs input, .certs select { margin: 0; }
 .form-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.25rem; }
@@ -223,9 +227,10 @@ def _profile_page(
     message = f'<p class="error">{html.escape(error)}</p>' if error else ""
     if notice:
         message += f'<div class="notice">{html.escape(notice)}</div>'
-    levels = _options(
-        [("", "Choose one"), *((level.value, label) for level, label in EXPERIENCE_LABELS.items())],
-        fields.experience_level,
+    levels = "".join(
+        f'<label class="check"><input type="checkbox" name="experience_levels" value="{level.value}"'
+        f'{" checked" if level.value in fields.experience_levels else ""}/> {html.escape(facts.label)}</label>'
+        for level, facts in LEVELS.items()
     )
     periods = _options([(period, f"a {period}") for period in _SALARY_PERIODS], fields.salary_period)
     rows = [*fields.certifications, *[("", "", "certification", "")] * _SPARE_CERTIFICATION_ROWS]
@@ -257,14 +262,14 @@ def _profile_page(
     <p class="hint">Not sure what to search for? AI can suggest job titles that fit your skills and degrees, and towns
     near your locations, for you to check before anything is searched.
     <button type="submit" formaction="/profile/ideas" formnovalidate>Suggest roles and places</button></p>
-    <div class="row">
-      <label>Experience level
-        <select name="experience_level" required>{levels}</select>
-      </label>
-      <label>How far you'll travel <span class="hint">miles, optional</span>
-        <input name="travel_distance" inputmode="numeric" value="{html.escape(fields.travel_distance)}"/>
-      </label>
-    </div>
+    <fieldset class="checks">
+      <legend>Experience levels <span class="hint">tick every level you want, at least one</span></legend>
+      {levels}
+    </fieldset>
+    <p class="hint">We never show apprenticeships.</p>
+    <label>How far you'll travel <span class="hint">miles, optional</span>
+      <input name="travel_distance" inputmode="numeric" value="{html.escape(fields.travel_distance)}"/>
+    </label>
     <div class="row">
       <label>Minimum salary <span class="hint">optional</span>
         <input name="salary_amount" inputmode="decimal" value="{html.escape(fields.salary_amount)}" placeholder="30000"/>
@@ -275,8 +280,7 @@ def _profile_page(
     <label>Degrees <span class="hint">one per line, including one you're studying for, optional</span>
       <textarea name="degrees" rows="2" placeholder="BSc Business Management">{html.escape(fields.degrees)}</textarea>
     </label>
-    <p class="hint">We hide jobs whose advert requires a degree subject you don't list, such as a Computer Science
-    or STEM degree. Adverts that also accept equivalent experience still show.</p>
+    <p class="hint">Used when scoring how well a job fits you.</p>
   </section>
 
   <section class="card">
@@ -347,7 +351,7 @@ def profile_save(
             salary_amount=fields.salary_amount,
             salary_currency=fields.salary_currency,
             salary_period=fields.salary_period,
-            experience_level=fields.experience_level,
+            experience_levels=fields.experience_levels,
             travel_distance=fields.travel_distance,
             skills=fields.skills.splitlines(),
             certifications=certifications,
@@ -400,16 +404,16 @@ def _lines(text: str) -> list[str]:
 def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFields, list[str]]:
     """The form with the CV's suggestions added. What the person already has always stays."""
     filled = []
-    roles, locations, level = fields.target_roles, fields.locations, fields.experience_level
+    roles, locations, levels = fields.target_roles, fields.locations, fields.experience_levels
     if not roles.strip() and found.target_roles:
         roles = "\n".join(found.target_roles)
         filled.append("target roles")
     if not locations.strip() and found.locations:
         locations = "\n".join(found.locations)
         filled.append("locations")
-    if not level and found.experience_level:
-        level = found.experience_level
-        filled.append("experience level")
+    if not levels and found.experience_levels:
+        levels = found.experience_levels
+        filled.append("experience levels")
     skills = _lines(fields.skills)
     known = {skill.casefold() for skill in skills}
     new_skills = [skill for skill in found.skills if skill.casefold() not in known]
@@ -436,7 +440,7 @@ def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFi
         salary_amount=fields.salary_amount,
         salary_currency=fields.salary_currency,
         salary_period=fields.salary_period,
-        experience_level=level,
+        experience_levels=levels,
         travel_distance=fields.travel_distance,
         skills="\n".join([*skills, *new_skills]),
         cert_name=[row[0] for row in rows],
@@ -524,11 +528,13 @@ def _ask(fields: ProfileFields) -> ProfileAsk:
         return tuple(line for line in _lines(text) if len(line) <= MAX_ITEM_LENGTH)[:limit]
 
     travel = fields.travel_distance.strip()
+    roles = capped(fields.target_roles, MAX_ROLES)
+    ticked = frozenset(level for level in LEVELS if level.value in fields.experience_levels)
     return ProfileAsk(
         skills=capped(fields.skills, MAX_SKILLS),
         degrees=capped(fields.degrees, MAX_DEGREES),
-        experience_level=fields.experience_level,
-        target_roles=capped(fields.target_roles, MAX_ROLES),
+        experience_levels=tuple(level.value for level in in_order(chosen_or_inferred(ticked, roles))),
+        target_roles=roles,
         locations=capped(fields.locations, MAX_LOCATIONS),
         travel_miles=int(travel) if travel.isdecimal() and len(travel) <= 3 else None,
     )
@@ -554,7 +560,7 @@ def add_ideas(fields: ProfileFields, ideas: SearchIdeas, settings: Settings) -> 
         salary_amount=fields.salary_amount,
         salary_currency=fields.salary_currency,
         salary_period=fields.salary_period,
-        experience_level=fields.experience_level,
+        experience_levels=fields.experience_levels,
         travel_distance=fields.travel_distance,
         skills=fields.skills,
         cert_name=[row[0] for row in fields.certifications],
