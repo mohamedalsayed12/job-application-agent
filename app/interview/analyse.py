@@ -154,7 +154,7 @@ async def analyse_evidence(
             fallback_model=model,
         )
         if isinstance(answer, AiCallFailure):
-            gate.settle(reservation, actual_cost=Decimal("0"))
+            gate.settle(reservation, consumed=answer.billed)
             persist()
             report.stopped_by = answer.reason
             break
