@@ -145,7 +145,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 5. One keyword-injection pass for posting terms the master CV supports but the edit lost.
 6. Replace stock AI wording; remove skills the master CV never mentions.
 7. Hold the result to the master CV row by row (identity fields, years, numbers, similarity).
-8. Write a cover letter from the final CV and the posting (Resume-Matcher's cover-letter prompt, MVP.md D61); a failure is a warning, not a failed CV.
+8. Write a cover letter from the final CV and the posting (Resume-Matcher's cover-letter prompt, MVP.md D68); a failure is a warning, not a failed CV.
 9. Render single-column ATS-friendly PDF + DOCX; ATS text-layer checks + keyword coverage.
 
 **Locked choices**
