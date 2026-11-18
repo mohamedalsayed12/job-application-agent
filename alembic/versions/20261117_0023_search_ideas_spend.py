@@ -1,10 +1,10 @@
-"""The spending kind for suggesting roles and places to search (D62)"""
+"""The spending kind for suggesting roles and places to search (D64)"""
 from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0022_search_ideas_spend"
-down_revision: str | None = "0021_interview_job_pack"
+revision: str = "0023_search_ideas_spend"
+down_revision: str | None = "0022_experience_levels"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

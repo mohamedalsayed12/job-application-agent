@@ -1,4 +1,4 @@
-"""Suggest job titles and places to search, from the person's own profile, before any search runs (D62).
+"""Suggest job titles and places to search, from the person's own profile, before any search runs (D64).
 
 Adapted from the search planner in feder-cr/Jobs_Applier_AI_Agent (`src/aihawk/profile.py`): the AI names
 the titles a posting would use for this person's next job, and the towns within a commute that an advert
