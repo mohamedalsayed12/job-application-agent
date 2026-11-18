@@ -127,6 +127,12 @@ def test_d43_only_what_the_cv_says_is_kept_but_roles_may_be_inferred() -> None:
     assert found.experience_level == ""
 
 
+def test_d45_degrees_read_from_a_cv_must_be_in_it() -> None:
+    cv = "Sam Example\nBSc (Hons) Business Management, University of Manchester, 2027"
+    found = grounded({"degrees": ["BSc Business Management", "MSc Computer Science"]}, cv)
+    assert found.degrees == ["BSc Business Management"]
+
+
 def _fields(**values: object) -> ProfileFields:
     blank = dict.fromkeys(("target_roles", "locations", "salary_amount", "experience_level", "travel_distance", "skills", "degrees"), "")
     lists = dict.fromkeys(("cert_name", "cert_issuer", "cert_kind", "cert_expiry"), [])
