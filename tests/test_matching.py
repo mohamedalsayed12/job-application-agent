@@ -192,13 +192,26 @@ LONDON = {"city": "London", "country": "GB"}
         (["Remote UK"], [LONDON], "hybrid", False),
         (["Remote UK"], [{"city": None, "country": "US"}], "remote", False),
         (["Remote"], [{"city": None, "country": "US"}], "remote", True),
-        (["United Kingdom"], [MANCHESTER], None, False),
+        (["United Kingdom"], [MANCHESTER], None, True),
+        (["United Kingdom"], [LONDON], "hybrid", True),
+        (["United Kingdom"], [{"city": "Paris", "country": "FR"}], None, False),
         (["United Kingdom"], [UK], None, True),
         (["Leeds", "London"], [LONDON], None, True),
     ],
 )
 def test_location_fit(wants: list[str], places: list[dict], remote_type: str | None, fits: bool) -> None:
     assert location_fit(wanted_locations(wants), places, remote_type)[0] is fits
+
+
+async def test_a_country_wish_lists_a_job_in_a_city_of_that_country(session: Session) -> None:
+    applicant = _applicant(session, roles=["Junior Backend Developer"], locations=["United Kingdom"])
+    _store(session, [_posting(1, title="Junior Backend Developer", city="Manchester, UK")])
+
+    match_all(session, now=SOON)
+
+    row = _matches(session, applicant)[_job(session, 1).id]
+    assert row.location_fit is True
+    assert row.reasons["location"] == "in Manchester"
 
 
 async def test_t27_one_collection_is_matched_to_every_applicant(session: Session) -> None:

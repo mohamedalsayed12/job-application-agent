@@ -9,7 +9,6 @@ on the person's matches page and hides the ones it says don't.
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -38,8 +37,6 @@ from app.matching.verdicts import (
 from app.models import ApplicantPreference, JobVerdict, SpendKind
 from app.quality.checks import JobFacts
 from app.summaries.check import unsupported
-
-logger = logging.getLogger(__name__)
 
 LEVELS = ("entry", "mid", "senior", "unclear")
 # D51: the areas and score bands of career-ops' offer evaluation (modes/oferta.md, modes/_shared.md, MIT).
