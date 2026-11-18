@@ -85,13 +85,12 @@ def download_cv(
     applicant_id: uuid.UUID = Depends(_bearer_applicant),
     db: Session = Depends(get_db),
 ) -> Response:
-    job_id = None
+    row = None
     if application_id is not None:
         row = get_application(db, application_id, applicant_id)
         if row is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
-        job_id = row.job_id
-    chosen = choose_cv(db, applicant_id, job_id)
+    chosen = choose_cv(db, applicant_id, row)
     if chosen is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No CV uploaded")
     content, file_type = chosen.content, chosen.file_type

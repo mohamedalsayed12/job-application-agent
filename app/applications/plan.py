@@ -152,7 +152,7 @@ async def build_application_plan(
     application: Application,
     fields: list[FormField],
 ) -> FillPlan:
-    chosen = choose_cv(session, applicant.id, application.job_id)
+    chosen = choose_cv(session, applicant.id, application)
     text = _plain(chosen.content if chosen else None, chosen.file_type if chosen else None)
     row = load_answers(session, applicant.id)
     facts = facts_from_profile(answers_as_map(row, email=applicant.email), saved_pairs(row))

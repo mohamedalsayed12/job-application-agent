@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.applicants.cv import base_cv
 from app.applications.mapper import FillPlan
 from app.models import Application, ApplicationStatus, Job
 
@@ -58,6 +59,7 @@ def prepare_application(session: Session, *, applicant_id: uuid.UUID, job_id: uu
     row.apply_url = apply_url
     row.schema_json = None
     store_fill_outcome(row, None, reopen=True)
+    row.cv_file_id = cv.id if (cv := base_cv(session, applicant_id, job)) else None
     session.flush()
     return row
 

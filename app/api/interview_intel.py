@@ -194,9 +194,12 @@ def _themes(title: str, themes: list[Any]) -> str:
             for url in theme.get("cites") or []
             if isinstance(url, str)
         )
+        label = html.escape(str(theme.get("label") or "").strip())
+        detail = html.escape(str(theme.get("detail") or ""))
+        shown = f"{label} {detail}".strip() if label else detail
         items.append(
             f"<li><strong>{html.escape(str(theme.get('theme') or ''))}</strong> — "
-            f"{html.escape(str(theme.get('detail') or ''))}"
+            f"{shown}"
             f"{'<ul>' + cites + '</ul>' if cites else ''}</li>"
         )
     return _section(title, f"<ul>{''.join(items)}</ul>" if items else "<p class=\"hint\">Nothing clear enough.</p>")
