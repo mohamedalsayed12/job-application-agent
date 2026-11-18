@@ -176,6 +176,13 @@ async def test_d63_ticking_a_second_level_is_saved_shown_and_changes_the_matches
     assert set(_matches(session, _applicant(session).id)) == {plain, junior}
 
 
+async def test_d62_the_form_says_degrees_are_for_scoring_not_hiding(client: httpx.AsyncClient) -> None:
+    await _register(client)
+    form = (await client.get("/profile")).text
+    assert "Used when scoring how well a job fits you" in form
+    assert "We hide jobs" not in form
+
+
 async def test_t30_saving_again_replaces_the_lists(client: httpx.AsyncClient, session: Session) -> None:
     await _register(client)
     await client.post("/profile", data=PROFILE)
