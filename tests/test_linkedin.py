@@ -71,8 +71,8 @@ def test_each_role_is_searched_in_each_location_once_however_many_people_want_it
         ([ExperienceLevel.entry], "2"),
         ([ExperienceLevel.internship, ExperienceLevel.entry], "1,2"),
         ([ExperienceLevel.entry, ExperienceLevel.mid], "2,3,4"),
-        ([ExperienceLevel.mid, ExperienceLevel.senior], "3,4"),
-        ([ExperienceLevel.senior], "4"),
+        ([ExperienceLevel.mid, ExperienceLevel.senior], "3,4,5"),
+        ([ExperienceLevel.senior], "4,5"),
     ],
 )
 def test_d63_a_search_asks_for_the_levels_the_person_chose(session: Session, levels: list[ExperienceLevel], codes: str) -> None:
@@ -90,6 +90,7 @@ def test_d63_people_share_a_search_only_when_linkedin_would_be_asked_the_same(se
     session.flush()
     assert searches(session, None) == [
         Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.entry})),
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.mid})),
         Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.mid, ExperienceLevel.senior})),
         Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.senior})),
     ]
@@ -122,7 +123,7 @@ async def test_a_search_starts_a_run_waits_for_it_and_stores_what_it_found(sessi
     assert "test-token" not in str(started.url)
     body = apify.bodies()[0]
     assert body["maxResults"] == 50
-    assert "f_E=2%2C3%2C4" in body["startUrls"][0]["url"]
+    assert "f_E=2%2C3%2C4%2C5" in body["startUrls"][0]["url"]
     assert apify.checks == 2
     assert _job(session, 2).title == "Python Developer"
     spent = session.scalars(select(SpendLedger)).one()
