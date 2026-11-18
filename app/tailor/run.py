@@ -3,7 +3,7 @@
 Per package: parse the master CV into structure, extract the posting's keywords, ask for
 path-based edits, apply only the edits that quote their source, inject keywords the master CV
 already supports, strip stock AI wording and unsupported skills, then hold the result to the
-master CV row by row before rendering.
+master CV row by row before rendering. Last, write a cover letter from that final CV.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ from app.tailor.render import render_docx, render_pdf
 from app.tailor.resume import all_text
 from app.tailor.voice import restore_lines, voice_problems
 
-PROMPT_VERSION = "resume-matcher-959e458"
+PROMPT_VERSION = "resume-matcher-959e458-cover-letter"
 # Placeholder hash for a requested package, so it never looks already built.
 REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
@@ -288,6 +288,7 @@ def _skip(
     row.status = TailoredCvStatus.skipped.value
     row.input_hash = reason
     row.draft = {"reason": reason}
+    row.cover_letter = None
     row.keywords = None
     row.ats_report = None
     row.pdf_content = None
@@ -437,6 +438,22 @@ async def _process_one(
     )
     warnings.extend(voice_notes)
 
+    # Upstream treats the letter as optional output: its failure is a warning, never a failed CV.
+    try:
+        written = await paid(
+            lambda: ai.generate_cover_letter(gateway, resume=tailored, posting=item.posting, **key)
+        )
+    except BudgetWait:
+        written = AiCallFailure(reason="budget")
+    letter = None
+    if isinstance(written, AiCallFailure) or written[0] is None:
+        reason = written.reason if isinstance(written, AiCallFailure) else "empty"
+        warnings.append(f"Cover letter skipped: {reason}")
+    else:
+        letter, letter_phrases = remove_ai_phrases(written[0], item.posting, protected_text=all_text(master))
+        if letter_phrases:
+            warnings.append(f"Replaced stock AI wording in the cover letter: {', '.join(letter_phrases)}")
+
     pdf = render_pdf(tailored)
     docx = render_docx(tailored)
     if len(pdf) > MAX_PDF_BYTES or len(docx) > MAX_PDF_BYTES:
@@ -447,6 +464,7 @@ async def _process_one(
     row.input_hash = item.input_hash
     row.cv_file_id = item.cv_file_id
     row.draft = tailored
+    row.cover_letter = letter
     row.keywords = keywords
     row.ats_report = ats_report(
         pdf_bytes=pdf, docx_bytes=docx, resume=tailored, master=master, keywords=keywords, warnings=warnings

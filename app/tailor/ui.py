@@ -40,8 +40,14 @@ def tailor_section(
     allowed: bool,
     verdict: str | None = None,
 ) -> str:
-    """The job page's tailored-CV area."""
-    return listing_tailor(job_id, row, csrf, verdict=verdict, allowed=allowed)
+    """The job page's tailored-CV area, with the cover letter text when there is one."""
+    area = listing_tailor(job_id, row, csrf, verdict=verdict, allowed=allowed)
+    if row is not None and row.status == TailoredCvStatus.ready.value and row.cover_letter:
+        area += (
+            "<details><summary>Read the cover letter</summary>"
+            f'<pre style="white-space: pre-wrap">{html.escape(row.cover_letter)}</pre></details>'
+        )
+    return area
 
 
 def listing_tailor(
@@ -103,10 +109,16 @@ def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | 
             f'<p class="muted">The latest attempt failed. {html.escape(_reason(row))} '
             "The previous file is still here.</p>"
         )
+    letter = (
+        f' Cover letter: <a href="/jobs/{jid}/cover-letter.pdf">PDF</a> · '
+        f'<a href="/jobs/{jid}/cover-letter.docx">DOCX</a>'
+        if row.cover_letter
+        else ""
+    )
     return (
         f"<p><b>Tailored CV ready.</b> {html.escape(ats)} {html.escape(match)} "
         f'<a href="/jobs/{jid}/tailored.pdf">PDF</a> · '
-        f'<a href="/jobs/{jid}/tailored.docx">DOCX</a></p>'
+        f'<a href="/jobs/{jid}/tailored.docx">DOCX</a>.{letter}</p>'
         f"{retry_note}{_company_note(row)}{_coverage(row)}"
     )
 
