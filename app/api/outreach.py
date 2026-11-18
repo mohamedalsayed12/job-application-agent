@@ -162,7 +162,6 @@ def outreach_list(
 
 @router.post("/jobs/{job_id}/outreach/find", response_class=HTMLResponse, dependencies=_CSRF)
 async def outreach_find(
-    request: Request,
     job_id: uuid.UUID,
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
