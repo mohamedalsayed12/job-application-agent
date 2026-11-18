@@ -78,7 +78,7 @@ People fill in their profile at `/profile`: target roles, locations, optional sa
 certifications and licences, experience levels and optional travel distance. They can upload one
 CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. When AI reads the CV, the job titles
 it suggests appear as checkboxes under the target roles, and ticked ones are added on save. Under
-the box the page lists the related titles that are searched as well (D66). Only its owner can download it,
+the box the page lists the related titles that are searched as well (D67). Only its owner can download it,
 and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
 
 Admins log in at `/admin/login` with `ADMIN_KEY`. The session lasts 12 hours. Scripts can send
@@ -100,7 +100,7 @@ uv run pytest
 
 Jobs come from LinkedIn and Indeed. Once a day the worker runs one LinkedIn search per
 title and location. A person's titles are their target roles, then related titles Claude
-suggests for them, up to 10 in each location (D66). Indeed searches for the graduate, junior and entry-level
+suggests for them, up to 10 in each location (D67). Indeed searches for the graduate, junior and entry-level
 forms of each role in each location. The same query is searched once per source, however
 many people want it. LinkedIn uses the Black Falcon Data scraper
 (`blackfalcondata/linkedin-job-scraper`): entry-level, last 3 days, newest first, up to
@@ -160,7 +160,7 @@ on role, location, salary status, skills and required licences. Each match lists
 the applicant has, the skills they don't, and any licence the advert requires that they don't
 hold. A job fits a role when its title has every word of one of the person's titles (their
 target roles and the related titles), or is close to one in meaning, compared on this machine.
-This costs nothing and makes no requests. The rules are in `MVP.md` decisions D35, D40 and D66. To run it now and print the best matches for each
+This costs nothing and makes no requests. The rules are in `MVP.md` decisions D35, D40 and D67. To run it now and print the best matches for each
 applicant, run:
 
 ```bash
