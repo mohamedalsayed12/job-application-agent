@@ -33,6 +33,16 @@ def tailor_button(csrf: str, job_id: uuid.UUID, *, label: str = "Tailor my CV fo
     )
 
 
+def cover_letter_text(row: TailoredCv | None) -> str:
+    """The letter itself, folded away, for the job page."""
+    if row is None or row.status != TailoredCvStatus.ready.value or not row.cover_letter:
+        return ""
+    return (
+        "<details><summary>Read the cover letter</summary>"
+        f'<pre style="white-space: pre-wrap">{html.escape(row.cover_letter)}</pre></details>'
+    )
+
+
 def listing_tailor(
     job_id: uuid.UUID,
     row: TailoredCv | None,
@@ -92,10 +102,16 @@ def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, auto: bool) -> 
             f'<p class="muted">The latest attempt failed. {html.escape(_reason(row))} '
             "The previous file is still here.</p>"
         )
+    letter = (
+        f' Cover letter: <a href="/jobs/{jid}/cover-letter.pdf">PDF</a> · '
+        f'<a href="/jobs/{jid}/cover-letter.docx">DOCX</a>'
+        if row.cover_letter
+        else ""
+    )
     return (
         f"<p><b>Tailored CV ready.</b> {html.escape(ats)} {html.escape(match)} "
         f'<a href="/jobs/{jid}/tailored.pdf">PDF</a> · '
-        f'<a href="/jobs/{jid}/tailored.docx">DOCX</a></p>'
+        f'<a href="/jobs/{jid}/tailored.docx">DOCX</a>.{letter}</p>'
         f"{retry_note}{_company_note(row)}{_coverage(row)}"
     )
 

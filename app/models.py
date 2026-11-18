@@ -738,6 +738,8 @@ class TailoredCv(_UuidPk, Base):
     requested_at: Mapped[datetime | None] = mapped_column(TZ)
     # Structured draft after grounding, keywords list, ATS coverage table.
     draft: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
+    # Plain text written from the final draft; PDF and DOCX are rendered on download.
+    cover_letter: Mapped[str | None] = mapped_column(Text())
     keywords: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     ats_report: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     company_research_id: Mapped[uuid.UUID | None] = mapped_column(
