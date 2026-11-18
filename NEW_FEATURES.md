@@ -22,14 +22,15 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 **How it works**
 1. User clicks **Prepare apply** on a listing.
-2. Apify extracts the form schema from the job's `apply_url`.
-3. Server maps fields to an `application_answers` profile (patterns first, LLM for leftovers).
-4. Browser extension (MV3) fills the open tab, uploads the CV, and **never** clicks Submit.
-5. Status becomes `filled_awaiting_review`; in-app + extension notify the user.
+2. The extension reads the questions on the employer page the person has open. It works on any site. There is no Greenhouse, Lever, or Apify form fetch.
+3. Server maps fields to the person's apply answers, saved answers, account email, or an exact CV quote (patterns first, model only to point at one of those).
+4. A required question with nothing grounded becomes `needs_input`. The app and the extension name the questions. The person answers, the answer is saved, and a later form that asks the same thing in other words reuses it.
+5. Browser extension (MV3) fills the open tab, uploads the CV (tailored PDF when that job has one ready, otherwise the uploaded CV), scrolls to Submit, and **never** clicks Submit.
+6. Status becomes `filled_awaiting_review`; in-app + extension notify the user.
 
 **Locked choices**
 - Fill UX: browser extension on the employer page (not server-side submit).
-- Form intel: Apify + existing `BudgetGate` / `APIFY_API_TOKEN`.
+- The person clicks Fill. `activeTab` and `scripting` cover that employer tab. The extension does not hold a standing permission to read every site. Host access is only the local app, so it can fetch the plan and the CV.
 - Demographics default to Prefer not to say; never invent required answers.
 
 **New data.** `application_answers`, `application` (status machine), `extension_device` (hashed API token).
@@ -45,7 +46,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 **Depends on.** Apply fill agent (§1): same `application` row, fill plan, extension device token, and `application_answers`. Optionally uses a tailored CV (§6) when one is ready for that job.
 
 **How it works**
-1. User (or an Apply-verdict queue) starts **Prepare apply** → Apify schema + field map + extension fill + CV upload (§1).
+1. User (or an Apply-verdict queue) starts **Prepare apply** → the extension reads the open page, the server maps grounded answers, then the extension fills and uploads the CV (§1).
 2. Status becomes `filled_awaiting_review`. The extension scrolls to / highlights Submit but **does not click it**.
 3. Notify the user (extension badge/notification + in-app banner on `/applications` and the listings chip): form is ready — review the answers, then click Submit on the employer page.
 4. User reviews and clicks Submit themselves.

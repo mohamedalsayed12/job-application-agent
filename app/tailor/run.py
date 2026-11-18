@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.anthropic import AiCallFailure
 from app.ai.injection import looks_like_injection
+from app.applicants.cv import cvs_by_applicant, pick_base_cv
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
@@ -93,6 +94,7 @@ class _Work:
     input_hash: str
     company_name: str
     apply_url: str
+    cv_file_id: uuid.UUID
 
 
 @dataclass
@@ -263,16 +265,14 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     jobs = {job.id: job for job in session.scalars(select(Job).where(Job.id.in_({j for _, j in pairs}), is_open))}
 
     texts: dict[uuid.UUID, str | None] = {}
-    cvs: dict[uuid.UUID, CvFile | None] = {}
+    cvs = cvs_by_applicant(session, {applicant_id for applicant_id, _ in pairs})
     work: list[_Work] = []
     for applicant_id, job_id in pairs:
         job = jobs.get(job_id)
         if job is None or not job.description:
             continue
         current = rows.get((applicant_id, job_id))
-        if applicant_id not in cvs:
-            cvs[applicant_id] = base_cv(session, applicant_id)
-        cv_file = cvs[applicant_id]
+        cv_file = pick_base_cv(cvs.get(applicant_id, []), title=job.title, advert=job.description)
         if cv_file is None:
             _skip(session, applicant_id, job_id, current, reason="no_cv", now=now)
             continue
@@ -302,6 +302,7 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
             input_hash=package_hash(posting=posting, cv_bytes=cv_file.content),
             company_name=job.company_name,
             apply_url=job.apply_url,
+            cv_file_id=cv_file.id,
         )
         if current is not None and current.input_hash == item.input_hash and current.status in _DONE:
             continue
@@ -557,6 +558,7 @@ async def _process_one(
     row = _row_for(session, item)
     row.status = TailoredCvStatus.ready.value
     row.input_hash = item.input_hash
+    row.cv_file_id = item.cv_file_id
     row.draft = tailored
     row.keywords = keywords
     row.ats_report = ats_report(

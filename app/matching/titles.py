@@ -30,6 +30,7 @@ ENTRY_TITLE_TOKENS = (
 LEADING_ENTRY_LEVEL_TOKENS = (*ENTRY_TITLE_TOKENS, "entry")
 ENTRY_TITLE = re.compile(rf"\b(?:{'|'.join(ENTRY_TITLE_TOKENS)})\b", re.IGNORECASE)
 LEADING_ENTRY_LEVEL = re.compile(rf"^(?:{'|'.join(LEADING_ENTRY_LEVEL_TOKENS)})\s+", re.IGNORECASE)
+LEADING_OTHER_LEVEL = re.compile(r"^(?:senior|snr|sr\.?|mid[- ]level|mid)\s+", re.IGNORECASE)
 YEARS_REQUIRED = re.compile(
     r"\b([3-9]|1\d)\s*\+?\s*(?:(?:-|–|to)\s*\d+\s*)?(?:years?|yrs?)\b[^.]{0,60}\bexperience",
     re.IGNORECASE,

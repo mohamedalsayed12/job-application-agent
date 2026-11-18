@@ -24,6 +24,7 @@ from app.models import (
     ApplicantPreference,
     ApplicantProfile,
     BudgetPolicy,
+    CvFile,
     Job,
     JobReport,
     SpendKind,
@@ -284,11 +285,17 @@ async def test_apply_job_gets_ready_package(session: Session) -> None:
     ai = _TailorAi()
     applicant, gateway, settings = await _prepare(session, ai)
 
+    stored = session.scalar(select(CvFile).where(CvFile.applicant_id == applicant))
+    stored.label = "Backend Developer"
+    store_cv(session, applicant, b"%PDF-1.7\nother cv", label="Data Analyst")
+    session.flush()
+
     await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
 
     assert ai.tailor_calls == ["parse", "keywords", "diffs", "inject"]
     row = _package(session, applicant)
     assert row.status == TailoredCvStatus.ready.value
+    assert row.cv_file_id == stored.id
     text = " ".join(pdf_text(row.pdf_content).split())
     assert "Led a REST API web service in Python with FastAPI and PostgreSQL for a student society." in text
     assert "Spearheaded" not in text
@@ -800,7 +807,7 @@ async def test_an_apply_job_outside_my_locations_is_tailored_when_i_widen_the_sc
     ai = _TailorAi()
     applicant, gateway, settings = await _prepare(session, ai)
     _away_from_the_job(session, applicant)
-    session.add(ApplicantProfile(applicant_id=applicant, experience_level="entry", tailor_outside_locations=True))
+    session.add(ApplicantProfile(applicant_id=applicant, experience_levels=["entry"], tailor_outside_locations=True))
     session.flush()
 
     listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
@@ -868,7 +875,7 @@ async def test_the_job_page_follows_the_tailoring_scope(client: httpx.AsyncClien
     assert "Tailor my CV for this job" in page
     assert "Tailored CV queued" not in page
 
-    session.add(ApplicantProfile(applicant_id=applicant.id, experience_level="entry", tailor_outside_locations=True))
+    session.add(ApplicantProfile(applicant_id=applicant.id, experience_levels=["entry"], tailor_outside_locations=True))
     session.flush()
     page = (await client.get(f"/jobs/{job.id}")).text
     assert "Tailored CV queued." in page
