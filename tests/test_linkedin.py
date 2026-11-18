@@ -6,14 +6,24 @@ from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.linkedin import Search, collect_linkedin, searches
-from app.models import BudgetPolicy, FetchOutcome, FetchRun, SpendLedger
+from app.models import (
+    ApplicantProfile,
+    BudgetPolicy,
+    ExperienceLevel,
+    FetchOutcome,
+    FetchRun,
+    SpendLedger,
+)
 from tests.jobs import DAY_1, _Apify, _job, _li
 from tests.test_matching import _applicant
+
+_ANY = frozenset({ExperienceLevel.entry, ExperienceLevel.mid, ExperienceLevel.senior})
 
 
 def _policy(session: Session, money_cap: str = "1") -> None:
@@ -45,15 +55,49 @@ def test_each_role_is_searched_in_each_location_once_however_many_people_want_it
     _applicant(session, roles=["backend developer"], locations=["manchester", "Leeds"])
 
     assert searches(session, None) == [
-        Search("backend developer", "Leeds"),
-        Search("Backend Developer", "Manchester"),
-        Search("Python Developer", "Manchester"),
+        Search("backend developer", "Leeds", _ANY),
+        Search("Backend Developer", "Manchester", _ANY),
+        Search("Python Developer", "Manchester", _ANY),
     ]
-    assert searches(session, {first}) == [Search("Backend Developer", "Manchester"), Search("Python Developer", "Manchester")]
+    assert searches(session, {first}) == [
+        Search("Backend Developer", "Manchester", _ANY),
+        Search("Python Developer", "Manchester", _ANY),
+    ]
 
 
-def test_a_search_asks_linkedin_for_recent_entry_level_jobs_newest_first() -> None:
-    url = Search("Junior Python Developer", "Manchester").url(posted_within_days=3)
+@pytest.mark.parametrize(
+    ("levels", "codes"),
+    [
+        ([ExperienceLevel.entry], "2"),
+        ([ExperienceLevel.internship, ExperienceLevel.entry], "1,2"),
+        ([ExperienceLevel.entry, ExperienceLevel.mid], "2,3,4"),
+        ([ExperienceLevel.mid, ExperienceLevel.senior], "3,4,5"),
+        ([ExperienceLevel.senior], "4,5"),
+    ],
+)
+def test_d63_a_search_asks_for_the_levels_the_person_chose(session: Session, levels: list[ExperienceLevel], codes: str) -> None:
+    applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=applicant, experience_levels=levels))
+    session.flush()
+    [search] = searches(session, None)
+    assert parse_qs(urlsplit(search.url(posted_within_days=3)).query)["f_E"] == [codes]
+
+
+def test_d63_people_share_a_search_only_when_linkedin_would_be_asked_the_same(session: Session) -> None:
+    for levels in (["entry"], ["entry"], ["senior"], ["mid"], ["mid", "senior"]):
+        applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+        session.add(ApplicantProfile(applicant_id=applicant, experience_levels=levels))
+    session.flush()
+    assert searches(session, None) == [
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.entry})),
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.mid})),
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.mid, ExperienceLevel.senior})),
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.senior})),
+    ]
+
+
+def test_a_search_asks_linkedin_for_recent_jobs_at_its_levels_newest_first() -> None:
+    url = Search("Junior Python Developer", "Manchester", frozenset({ExperienceLevel.entry})).url(posted_within_days=3)
     query = parse_qs(urlsplit(url).query)
     assert url.startswith("https://www.linkedin.com/jobs/search/?")
     assert query == {
@@ -79,7 +123,7 @@ async def test_a_search_starts_a_run_waits_for_it_and_stores_what_it_found(sessi
     assert "test-token" not in str(started.url)
     body = apify.bodies()[0]
     assert body["maxResults"] == 50
-    assert "f_E=2" in body["startUrls"][0]["url"]
+    assert "f_E=2%2C3%2C4%2C5" in body["startUrls"][0]["url"]
     assert apify.checks == 2
     assert _job(session, 2).title == "Python Developer"
     spent = session.scalars(select(SpendLedger)).one()

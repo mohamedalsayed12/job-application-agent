@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     gmail_token_key: str = ""
 
     # Interview intel: public Reddit, YouTube and LinkedIn posts through Apify (no Instagram/TikTok in v1).
-    interview_reddit_actor: str = "trudax/reddit-scraper-lite"
+    interview_reddit_actor: str = "harshmaur/reddit-search-scraper"
     interview_youtube_actor: str = "streamers/youtube-scraper"
     interview_linkedin_actor: str = "apimaestro/linkedin-posts-search-scraper-no-cookies"
     interview_max_per_platform: int = 25
@@ -119,6 +119,8 @@ class Settings(BaseSettings):
     ai_report_unit_price: Decimal = Decimal("0.0015")
     # D55: keyword extract / tailor / ATS revise each reserve this ceiling once.
     ai_tailor_unit_price: Decimal = Decimal("0.003")
+    # D64: about 0.5k tokens in and 0.4k out on Haiku 5.5, well under £0.001; this is a ceiling.
+    ai_ideas_unit_price: Decimal = Decimal("0.002")
 
     # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
     ai_summary_model: str = ""
@@ -130,6 +132,8 @@ class Settings(BaseSettings):
     ai_cv_model: str = ""
     ai_cv_max_output_tokens: int = 1500
     ai_cv_max_chars: int = 24000
+    # D64: suggesting roles and places to search uses the CV model.
+    ai_ideas_max_output_tokens: int = 800
 
     # D50: the AI judging whether each job fits each person. Blank model = provider default.
     ai_judge_model: str = ""
@@ -178,6 +182,7 @@ class Settings(BaseSettings):
         "outreach_people_unit_price",
         "outreach_profile_unit_price",
         "outreach_ai_unit_price",
+        "ai_ideas_unit_price",
         mode="before",
     )
     @classmethod
