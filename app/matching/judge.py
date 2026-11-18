@@ -9,7 +9,6 @@ on the person's matches page and hides the ones it says don't.
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -41,8 +40,6 @@ from app.models import ApplicantPreference, JobVerdict, SpendKind
 from app.quality.checks import JobFacts
 from app.summaries.check import unsupported
 
-logger = logging.getLogger(__name__)
-
 LEVELS = ("entry", "mid", "senior", "unclear")
 # D51: the areas and score bands of career-ops' offer evaluation (modes/oferta.md, modes/_shared.md, MIT).
 AREAS = ("cv_match", "role_alignment", "comp", "culture")
@@ -56,7 +53,7 @@ Rate each area from 1 to 5:
   level the person wants; "entry" means graduate, junior or entry-level jobs. An advert above all of those levels,
   such as one asking an "entry" person for several years of experience, rates 1 or 2. An apprenticeship rates 1. An
   internship rates 1 unless the person wants "internship". A required degree subject the person did not study rates
-  2 or less unless the advert accepts experience instead.
+  2 or less, and is named in red_flags, unless the advert accepts experience instead.
 - role_alignment: 5 when the job is exactly one of the person's target roles, 1 when it is unrelated. A job that matches
   no target role is 1, not the middle.
 - comp: the advert's pay against the UK market for this role and level. 5 is top quartile, 1 is well below market.

@@ -19,7 +19,7 @@ from app.models import ApplicantProfile, ExperienceLevel
 @dataclass(frozen=True, slots=True)
 class LevelFacts:
     label: str
-    # LinkedIn's f_E filter: 1 internship, 2 entry level, 3 associate, 4 mid-senior level.
+    # LinkedIn's f_E filter: 1 internship, 2 entry level, 3 associate, 4 mid-senior level, 5 director.
     linkedin_codes: tuple[str, ...]
     # Indeed has no level filter, so each level is searched as job titles; "{}" is the role.
     indeed_forms: tuple[str, ...]
@@ -33,7 +33,7 @@ LEVELS: dict[ExperienceLevel, LevelFacts] = {
         "Entry level (graduate, junior, entry)", ("2",), ("Graduate {}", "Junior {}", "Entry Level {}"), True
     ),
     ExperienceLevel.mid: LevelFacts("Mid level", ("3", "4"), ("{}",), False),
-    ExperienceLevel.senior: LevelFacts("Senior", ("4",), ("Senior {}",), False),
+    ExperienceLevel.senior: LevelFacts("Senior", ("4", "5"), ("Senior {}",), False),
     ExperienceLevel.internship: LevelFacts("Internship (students only)", ("1",), ("{} Intern",), False),
 }
 Levels = frozenset[ExperienceLevel]

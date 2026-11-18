@@ -26,7 +26,6 @@ from app.applicants.types import ExpectedSalary
 from app.cleaning.normalize import Place, parse_location, parse_places
 from app.matching.credentials import Held, held_groups, required_in_advert
 from app.matching import semantic
-from app.matching.degrees import degree_shuts_out, required_fields
 from app.matching.related_titles import with_related
 from app.matching.semantic import Embedder, similarity
 from app.matching.titles import (
@@ -48,7 +47,6 @@ from app.models import (
     ApplicantCertification,
     ApplicantJobMatch,
     ApplicantPreference,
-    ApplicantProfile,
     ApplicantSkill,
     ExperienceLevel,
     Job,
@@ -348,8 +346,13 @@ def location_fit(wanted: list[Wanted], places: list[dict[str, Any]], remote_type
             if _same_city(want, place):
                 return True, f"in {place['city']}"
         for place in places:
-            if remote_type != "remote" and place["city"] is None and _covers(place, want.country):
+            if remote_type == "remote" or not _covers(place, want.country):
+                continue
+            if place["city"] is None:
                 return True, f"anywhere in {place['country'] or place['region']}"
+            whole_country = not want.city
+            if whole_country:
+                return True, f"in {place['city']}"
     if remote_type == "remote":
         for want in wanted:
             if not places:
@@ -436,10 +439,6 @@ def showable(session: Session, now: datetime) -> list[JobFacts]:
     return [facts for facts, quality in check_all(session, now) if _can_be_shown(facts, quality)]
 
 
-def applicant_degrees(session: Session) -> dict[uuid.UUID, list[str]]:
-    return dict(session.execute(select(ApplicantProfile.applicant_id, ApplicantProfile.degrees)).all())
-
-
 def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] | None = None) -> MatchReport:
     """Safe to repeat. Afterwards the table holds exactly the current matches.
 
@@ -450,8 +449,6 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
     levels = saved_levels(session)
     skills = load_skills(session, now=now)
     required = {facts.job_id: required_in_advert(facts.description) for facts in shown}
-    degrees = applicant_degrees(session)
-    subjects = {facts.job_id: required_fields(facts.description) for facts in shown}
     profiles = load_profiles(session, applicant_ids)
     meaning = TitleMeaning(semantic.local_embedder)
     job_digests = {
@@ -478,11 +475,9 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
             report,
             skills,
             required,
-            subjects,
             levels=chosen_or_inferred(levels.get(preference.applicant_id, frozenset()), preference.target_roles),
             titles=with_related(session, preference.target_roles),
             meaning=meaning,
-            degrees=degrees.get(preference.applicant_id) or [],
             verdicts=_verdicts(session, profiles.get(preference.applicant_id), job_digests),
         )
     session.flush()
@@ -496,12 +491,10 @@ def _match_applicant(
     report: MatchReport,
     skills: Skills,
     required: dict[uuid.UUID, list[str]],
-    subjects: dict[uuid.UUID, list[frozenset[str]]],
     *,
     levels: Levels,
     titles: list[str],
     meaning: TitleMeaning,
-    degrees: list[str],
     verdicts: dict[uuid.UUID, JobVerdict],
 ) -> None:
     applicant_id = preference.applicant_id
@@ -530,7 +523,7 @@ def _match_applicant(
         )
         if role is None and verdict is not None:
             role = RoleMatch(target="", kind=RoleKind.ai, level=ENTRY_BY_AI if verdict.level == "entry" else None)
-        if role is None or degree_shuts_out(subjects[facts.job_id], degrees):
+        if role is None:
             continue
         job = session.get(Job, facts.job_id)
         salary = salary_match_status(

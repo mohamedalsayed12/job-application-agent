@@ -355,7 +355,7 @@ class ApplicantProfile(_UuidPk, Base):
     # D63: every level the person wants, at least one.
     experience_levels: Mapped[list[str]] = mapped_column(ARRAY(Text()))
     travel_distance_miles: Mapped[int | None] = mapped_column(Integer())
-    # As typed, such as "BSc Business Management". Studying for one counts (D45).
+    # As typed, such as "BSc Business Management". Studying for one counts. Used only in the AI score (D62).
     degrees: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     updated_at: Mapped[datetime] = _updated()
 
