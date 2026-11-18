@@ -79,6 +79,12 @@ certifications and licences, experience levels and optional travel distance. The
 CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner can download it,
 and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
 
+Before anything is searched, "Suggest roles and places" on the profile asks Claude for job titles that fit the
+person's skills and degrees, and towns near their locations. Each role names the skills or degrees it rests on, and code
+drops any that rest on nothing in the profile or that matching would hide for their level. The suggestions go into the
+form with the number of daily LinkedIn searches the profile will run and their cost cap. Nothing is saved until the
+person presses Save. The rules are in decision D64.
+
 Admins log in at `/admin/login` with `ADMIN_KEY`. The session lasts 12 hours. Scripts can send
 the key in an `X-Admin-Key` header instead. The key is not accepted in a URL.
 
