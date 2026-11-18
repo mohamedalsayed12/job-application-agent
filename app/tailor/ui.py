@@ -18,6 +18,11 @@ def tailor_button(csrf: str, job_id: uuid.UUID, *, label: str = "Tailor my CV fo
 def tailor_section(job_id: uuid.UUID, row: TailoredCv | None, csrf: str, *, allowed: bool) -> str:
     """The job page's tailored-CV area: status, plus the button when a request would do something."""
     status = tailored_block(job_id, row)
+    if row is not None and row.status == TailoredCvStatus.ready.value and row.cover_letter:
+        status += (
+            "<details><summary>Read the cover letter</summary>"
+            f'<pre style="white-space: pre-wrap">{html.escape(row.cover_letter)}</pre></details>'
+        )
     if not allowed:
         return status
     if row is None:
@@ -55,8 +60,14 @@ def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | 
         ats = "ATS checks need a look."
     match = f"Keyword match {report['keyword_match']}%." if coverage and "keyword_match" in report else ""
     jid = html.escape(str(job_id))
+    letter = (
+        f' Cover letter: <a href="/jobs/{jid}/cover-letter.pdf">PDF</a> · '
+        f'<a href="/jobs/{jid}/cover-letter.docx">DOCX</a>'
+        if row.cover_letter
+        else ""
+    )
     return (
         f"<p><b>Tailored CV ready.</b> {html.escape(ats)} {html.escape(match)} "
         f'<a href="/jobs/{jid}/tailored.pdf">PDF</a> · '
-        f'<a href="/jobs/{jid}/tailored.docx">DOCX</a></p>'
+        f'<a href="/jobs/{jid}/tailored.docx">DOCX</a>.{letter}</p>'
     )
