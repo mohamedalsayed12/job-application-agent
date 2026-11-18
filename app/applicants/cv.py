@@ -1,4 +1,4 @@
-"""A person's CVs: check, store, replace, label and delete them, and pick the one a job gets (D38, D61)."""
+"""A person's CVs: check, store, replace, label and delete them, and pick the one a job gets (D38, D65)."""
 
 from __future__ import annotations
 

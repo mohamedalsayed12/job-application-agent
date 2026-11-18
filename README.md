@@ -79,7 +79,7 @@ certifications and licences, experience level and optional travel distance. They
 CVs (PDF or DOCX, up to 5 MB each), label them by target job, and choose a primary CV. Uploading
 a CV or asking to fill the profile sends its text to the AI provider for editable suggestions.
 Tailoring and application preparation choose a CV for the job. Only its owner can download it.
-`/account` also deletes the account and all its CVs. The rules are in decisions D38, D43 and D61.
+`/account` also deletes the account and all its CVs. The rules are in decisions D38, D43 and D65.
 
 Admins log in at `/admin/login` with `ADMIN_KEY`. The session lasts 12 hours. Scripts can send
 the key in an `X-Admin-Key` header instead. The key is not accepted in a URL.

@@ -1,4 +1,4 @@
-"""Several CVs per person, one of them primary, and the CV each tailored package and application used (D61)."""
+"""Several CVs per person, one of them primary, and the CV each tailored package and application used (D65)."""
 
 from collections.abc import Sequence
 
@@ -6,8 +6,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0022_multi_cv"
-down_revision: str | None = "0021_interview_job_pack"
+revision: str = "0024_multi_cv"
+down_revision: str | None = "0023_search_ideas_spend"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
