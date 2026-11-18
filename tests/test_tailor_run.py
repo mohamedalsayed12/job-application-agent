@@ -60,12 +60,12 @@ async def test_a_crashed_run_resumes_without_paying_again(session: Session, monk
     second = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.commit, now=SOON)
 
     assert second.outcomes["ready"] == 1
-    assert ai.tailor_calls == ["parse", "keywords", "diffs", "inject"]
+    assert ai.tailor_calls == ["parse", "keywords", "diffs", "inject", "letter"]
     spends = _spends(session, row.job_id)
-    assert [spend.actual_cost for spend in spends] == [Decimal("0.003")] * 4
+    assert [spend.actual_cost for spend in spends] == [Decimal("0.003")] * 5
     session.refresh(row)
     assert row.status == TailoredCvStatus.ready.value
-    assert row.cost_amount == Decimal("0.003") * 4
+    assert row.cost_amount == Decimal("0.003") * 5
     assert row.pdf_content.startswith(b"%PDF")
     assert session.scalars(select(TailorRun)).first() is None
 
@@ -163,7 +163,7 @@ async def test_a_changed_advert_starts_a_fresh_run(session: Session, monkeypatch
 
     await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.commit, now=SOON)
 
-    assert ai.tailor_calls == ["parse", "keywords", "parse", "keywords", "diffs", "inject"]
+    assert ai.tailor_calls == ["parse", "keywords", "parse", "keywords", "diffs", "inject", "letter"]
     assert _package(session, applicant).status == TailoredCvStatus.ready.value
 
 
