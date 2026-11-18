@@ -8,20 +8,23 @@ master CV row by row before rendering.
 
 from __future__ import annotations
 
+import copy
 import hashlib
+import json
+import logging
 import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import islice
-from typing import Any
+from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallFailure, AiCallResponse
+from app.ai.anthropic import AiCallFailure
 from app.ai.injection import looks_like_injection
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
@@ -41,13 +44,14 @@ from app.models import (
     TAILOR_VERDICTS,
     TailoredCv,
     TailoredCvStatus,
+    TailorRun,
     attempt_failed,
     auto_tailored,
 )
 from app.tailor import ai
 from app.tailor.ats import ats_report
 from app.tailor.company import load_site_terms, with_keyword_sources
-from app.tailor.improver import apply_diffs, verify_diff_result
+from app.tailor.improver import apply_diffs, changes_from, verify_diff_result
 from app.tailor.preservation import finalize_ai_resume
 from app.tailor.refiner import (
     analyze_keyword_gaps,
@@ -63,10 +67,18 @@ PROMPT_VERSION = "resume-matcher-959e458"
 REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
 _DONE = frozenset({TailoredCvStatus.ready.value, TailoredCvStatus.skipped.value, TailoredCvStatus.failed.value})
+# Attempts on one input that may crash before the package fails. Paid steps are reused, so a retry costs at most
+# the call in flight; three allows for two passing faults (a database restart, a dropped connection) in a row.
+MAX_CRASHES = 3
+# The paid AI calls, in pipeline order.
+Step = Literal["parse", "keywords", "diffs", "inject", "voice"]
+_CHANGE_STEPS: frozenset[Step] = frozenset({"diffs", "voice"})
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
-class TailorRun:
+class TailorCycle:
     outcomes: Counter[str] = field(default_factory=Counter)
     written: set[uuid.UUID] = field(default_factory=set)
     stopped_by: str | None = None
@@ -90,11 +102,11 @@ class _Spend:
     completion_tokens: int = 0
     model: str | None = None
 
-    def add(self, response: AiCallResponse) -> None:
+    def add(self, step: dict[str, Any]) -> None:
         self.calls += 1
-        self.prompt_tokens += response.prompt_tokens
-        self.completion_tokens += response.completion_tokens
-        self.model = response.model or self.model
+        self.prompt_tokens += step["prompt_tokens"]
+        self.completion_tokens += step["completion_tokens"]
+        self.model = step["model"] or self.model
 
 
 def package_hash(*, posting: str, cv_bytes: bytes) -> str:
@@ -109,18 +121,22 @@ async def write_tailored_cvs(
     settings: Settings,
     persist: Callable[[], None],
     now: datetime | None = None,
-) -> TailorRun:
-    """Tailor up to a cycle's worth of Apply/Consider packages; budget waits leave work pending."""
+) -> TailorCycle:
+    """Tailor up to a cycle's worth of Apply/Consider packages; budget waits leave work pending.
+
+    `persist` must commit: a crashed package is rolled back to its last commit, which holds every paid step.
+    """
     now = now or datetime.now(UTC)
-    run = TailorRun()
+    cycle = TailorCycle()
     api_key = settings.anthropic_api_key.strip()
     if settings.ai_provider.strip().lower() != "anthropic" or not api_key:
-        run.stopped_by = "not_configured"
-        return run
+        cycle.stopped_by = "not_configured"
+        return cycle
 
     work = list(islice(_todo(session, now, settings), settings.ai_tailor_per_cycle))
+    persist()
     if not work:
-        return run
+        return cycle
 
     cost = estimate_cost(
         provider=settings.ai_provider, kind=SpendKind.ai_cv_tailor, units=Decimal(1), settings=settings
@@ -139,7 +155,7 @@ async def write_tailored_cvs(
                 cost=cost,
                 persist=persist,
                 now=now,
-                run=run,
+                cycle=cycle,
             )
         except BudgetWait:
             row = _row_for(session, item)
@@ -152,11 +168,17 @@ async def write_tailored_cvs(
                 row.prompt_version = PROMPT_VERSION
             row.updated_at = now
             session.flush()
-            run.outcomes["waiting_budget"] += 1
-            run.stopped_by = "budget"
+            cycle.outcomes["waiting_budget"] += 1
+            cycle.stopped_by = "budget"
             persist()
-            return run
-    return run
+            return cycle
+        except Exception as exc:
+            session.rollback()
+            logger.exception("tailoring job %s for applicant %s crashed", item.job_id, item.applicant_id)
+            _record_crash(session, item, exc)
+            cycle.outcomes["crashed"] += 1
+            persist()
+    return cycle
 
 
 def tailor_allowed(settings: Settings, applicant_id: uuid.UUID) -> bool:
@@ -316,6 +338,7 @@ def _skip(
     row.prompt_version = PROMPT_VERSION
     row.updated_at = now
     session.flush()
+    _end_run(session, row)
 
 
 def _row_for(session: Session, item: _Work) -> TailoredCv:
@@ -339,6 +362,7 @@ def _row_for(session: Session, item: _Work) -> TailoredCv:
 
 def _fail(session: Session, item: _Work, *, now: datetime, reason: str) -> None:
     row = _row_for(session, item)
+    _end_run(session, row)
     # A refresh that fails keeps the previous download and records this attempt so it is not retried.
     if row.pdf_content:
         row.status = TailoredCvStatus.ready.value
@@ -356,6 +380,38 @@ def _fail(session: Session, item: _Work, *, now: datetime, reason: str) -> None:
     session.flush()
 
 
+def _resume(session: Session, row: TailoredCv, input_hash: str) -> TailorRun:
+    """The package's run for this input. Finding the package still running means the last attempt crashed."""
+    run = session.scalar(select(TailorRun).where(TailorRun.tailored_cv_id == row.id))
+    if run is not None and run.input_hash != input_hash:
+        session.delete(run)
+        session.flush()
+        run = None
+    if run is None:
+        run = TailorRun(tailored_cv_id=row.id, input_hash=input_hash, steps={}, crashes=0)
+        session.add(run)
+    elif row.status == TailoredCvStatus.running.value:
+        run.crashes += 1
+    session.flush()
+    return run
+
+
+def _end_run(session: Session, row: TailoredCv) -> None:
+    """A finished package keeps no intermediate CV text."""
+    session.execute(delete(TailorRun).where(TailorRun.tailored_cv_id == row.id))
+
+
+def _record_crash(session: Session, item: _Work, exc: Exception) -> None:
+    run = session.scalar(
+        select(TailorRun)
+        .join(TailoredCv, TailoredCv.id == TailorRun.tailored_cv_id)
+        .where(TailoredCv.applicant_id == item.applicant_id, TailoredCv.job_id == item.job_id)
+    )
+    if run is not None:
+        run.last_error = f"{type(exc).__name__}: {exc}"[:500]
+        session.flush()
+
+
 async def _process_one(
     session: Session,
     item: _Work,
@@ -367,39 +423,74 @@ async def _process_one(
     cost: Decimal,
     persist: Callable[[], None],
     now: datetime,
-    run: TailorRun,
+    cycle: TailorCycle,
 ) -> None:
     spend = _Spend()
+
+    def failed(reason: str) -> None:
+        _fail(session, item, now=now, reason=reason)
+        cycle.outcomes["failed"] += 1
+        persist()
+
     row = _row_for(session, item)
+    run = _resume(session, row, item.input_hash)
+    if run.crashes >= MAX_CRASHES:
+        return failed("crashed")
     row.status = TailoredCvStatus.running.value
     row.prompt_version = PROMPT_VERSION
     row.updated_at = now
     session.flush()
     persist()
 
-    async def paid(call: Callable[[], Awaitable[Any]]) -> Any:
-        result = await _paid_ai(gate, cost, settings, related_item_id=item.job_id, persist=persist, call=call)
-        if not isinstance(result, AiCallFailure):
-            spend.add(result[1])
-        return result
-
-    def failed(reason: str) -> None:
-        _fail(session, item, now=now, reason=reason)
-        run.outcomes["failed"] += 1
-        persist()
+    async def paid(step: Step, call: Callable[[], Awaitable[Any]]) -> Any:
+        """The step's parsed output. A step an earlier attempt on this input paid for is read back, not called."""
+        if step not in run.steps:
+            reservation = gate.reserve(
+                SpendEstimate(
+                    provider=settings.ai_provider,
+                    kind=SpendKind.ai_cv_tailor,
+                    units=Decimal(1),
+                    unit_label="cv_tailor",
+                    estimated_cost=cost,
+                    related_item_id=item.job_id,
+                )
+            )
+            persist()
+            result = await call()
+            if isinstance(result, AiCallFailure):
+                gate.settle(reservation, consumed=False)
+                persist()
+                return result
+            output, response = result
+            gate.settle(reservation, actual_cost=cost, units=Decimal(1))
+            # One commit with the settled spend row: a paid step is either on record or not paid for.
+            run.steps = {
+                **run.steps,
+                step: {
+                    "output": json.loads(json.dumps(_encode(step, output))),
+                    "model": response.model,
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                    "cost": str(cost),
+                    "spend_ledger_id": str(reservation.ledger_id),
+                },
+            }
+            session.flush()
+            persist()
+        done = run.steps[step]
+        spend.add(done)
+        return _decode(step, copy.deepcopy(done["output"]))
 
     key = {"settings": settings, "api_key": api_key}
-    parsed = await paid(lambda: ai.parse_master(gateway, item.cv, **key))
-    if isinstance(parsed, AiCallFailure):
-        return failed(parsed.reason)
-    master = parsed[0]
+    master = await paid("parse", lambda: ai.parse_master(gateway, item.cv, **key))
+    if isinstance(master, AiCallFailure):
+        return failed(master.reason)
     if master is None:
         return failed("cv_not_parsed")
 
-    extracted = await paid(lambda: ai.extract_job_keywords(gateway, item.posting, **key))
-    if isinstance(extracted, AiCallFailure):
-        return failed(extracted.reason)
-    keywords = extracted[0]
+    keywords = await paid("keywords", lambda: ai.extract_job_keywords(gateway, item.posting, **key))
+    if isinstance(keywords, AiCallFailure):
+        return failed(keywords.reason)
     site = await load_site_terms(
         session,
         gateway,
@@ -411,12 +502,13 @@ async def _process_one(
     )
     keywords = with_keyword_sources(keywords, site.terms, site.note)
 
-    diffs = await paid(
-        lambda: ai.generate_resume_diffs(gateway, master=master, posting=item.posting, keywords=keywords, **key)
+    changes = await paid(
+        "diffs",
+        lambda: ai.generate_resume_diffs(gateway, master=master, posting=item.posting, keywords=keywords, **key),
     )
-    if isinstance(diffs, AiCallFailure):
-        return failed(diffs.reason)
-    tailored, applied, rejected = apply_diffs(master, diffs[0])
+    if isinstance(changes, AiCallFailure):
+        return failed(changes.reason)
+    tailored, applied, rejected = apply_diffs(master, changes)
     warnings = verify_diff_result(master, tailored, applied)
     if rejected:
         warnings.append(f"{len(rejected)} change(s) rejected during verification")
@@ -425,18 +517,19 @@ async def _process_one(
     if injectable:
         try:
             injected = await paid(
+                "inject",
                 lambda: ai.inject_keywords(
                     gateway, tailored=tailored, keywords=injectable, master=master, posting=item.posting, **key
-                )
+                ),
             )
         except BudgetWait:
             # The edited CV is already grounded; ship it rather than discard it.
             injected = AiCallFailure(reason="budget")
-        if isinstance(injected, AiCallFailure) or injected[0] is None:
+        if isinstance(injected, AiCallFailure) or injected is None:
             reason = injected.reason if isinstance(injected, AiCallFailure) else "dropped_section"
             warnings.append(f"Keyword injection skipped: {reason}")
         else:
-            tailored = finalize_ai_resume(tailored, injected[0], allow_review_claims=True)
+            tailored = finalize_ai_resume(tailored, injected, allow_review_claims=True)
 
     tailored, phrases = remove_ai_phrases(tailored, item.posting, protected_text=all_text(master))
     tailored, fabricated = drop_fabricated_skills(tailored, master)
@@ -482,9 +575,18 @@ async def _process_one(
     row.cost_amount = cost * spend.calls
     row.updated_at = now
     session.flush()
-    run.outcomes["ready"] += 1
-    run.written.add(item.applicant_id)
+    _end_run(session, row)
+    cycle.outcomes["ready"] += 1
+    cycle.written.add(item.applicant_id)
     persist()
+
+
+def _encode(step: Step, output: Any) -> Any:
+    return [asdict(change) for change in output] if step in _CHANGE_STEPS else output
+
+
+def _decode(step: Step, stored: Any) -> Any:
+    return changes_from({"changes": stored}) if step in _CHANGE_STEPS else stored
 
 
 async def _human_voice(
@@ -503,6 +605,7 @@ async def _human_voice(
         return tailored, []
     try:
         revised = await paid(
+            "voice",
             lambda: ai.revise_voice(
                 gateway,
                 master=master,
@@ -511,12 +614,12 @@ async def _human_voice(
                 posting=posting,
                 settings=settings,
                 api_key=api_key,
-            )
+            ),
         )
     except BudgetWait:
         revised = AiCallFailure(reason="budget")
-    if not isinstance(revised, AiCallFailure) and revised[0]:
-        tailored, _, _ = apply_diffs(tailored, revised[0])
+    if not isinstance(revised, AiCallFailure) and revised:
+        tailored, _, _ = apply_diffs(tailored, revised)
         tailored, _ = remove_ai_phrases(tailored, posting, protected_text=all_text(master))
         tailored, _ = drop_fabricated_skills(tailored, master)
         tailored = finalize_ai_resume(master, tailored, allow_review_claims=False)
@@ -529,33 +632,3 @@ async def _human_voice(
     elif any(item["rule"] == "uniform" for item in still):
         notes.append("Bullets stayed the same shape")
     return tailored, notes
-
-
-async def _paid_ai(
-    gate: BudgetGate,
-    cost: Decimal,
-    settings: Settings,
-    *,
-    related_item_id: uuid.UUID,
-    persist: Callable[[], None],
-    call,
-):
-    reservation = gate.reserve(
-        SpendEstimate(
-            provider=settings.ai_provider,
-            kind=SpendKind.ai_cv_tailor,
-            units=Decimal(1),
-            unit_label="cv_tailor",
-            estimated_cost=cost,
-            related_item_id=related_item_id,
-        )
-    )
-    persist()
-    result = await call()
-    if isinstance(result, AiCallFailure):
-        gate.settle(reservation, consumed=False)
-        persist()
-        return result
-    gate.settle(reservation, actual_cost=cost, units=Decimal(1))
-    persist()
-    return result

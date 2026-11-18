@@ -13,6 +13,7 @@ _REASONS = {
     "too_large": "The file was too large.",
     "no_cv": "No CV is uploaded.",
     "unreadable": "The CV could not be read.",
+    "crashed": "Something went wrong while building it.",
 }
 # Unfinished packages. With no automatic verdict or request behind one, the worker never picks it up.
 _UNFINISHED = frozenset(
