@@ -1,7 +1,8 @@
 """D54: LinkedIn is the one job source, read through the Black Falcon Data scraper on Apify.
 
-Once a day each person the AI works for gets one LinkedIn search per target role and
-location, for jobs at the levels they chose (D63) posted in the last few days. Each search is one Apify run:
+Once a day each person the AI works for gets one LinkedIn search per title and location: their target
+roles, then the titles related to them, up to `linkedin_titles_per_person`. The searches are for jobs
+at the levels they chose (D63) posted in the last few days. Each search is one Apify run:
 the gateway allows 30 seconds a request, so the run is started, then checked until it
 ends, then its results are read. Every run is reserved against the budget first and
 settled at what Apify says it cost.
@@ -29,6 +30,7 @@ from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
 from app.fetch.apify import run_actor, settle_cost
 from app.fetch.gateway import FetchGateway
+from app.matching.related_titles import expand_titles, with_related
 from app.models import (
     ApplicantPreference,
     FetchOutcome,
@@ -67,8 +69,11 @@ class LinkedinReport:
     stopped_by: str | None = None
 
 
-def searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Search]:
-    """Every target role in every wanted location at the person's levels (D63).
+def searches(session: Session, applicant_ids: set[uuid.UUID] | None, *, per_person: int | None) -> list[Search]:
+    """Each person's titles in every wanted location at the person's levels (D63).
+
+    With `per_person`, the titles are their target roles and then the related titles, up to that many.
+    Without it, only their target roles.
 
     People share a search when LinkedIn would be asked the same thing; it then carries all of their levels.
     """
@@ -79,7 +84,8 @@ def searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Sea
     found: dict[tuple[str, str, str], Search] = {}
     for preference in session.scalars(query):
         levels = chosen_or_inferred(saved.get(preference.applicant_id, frozenset()), preference.target_roles)
-        for role in preference.target_roles:
+        titles = with_related(session, preference.target_roles)[:per_person] if per_person else preference.target_roles
+        for role in titles:
             for location in preference.locations or ["United Kingdom"]:
                 key = (role.strip().lower(), location.strip().lower(), linkedin_levels(levels))
                 earlier = found.get(key)
@@ -110,8 +116,14 @@ async def collect_linkedin(
         return report
     if not is_due(session, now=now(), settings=settings):
         return report
+    people = settings.ai_applicants()
+    roles = select(ApplicantPreference.target_roles)
+    if people is not None:
+        roles = roles.where(ApplicantPreference.applicant_id.in_(people))
+    wanted = [role for row in session.scalars(roles) for role in row]
+    await expand_titles(session, wanted, gateway=gateway, settings=settings, persist=persist, now=now())
     gate = BudgetGate(session, clock=now)
-    for search in searches(session, settings.ai_applicants()):
+    for search in searches(session, people, per_person=settings.linkedin_titles_per_person):
         estimate = settings.linkedin_max_results * settings.linkedin_unit_price + settings.linkedin_run_price
         try:
             reservation = gate.reserve(

@@ -37,7 +37,7 @@ from app.models import (
     SpendLedger,
 )
 from tests.jobs import _public_resolve
-from tests.test_profile import PASSWORD, WORD_MAIN
+from tests.test_profile import PASSWORD, PROFILE, WORD_MAIN
 
 CV_LINES = [
     "Sam Example",
@@ -129,7 +129,7 @@ def test_d43_only_what_the_cv_says_is_kept_but_roles_may_be_inferred() -> None:
 
 def _fields(**values: object) -> ProfileFields:
     blank = dict.fromkeys(("target_roles", "locations", "salary_amount", "travel_distance", "skills", "degrees"), "")
-    lists = dict.fromkeys(("experience_levels", "cert_name", "cert_issuer", "cert_kind", "cert_expiry"), [])
+    lists = dict.fromkeys(("experience_levels", "cert_name", "cert_issuer", "cert_kind", "cert_expiry", "cv_roles"), [])
     return ProfileFields(**{**blank, "salary_currency": "GBP", "salary_period": "year", **lists, **values})  # type: ignore[arg-type]
 
 
@@ -142,8 +142,9 @@ def test_d43_what_the_person_already_has_always_stays() -> None:
         skills=["Python", "FastAPI"],
         certifications=[Certification("Full UK driving licence", "", True, ""), Certification("ITIL 4", "", False, "")],
     )
-    merged, filled = fill_from_cv(have, found)
+    merged, filled, offer = fill_from_cv(have, found)
     assert merged.target_roles == "Data Analyst"
+    assert offer == ["Junior Python Developer"]
     assert merged.locations == "Manchester"
     assert merged.experience_levels == ["entry"]
     assert merged.skills.splitlines() == ["python", "Excel", "FastAPI"]
@@ -153,16 +154,21 @@ def test_d43_what_the_person_already_has_always_stays() -> None:
 
 class _Claude:
     def __init__(self, payload: dict | None = None) -> None:
-        self.payload, self.calls, self.sent = payload or FOUND, 0, ""
+        self.payload, self.calls, self.sent, self.titles_asked = payload or FOUND, 0, "", 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.calls += 1
-        self.sent = json.loads(request.content)["messages"][0]["content"]
+        content = json.loads(request.content)["messages"][0]["content"]
+        if "<TITLE_DATA>" in content:
+            self.titles_asked += 1
+            answer = {"titles": ["Backend Developer", "Senior Python Developer"]}
+        else:
+            self.calls += 1
+            self.sent, answer = content, self.payload
         return httpx.Response(
             200,
             json={
                 "model": "claude-haiku-5-5",
-                "content": [{"type": "text", "text": json.dumps(self.payload)}],
+                "content": [{"type": "text", "text": json.dumps(answer)}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 900, "output_tokens": 200},
             },
@@ -231,8 +237,11 @@ async def test_d43_uploading_a_cv_fills_the_form_but_saves_nothing(
     response = await _register_and_upload(client)
 
     assert response.status_code == 200
-    assert "We read your CV and filled in target roles, locations, experience levels, 3 skills, 1 certification or licence" in response.text
-    assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in response.text
+    assert "We read your CV and filled in locations, experience levels, 3 skills, 1 certification or licence" in response.text
+    assert "Tick any job titles from your CV you want to search for." in response.text
+    assert 'placeholder="Junior Software Engineer"></textarea>' in response.text
+    for role in FOUND["target_roles"]:
+        assert f'name="cv_roles" value="{role}"/> {role}</label>' in response.text
     assert "Python\nFastAPI\nPostgreSQL</textarea>" in response.text
     assert "Kubernetes" not in response.text
     assert 'name="experience_levels" value="entry" checked/>' in response.text
@@ -256,6 +265,46 @@ async def test_d43_with_no_money_left_the_cv_is_not_sent(client: httpx.AsyncClie
     response = await _register_and_upload(client)
     assert "AI budget is used up" in response.text
     assert claude.calls == 0
+
+
+async def test_cv_titles_are_offered_even_when_the_person_has_typed_some(client: httpx.AsyncClient, session: Session) -> None:
+    _money(session, "2")
+    await _register_and_upload(client)
+    assert (await client.post("/profile", data={**PROFILE, "target_roles": "graduate software engineer"})).status_code == 303
+
+    again = await client.post("/profile/cv/fill")
+
+    assert 'name="cv_roles" value="Junior Python Developer"/>' in again.text
+    assert 'value="Graduate Software Engineer"' not in again.text
+
+
+async def test_ticked_cv_titles_are_added_to_the_target_roles_once(
+    client: httpx.AsyncClient, session: Session, claude: _Claude
+) -> None:
+    _money(session, "2")
+    await _register_and_upload(client)
+    form = {**PROFILE, "target_roles": "graduate software engineer", "cv_roles": ["Junior Python Developer", "Graduate Software Engineer"]}
+
+    assert (await client.post("/profile", data=form)).status_code == 303
+
+    saved = session.scalar(select(ApplicantPreference))
+    assert saved.target_roles == ["graduate software engineer", "Junior Python Developer"]
+    page = await client.get("/profile")
+    assert "graduate software engineer\nJunior Python Developer</textarea>" in page.text
+    assert "We also search: Backend Developer." in page.text
+    assert claude.titles_asked == 2
+
+    assert (await client.post("/profile", data=form)).status_code == 303
+    assert claude.titles_asked == 2
+
+
+async def test_ticked_cv_titles_alone_are_enough_to_save(client: httpx.AsyncClient, session: Session) -> None:
+    _money(session, "2")
+    await _register_and_upload(client)
+
+    assert (await client.post("/profile", data={**PROFILE, "target_roles": "", "cv_roles": ["Junior Python Developer"]})).status_code == 303
+
+    assert session.scalar(select(ApplicantPreference)).target_roles == ["Junior Python Developer"]
 
 
 async def test_d43_without_a_cv_the_fill_button_goes_back_to_the_profile(client: httpx.AsyncClient) -> None:

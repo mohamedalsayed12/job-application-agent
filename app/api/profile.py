@@ -42,6 +42,7 @@ from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.api.interview_intel import interview_card
 from app.matching.match import match_all
+from app.matching.related_titles import expand_titles, with_related
 from app.models import Applicant, CvFile, CvFileType
 from app.skills.taxonomy import suggest_skills
 
@@ -93,6 +94,7 @@ class ProfileFields:
         cert_kind: list[str] = Form(default=[]),
         cert_expiry: list[str] = Form(default=[]),
         degrees: str = Form(""),
+        cv_roles: list[str] = Form(default=[]),
     ) -> None:
         self.target_roles = target_roles
         self.locations = locations
@@ -103,6 +105,8 @@ class ProfileFields:
         self.travel_distance = travel_distance
         self.skills = skills
         self.degrees = degrees
+        # Job titles the CV suggested and the person ticked, added to their target roles on save.
+        self.cv_roles = cv_roles
         self.certifications = [
             tuple(row) for row in zip_longest(cert_name, cert_issuer, cert_kind, cert_expiry, fillvalue="")
         ]
@@ -126,6 +130,7 @@ def _saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
         cert_kind=["licence" if item.is_licence else "certification" for item in certifications],
         cert_expiry=[str(item.expires_on or "") for item in certifications],
         degrees="\n".join(profile.degrees) if profile else "",
+        cv_roles=[],
     )
 
 
@@ -217,9 +222,19 @@ def _profile_page(
     error: str | None = None,
     cv_error: str | None = None,
     notice: str | None = None,
+    cv_offer: list[str] | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
     message = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    typed = _lines(fields.target_roles)
+    offer = "".join(
+        f'<label class="check"><input type="checkbox" name="cv_roles" value="{html.escape(role)}"'
+        f'{" checked" if role in fields.cv_roles else ""}/> {html.escape(role)}</label>'
+        for role in (fields.cv_roles if cv_offer is None else cv_offer)
+    )
+    offer = f'<fieldset class="checks"><legend>From your CV <span class="hint">tick any to add</span></legend>{offer}</fieldset>' if offer else ""
+    related = [title for title in with_related(db, typed) if title.casefold() not in {role.casefold() for role in typed}]
+    also = f'<p class="hint">We also search: {html.escape(", ".join(related))}.</p>' if related else ""
     if notice:
         message += f'<div class="notice">{html.escape(notice)}</div>'
     levels = "".join(
@@ -249,8 +264,10 @@ def _profile_page(
   <section class="card">
     <h2>2. What you're looking for</h2>
     <label>Target roles <span class="hint">one per line</span>
-      <textarea name="target_roles" rows="3" required placeholder="Junior Software Engineer">{html.escape(fields.target_roles)}</textarea>
+      <textarea name="target_roles" rows="3" placeholder="Junior Software Engineer">{html.escape(fields.target_roles)}</textarea>
     </label>
+    {offer}
+    {also}
     <label>Locations <span class="hint">one per line</span>
       <textarea name="locations" rows="2" required placeholder="Manchester">{html.escape(fields.locations)}</textarea>
     </label>
@@ -328,18 +345,19 @@ def profile_form(
 
 
 @router.post("", response_model=None, dependencies=_CSRF)
-def profile_save(
+async def profile_save(
     request: Request,
     fields: ProfileFields = Depends(),
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
 ) -> Response:
     try:
         certifications: list[CertificationInput] = [
             item for row in fields.certifications if (item := parse_certification(*row))
         ]
         profile = parse_profile_input(
-            target_roles=fields.target_roles.splitlines(),
+            target_roles=[*fields.target_roles.splitlines(), *fields.cv_roles],
             locations=fields.locations.splitlines(),
             salary_amount=fields.salary_amount,
             salary_currency=fields.salary_currency,
@@ -352,6 +370,9 @@ def profile_save(
         )
         save_profile(db, applicant.id, profile)
         db.commit()
+        await expand_titles(
+            db, profile.preference.target_roles, gateway=gateway, settings=get_settings(), persist=db.commit
+        )
         # A new profile sees its matches now, not after the next collection.
         match_all(db, now=datetime.now(UTC), applicant_ids={applicant.id})
         db.commit()
@@ -394,13 +415,15 @@ def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFields, list[str]]:
-    """The form with the CV's suggestions added. What the person already has always stays."""
+def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFields, list[str], list[str]]:
+    """The form with the CV's suggestions added, what was added, and the CV's job titles for the person to tick.
+
+    What the person already has always stays.
+    """
     filled = []
-    roles, locations, levels = fields.target_roles, fields.locations, fields.experience_levels
-    if not roles.strip() and found.target_roles:
-        roles = "\n".join(found.target_roles)
-        filled.append("target roles")
+    locations, levels = fields.locations, fields.experience_levels
+    typed = {role.casefold() for role in _lines(fields.target_roles)}
+    offer = [role for role in found.target_roles if role.casefold() not in typed]
     if not locations.strip() and found.locations:
         locations = "\n".join(found.locations)
         filled.append("locations")
@@ -428,7 +451,7 @@ def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFi
     if new_degrees:
         filled.append(f"{len(new_degrees)} degree{'s' if len(new_degrees) != 1 else ''}")
     merged = ProfileFields(
-        target_roles=roles,
+        target_roles=fields.target_roles,
         locations=locations,
         salary_amount=fields.salary_amount,
         salary_currency=fields.salary_currency,
@@ -441,23 +464,26 @@ def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFi
         cert_kind=[row[2] for row in rows],
         cert_expiry=[row[3] for row in rows],
         degrees="\n".join([*degrees, *new_degrees]),
+        cv_roles=fields.cv_roles,
     )
-    return merged, filled
+    return merged, filled, offer
 
 
 def _after_read(request: Request, db: Session, applicant: Applicant, read: CvRead) -> HTMLResponse:
     fields = _saved_fields(db, applicant)
     if read.suggestions is None:
         return _profile_page(request, db, applicant, fields, notice=_READ_PROBLEMS[read.outcome])
-    fields, filled = fill_from_cv(fields, read.suggestions)
-    if not filled:
+    fields, filled, offer = fill_from_cv(fields, read.suggestions)
+    if not filled and not offer:
         notice = "We read your CV but found nothing new to add to your profile."
     else:
         notice = (
-            f"We read your CV and filled in {', '.join(filled)}. Check everything, change anything that's wrong, "
-            "then press Save and find my matches. Nothing is saved until you do."
+            (f"We read your CV and filled in {', '.join(filled)}. " if filled else "We read your CV. ")
+            + ("Tick any job titles from your CV you want to search for. " if offer else "")
+            + "Check everything, change anything that's wrong, then press Save and find my matches. "
+            "Nothing is saved until you do."
         )
-    return _profile_page(request, db, applicant, fields, notice=notice)
+    return _profile_page(request, db, applicant, fields, notice=notice, cv_offer=offer)
 
 
 async def _read_stored_cv(db: Session, applicant: Applicant, gateway: FetchGateway) -> CvRead | None:

@@ -76,7 +76,9 @@ because the app sends no email. The rules are in `MVP.md` decision D37.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
 certifications and licences, experience levels and optional travel distance. They can upload one
-CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner can download it,
+CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. When AI reads the CV, the job titles
+it suggests appear as checkboxes under the target roles, and ticked ones are added on save. Under
+the box the page lists the related titles that are searched as well (D66). Only its owner can download it,
 and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
 
 Admins log in at `/admin/login` with `ADMIN_KEY`. The session lasts 12 hours. Scripts can send
@@ -97,7 +99,8 @@ uv run pytest
 ## Daily collection
 
 Jobs come from LinkedIn and Indeed. Once a day the worker runs one LinkedIn search per
-target role and location, and Indeed searches for the graduate, junior and entry-level
+title and location. A person's titles are their target roles, then related titles Claude
+suggests for them, up to 10 in each location (D66). Indeed searches for the graduate, junior and entry-level
 forms of each role in each location. The same query is searched once per source, however
 many people want it. LinkedIn uses the Black Falcon Data scraper
 (`blackfalcondata/linkedin-job-scraper`): entry-level, last 3 days, newest first, up to
@@ -111,7 +114,9 @@ attempt waits until the following day. A run that does not finish within 15 minu
 stopped.
 
 Set `APIFY_API_TOKEN` first. Each run is reserved against the monthly money cap before it
-starts, and the recorded cost is what Apify reports.
+starts, and the recorded cost is what Apify reports. A LinkedIn run reserves up to £0.07, so
+10 titles a day for one person in one place come to about £21 a month. Raise
+`budget_policy.money_cap` to suit.
 
 ```bash
 uv run python -m app.worker          # runs until stopped
@@ -153,8 +158,9 @@ because anyone can post there.
 After a cycle that collects LinkedIn jobs or closes stale ones, the worker matches stored jobs to every applicant
 on role, location, salary status, skills and required licences. Each match lists the skills
 the applicant has, the skills they don't, and any licence the advert requires that they don't
-hold. This uses rules only, so it costs nothing and makes no requests. The rules are in
-`MVP.md` decisions D35 and D40. To run it now and print the best matches for each
+hold. A job fits a role when its title has every word of one of the person's titles (their
+target roles and the related titles), or is close to one in meaning, compared on this machine.
+This costs nothing and makes no requests. The rules are in `MVP.md` decisions D35, D40 and D66. To run it now and print the best matches for each
 applicant, run:
 
 ```bash

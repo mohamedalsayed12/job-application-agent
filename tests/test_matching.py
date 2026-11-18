@@ -18,7 +18,9 @@ from app.applicants.service import create_applicant, parse_preference_input
 from app.cleaning import close_stale
 from app.core.config import Settings
 from app.matching.match import (
+    TITLE_SIMILAR,
     RoleKind,
+    TitleMeaning,
     location_fit,
     match_all,
     match_role,
@@ -36,6 +38,7 @@ from app.models import (
     SpendLedger,
 )
 from app.worker import run_cycle
+from tests.conftest import WordEmbedder
 from tests.jobs import DAY_1, _Apify, _job, _li, _store
 
 ADVERT = "Build and run backend services in Python for our payments platform. " * 10
@@ -56,7 +59,7 @@ def _applicant(session: Session, *, roles: list[str], locations: list[str], **sa
 
 def _role(title: str, advert: str | None, roles: list[str], levels: list[ExperienceLevel] | None = None):
     """With no levels given they are read from the roles, as for someone with no saved profile."""
-    return match_role(title, advert, roles, chosen_or_inferred(frozenset(levels or ()), roles))
+    return match_role(title, advert, roles, chosen_or_inferred(frozenset(levels or ()), roles), TitleMeaning(WordEmbedder))
 
 
 def _matches(session: Session, applicant_id: uuid.UUID) -> dict[uuid.UUID, ApplicantJobMatch]:
@@ -75,9 +78,6 @@ def _matches(session: Session, applicant_id: uuid.UUID) -> dict[uuid.UUID, Appli
         ("Python Programmer", ["Python Developer"], RoleKind.exact),
         ("Software Engineer, New Grad", ENTRY_ROLES, RoleKind.exact),
         ("Graduate Software Engineer", ENTRY_ROLES, RoleKind.exact),
-        ("Software Engineer", ["Backend Developer"], RoleKind.similar),
-        ("Junior Full Stack Developer", ["Junior Backend Developer"], RoleKind.similar),
-        ("Backend Engineer", ["Software Engineer"], RoleKind.similar),
         ("Senior Backend Engineer", ["Backend Developer"], RoleKind.exact),
     ],
 )
@@ -137,6 +137,24 @@ def test_d63_someone_who_also_chose_mid_sees_jobs_that_show_no_level() -> None:
     assert _role("Junior Backend Developer", ADVERT, roles, [entry, mid]).level == "entry level in the title"
     assert _role("Backend Developer Intern", ADVERT, roles, [entry, mid]) is None
     assert _role("Backend Developer Intern", ADVERT, roles, [entry, internship]).level == "internship in the title"
+
+
+class _Nearness:
+    """Puts "software engineer" on one axis and every other title at a set angle from it."""
+
+    def __init__(self, nearness: float) -> None:
+        self.nearness = nearness
+
+    def passages(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] if text == "software engineer" else [self.nearness, (1 - self.nearness**2) ** 0.5] for text in texts]
+
+
+def test_a_title_close_enough_in_meaning_matches_as_similar() -> None:
+    roles, levels = ["Software Engineer"], [ExperienceLevel.mid]
+    close = match_role("Python Developer", ADVERT, roles, frozenset(levels), TitleMeaning(lambda: _Nearness(TITLE_SIMILAR)))
+    assert (close.target, close.kind) == ("Software Engineer", RoleKind.similar)
+    assert match_role("Python Developer", ADVERT, roles, frozenset(levels), TitleMeaning(lambda: _Nearness(TITLE_SIMILAR - 0.01))) is None
+    assert match_role("Sales Developer", ADVERT, roles, frozenset(levels), TitleMeaning(lambda: _Nearness(1.0))) is None
 
 
 def test_an_exact_title_beats_a_similar_one_across_target_roles() -> None:

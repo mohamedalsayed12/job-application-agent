@@ -93,7 +93,7 @@ def _search_order(search: Search) -> tuple[int, str, str]:
 def indeed_searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Search]:
     """Each role × location, expanded to the title forms of its levels, once each."""
     found: dict[tuple[str, str], Search] = {}
-    for search in searches(session, applicant_ids):
+    for search in searches(session, applicant_ids, per_person=None):
         for expanded in level_searches(search):
             found.setdefault((expanded.role.lower(), expanded.location.lower()), expanded)
     return sorted(found.values(), key=_search_order)

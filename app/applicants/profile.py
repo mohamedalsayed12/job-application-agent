@@ -130,7 +130,11 @@ def parse_profile_input(
     certifications: list[CertificationInput],
     degrees: list[str] | None = None,
 ) -> ProfileInput:
-    roles = [role.strip() for role in target_roles if role.strip()]
+    unique: dict[str, str] = {}
+    for role in target_roles:
+        if role.strip():
+            unique.setdefault(role.strip().casefold(), role.strip())
+    roles = list(unique.values())
     places = [place.strip() for place in locations if place.strip()]
     _check_items(roles, label="target roles", limit=MAX_ROLES)
     _check_items(places, label="locations", limit=MAX_LOCATIONS)
