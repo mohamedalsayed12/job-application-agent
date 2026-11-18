@@ -1,8 +1,8 @@
-"""The four Claude calls of the tailoring pipeline.
+"""The five Claude calls of the tailoring pipeline.
 
 Each mirrors one Resume-Matcher LLM call (srbhr/Resume-Matcher@959e458): parse_resume_to_json in
-services/parser.py, extract_job_keywords and generate_resume_diffs in services/improver.py, and
-inject_keywords in services/refiner.py. Structured outputs fix each reply's shape, so the code
+services/parser.py, extract_job_keywords and generate_resume_diffs in services/improver.py,
+inject_keywords in services/refiner.py, and generate_cover_letter in services/cover_letter.py. Structured outputs fix each reply's shape, so the code
 below trusts the types and checks only meaning.
 """
 
@@ -38,6 +38,12 @@ KEYWORDS_SCHEMA = {
         "seniority_level": {"type": "string"},
     },
     "required": ["company", "role", *_LISTS, "experience_years", "seniority_level"],
+}
+COVER_LETTER_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"letter": {"type": "string"}},
+    "required": ["letter"],
 }
 
 
@@ -111,6 +117,23 @@ async def inject_keywords(
     if any(tailored.get(section) and not call.payload.get(section) for section in SECTIONS):
         return None, call
     return call.payload, call
+
+
+async def generate_cover_letter(
+    gateway: FetchGateway, *, resume: dict[str, Any], posting: str, settings: Settings, api_key: str
+) -> tuple[str | None, AiCallResponse] | AiCallFailure:
+    """A letter written from the tailored CV, as upstream does; None when the reply is blank."""
+    prompt = prompts.COVER_LETTER_PROMPT.format(
+        output_language="British English",
+        job_description=posting,
+        resume_data=json.dumps(resume, ensure_ascii=False),
+    )
+    call = await _ask(
+        gateway, prompts.COVER_LETTER_SYSTEM, prompt, COVER_LETTER_SCHEMA, settings=settings, api_key=api_key
+    )
+    if isinstance(call, AiCallFailure):
+        return call
+    return call.payload["letter"].strip() or None, call
 
 
 def keywords_for_prompt(keywords: dict[str, Any]) -> str:

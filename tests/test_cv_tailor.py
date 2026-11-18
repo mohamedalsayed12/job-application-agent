@@ -32,7 +32,12 @@ from app.tailor.ats import pdf_text
 from app.tailor.improver import Change, apply_diffs
 from app.tailor.preservation import finalize_ai_resume
 from app.tailor.refiner import remove_ai_phrases
-from app.tailor.render import render_docx, render_pdf
+from app.tailor.render import (
+    render_docx,
+    render_letter_docx,
+    render_letter_pdf,
+    render_pdf,
+)
 from app.tailor.resume import ground_parsed
 from app.tailor.run import write_tailored_cvs
 from tests.test_cv_read import _docx
@@ -134,12 +139,21 @@ def _injected() -> dict:
     return out
 
 
-class _TailorAi(_Ai):
-    """Fit-report AI that also answers the four tailoring prompts."""
+LETTER = (
+    "Dear Hiring Manager,\n\n"
+    "Acme's REST API work is why this role stands out to me. I spearheaded a REST API in Python "
+    "with FastAPI and PostgreSQL for a student society — the same stack you name.\n\n"
+    "Kind regards,\nMohammed Example"
+)
 
-    def __init__(self) -> None:
+
+class _TailorAi(_Ai):
+    """Fit-report AI that also answers the five tailoring prompts."""
+
+    def __init__(self, letter: str = LETTER) -> None:
         super().__init__(judge_score=4.5, report=_report(score=4.5, verdict="Apply"))
         self.tailor_calls: list[str] = []
+        self.letter = letter
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if "api.anthropic.com" not in str(request.url):
@@ -150,6 +164,7 @@ class _TailorAi(_Ai):
             "You are an expert job description analyzer": ("keywords", lambda: _KEYWORDS),
             "You are an expert resume editor": ("diffs", lambda: _DIFFS),
             "You are a resume editor. Inject keywords": ("inject", _injected),
+            "You are a professional career coach": ("letter", lambda: {"letter": self.letter}),
         }
         for prefix, (name, answer) in answers.items():
             if system.startswith(prefix):
@@ -271,7 +286,7 @@ async def test_apply_job_gets_ready_package(session: Session) -> None:
 
     await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
 
-    assert ai.tailor_calls == ["parse", "keywords", "diffs", "inject"]
+    assert ai.tailor_calls == ["parse", "keywords", "diffs", "inject", "letter"]
     row = _package(session, applicant)
     assert row.status == TailoredCvStatus.ready.value
     assert row.cv_file_id == stored.id
@@ -291,16 +306,45 @@ async def test_apply_job_gets_ready_package(session: Session) -> None:
     }
     assert row.ats_report["keyword_match"] == 50
     assert any("Docker" in warning for warning in row.ats_report["warnings"])
-    assert row.cost_amount == Decimal("0.003") * 4
+    assert row.cost_amount == Decimal("0.003") * 5
     spends = session.scalars(
         select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_cv_tailor, SpendLedger.related_item_id == row.job_id)
     ).all()
-    assert len(spends) == 4
+    assert len(spends) == 5
+    assert row.cover_letter.startswith("Dear Hiring Manager,")
+    assert "I led a REST API in Python" in row.cover_letter
+    assert "—" not in row.cover_letter
+    assert any("cover letter" in warning for warning in row.ats_report["warnings"])
     listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
     html = render_listing(listings[0])
     assert "Tailored CV ready" in html
     assert "Keyword match 50%" in html
     assert f"/jobs/{listings[0].job_id}/tailored.pdf" in html
+    assert f"/jobs/{listings[0].job_id}/cover-letter.pdf" in html
+
+
+async def test_a_blank_letter_still_ships_the_cv(session: Session) -> None:
+    ai = _TailorAi(letter="  ")
+    applicant, gateway, settings = await _prepare(session, ai)
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    row = _package(session, applicant)
+    assert row.status == TailoredCvStatus.ready.value
+    assert row.pdf_content
+    assert row.cover_letter is None
+    assert "Cover letter skipped: empty" in row.ats_report["warnings"]
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    assert "cover-letter.pdf" not in render_listing(listings[0])
+
+
+def test_rendered_letter_keeps_paragraphs_and_sign_off() -> None:
+    text = " ".join(pdf_text(render_letter_pdf(LETTER, MASTER)).split())
+
+    assert text.startswith("Mohammed Example")
+    assert "Dear Hiring Manager," in text
+    assert "Kind regards, Mohammed Example" in text
+    assert render_letter_docx(LETTER, MASTER).startswith(b"PK")
 
 
 async def test_hash_reuse_skips_second_run(session: Session) -> None:
@@ -429,6 +473,11 @@ async def test_any_job_can_be_tailored_on_request(client: httpx.AsyncClient, ses
     pdf = await client.get(f"/jobs/{job.id}/tailored.pdf")
     assert pdf.status_code == 200
     assert pdf.content.startswith(b"%PDF")
+    assert "Read the cover letter" in page
+    letter = await client.get(f"/jobs/{job.id}/cover-letter.pdf")
+    assert letter.status_code == 200
+    assert "Dear Hiring Manager," in pdf_text(letter.content)
+    assert (await client.get(f"/jobs/{job.id}/cover-letter.docx")).content.startswith(b"PK")
 
 
 async def test_a_failed_package_can_be_tried_again(client: httpx.AsyncClient, session: Session) -> None:
