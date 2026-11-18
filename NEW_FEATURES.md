@@ -135,7 +135,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 ## 6. CV tailoring pipeline
 
-**Goal.** For jobs with fit verdict **Apply** or **Consider**, automatically produce a grounded tailored CV (PDF + DOCX) plus an ATS keyword coverage report.
+**Goal.** For jobs with fit verdict **Apply** or **Consider**, automatically produce a grounded tailored CV (PDF + DOCX), a cover letter written from it, plus an ATS keyword coverage report.
 
 **Pipeline order** (Resume-Matcher's tailorer, MVP.md D60)
 1. Gate (verdict or request + master CV + budget; hash reuse).
@@ -145,15 +145,16 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 5. One keyword-injection pass for posting terms the master CV supports but the edit lost.
 6. Replace stock AI wording; remove skills the master CV never mentions.
 7. Hold the result to the master CV row by row (identity fields, years, numbers, similarity).
-8. Render single-column ATS-friendly PDF + DOCX; ATS text-layer checks + keyword coverage.
+8. Write a cover letter from the final CV and the posting (Resume-Matcher's cover-letter prompt, MVP.md D68); a failure is a warning, not a failed CV.
+9. Render single-column ATS-friendly PDF + DOCX; ATS text-layer checks + keyword coverage.
 
 **Locked choices**
 - Trigger: automatic after Apply/Consider fit reports.
-- CV only (no cover letter); no LaTeX.
+- CV and cover letter; no LaTeX.
 - Never invent employers, dates, metrics, or skills.
 - Master CV on profile stays the source of truth; tailored files are per-job copies.
 
-**Out of scope.** Cover letters; fetching URLs embedded in advert HTML; tailoring Skip/Research-first jobs by default; fabricating skills to “pass ATS”.
+**Out of scope.** Company web research in cover letters; fetching URLs embedded in advert HTML; tailoring Skip/Research-first jobs by default; fabricating skills to “pass ATS”.
 
 ---
 
