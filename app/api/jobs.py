@@ -23,6 +23,7 @@ from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.models import Applicant, Job, JobFreshness, TailoredCv, TailoredCvStatus
 from app.summaries.generate import Shown, summary_for_view
+from app.tailor.render import render_letter_docx, render_letter_pdf
 from app.tailor.run import request_tailored_cv, tailor_allowed
 from app.tailor.ui import tailor_section
 
@@ -125,18 +126,38 @@ def tailored_docx(
     return _download(db, applicant.id, job_id, kind="docx")
 
 
+@router.get("/{job_id}/cover-letter.pdf")
+def cover_letter_pdf(
+    job_id: uuid.UUID,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> Response:
+    return _download(db, applicant.id, job_id, kind="letter_pdf")
+
+
+@router.get("/{job_id}/cover-letter.docx")
+def cover_letter_docx(
+    job_id: uuid.UUID,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> Response:
+    return _download(db, applicant.id, job_id, kind="letter_docx")
+
+
 def _download(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID, *, kind: str) -> Response:
     row = _tailored_for(db, applicant_id, job_id)
     if row is None or row.status != TailoredCvStatus.ready.value:
         raise HTTPException(status_code=404)
     if kind == "pdf":
-        content = row.pdf_content
-        media = "application/pdf"
-        name = "tailored-cv.pdf"
+        content, media, name = row.pdf_content, "application/pdf", "tailored-cv.pdf"
+    elif kind == "docx":
+        content, media, name = row.docx_content, _DOCX_TYPE, "tailored-cv.docx"
+    elif not row.cover_letter:
+        raise HTTPException(status_code=404)
+    elif kind == "letter_pdf":
+        content, media, name = render_letter_pdf(row.cover_letter, row.draft or {}), "application/pdf", "cover-letter.pdf"
     else:
-        content = row.docx_content
-        media = _DOCX_TYPE
-        name = "tailored-cv.docx"
+        content, media, name = render_letter_docx(row.cover_letter, row.draft or {}), _DOCX_TYPE, "cover-letter.docx"
     if not content:
         raise HTTPException(status_code=404)
     return Response(

@@ -1,4 +1,4 @@
-"""Render a structured CV to ATS-friendly single-column PDF and DOCX bytes."""
+"""Render a structured CV, and its cover letter, to ATS-friendly single-column PDF and DOCX bytes."""
 
 from __future__ import annotations
 
@@ -107,6 +107,59 @@ def render_docx(resume: dict[str, Any]) -> bytes:
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+def letter_blocks(letter: str, resume: dict[str, Any]) -> list[tuple[Kind, str]]:
+    """A contact header from the tailored CV, then one block per paragraph of the letter."""
+    personal = resume.get("personalInfo") or {}
+    out: list[tuple[Kind, str]] = []
+    if personal.get("name"):
+        out.append(("name", personal["name"]))
+    contact = _join(personal.get(field) for field in ("email", "phone", "location"))
+    if contact:
+        out.append(("muted", contact))
+    out += [("body", part) for part in _paragraphs(letter)]
+    return out
+
+
+def render_letter_pdf(letter: str, resume: dict[str, Any]) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=22 * mm,
+        rightMargin=22 * mm,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+        title="Cover letter",
+    )
+    sheet = getSampleStyleSheet()
+    body = ParagraphStyle("LetterBody", parent=sheet["Normal"], fontSize=11, leading=15, spaceAfter=9)
+    styles = {
+        "name": ParagraphStyle("LetterName", parent=sheet["Heading1"], fontSize=16, spaceAfter=2),
+        "muted": ParagraphStyle("LetterMuted", parent=body, fontSize=10, textColor="#333333", spaceAfter=16),
+        "body": body,
+    }
+    doc.build(
+        [Paragraph(_xml(text).replace("\n", "<br/>"), styles[kind]) for kind, text in letter_blocks(letter, resume)]
+    )
+    return buffer.getvalue()
+
+
+def render_letter_docx(letter: str, resume: dict[str, Any]) -> bytes:
+    document = Document()
+    for kind, text in letter_blocks(letter, resume):
+        if kind == "name":
+            document.add_heading(text, level=1)
+        else:
+            document.add_paragraph(text)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _paragraphs(letter: str) -> list[str]:
+    return [part.strip() for part in letter.replace("\r\n", "\n").split("\n\n") if part.strip()]
 
 
 def _join(parts) -> str:
