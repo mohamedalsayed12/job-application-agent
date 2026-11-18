@@ -46,6 +46,35 @@ def _declared_unique(model: type, columns: tuple[str, ...]) -> str:
     raise AssertionError(f"no unique on {table.name} for {columns}")
 
 
+def test_d63_saved_levels_survive_the_migration_both_ways(migrated_engine: Engine) -> None:
+    config = Config(str(_ALEMBIC_INI))
+    with migrated_engine.begin() as conn:
+        both = conn.execute(text("INSERT INTO applicant (email) VALUES ('both@example.com') RETURNING id")).scalar()
+        conn.execute(
+            text("INSERT INTO applicant_profile (applicant_id, experience_levels) VALUES (:id, '{senior,mid}')"),
+            {"id": both},
+        )
+    command.downgrade(config, "0022_tailored_cover_letter")
+    try:
+        with migrated_engine.begin() as conn:
+            downgraded = conn.execute(
+                text("SELECT experience_level FROM applicant_profile WHERE applicant_id = :id"), {"id": both}
+            ).scalar()
+            single = conn.execute(text("INSERT INTO applicant (email) VALUES ('single@example.com') RETURNING id")).scalar()
+            conn.execute(
+                text("INSERT INTO applicant_profile (applicant_id, experience_level) VALUES (:id, 'entry')"), {"id": single}
+            )
+    finally:
+        command.upgrade(config, "head")
+    with migrated_engine.begin() as conn:
+        levels = dict(
+            conn.execute(text("SELECT applicant_id, experience_levels FROM applicant_profile WHERE applicant_id IN (:a, :b)"), {"a": both, "b": single}).all()
+        )
+        conn.execute(text("DELETE FROM applicant WHERE id IN (:a, :b)"), {"a": both, "b": single})
+    assert downgraded == "mid"
+    assert levels == {both: ["mid"], single: ["entry"]}
+
+
 def test_models_match_applied_revision(migrated_engine: Engine) -> None:
     assert migrated_engine.dialect.name == "postgresql"
     command.check(Config(str(_ALEMBIC_INI)))

@@ -50,7 +50,7 @@ CV_LINES = [
 FOUND = {
     "target_roles": ["Junior Python Developer", "Graduate Software Engineer"],
     "locations": ["Manchester", "Leeds"],
-    "experience_level": "entry",
+    "experience_levels": ["entry"],
     "skills": ["Python", "FastAPI", "PostgreSQL", "Kubernetes"],
     "certifications": [
         {"name": "Full UK driving licence", "issuer": "DVLA", "is_licence": True, "expires_on": ""},
@@ -119,12 +119,12 @@ def test_d43_a_file_without_readable_text_is_refused(content: bytes, file_type: 
 
 
 def test_d43_only_what_the_cv_says_is_kept_but_roles_may_be_inferred() -> None:
-    found = grounded({**FOUND, "experience_level": "expert"}, "\n".join(CV_LINES))
+    found = grounded({**FOUND, "experience_levels": ["expert", "entry", "mid"]}, "\n".join(CV_LINES))
     assert found.target_roles == ["Junior Python Developer", "Graduate Software Engineer"]
     assert found.locations == ["Manchester"]
     assert found.skills == ["Python", "FastAPI", "PostgreSQL"]
     assert found.certifications == [Certification("Full UK driving licence", "", True, "")]
-    assert found.experience_level == ""
+    assert found.experience_levels == ["entry", "mid"]
 
 
 def test_d45_degrees_read_from_a_cv_must_be_in_it() -> None:
@@ -134,8 +134,8 @@ def test_d45_degrees_read_from_a_cv_must_be_in_it() -> None:
 
 
 def _fields(**values: object) -> ProfileFields:
-    blank = dict.fromkeys(("target_roles", "locations", "salary_amount", "experience_level", "travel_distance", "skills", "degrees"), "")
-    lists = dict.fromkeys(("cert_name", "cert_issuer", "cert_kind", "cert_expiry"), [])
+    blank = dict.fromkeys(("target_roles", "locations", "salary_amount", "travel_distance", "skills", "degrees"), "")
+    lists = dict.fromkeys(("experience_levels", "cert_name", "cert_issuer", "cert_kind", "cert_expiry"), [])
     return ProfileFields(**{**blank, "salary_currency": "GBP", "salary_period": "year", **lists, **values})  # type: ignore[arg-type]
 
 
@@ -144,17 +144,17 @@ def test_d43_what_the_person_already_has_always_stays() -> None:
     found = CvSuggestions(
         target_roles=["Junior Python Developer"],
         locations=["Manchester"],
-        experience_level="entry",
+        experience_levels=["entry"],
         skills=["Python", "FastAPI"],
         certifications=[Certification("Full UK driving licence", "", True, ""), Certification("ITIL 4", "", False, "")],
     )
     merged, filled = fill_from_cv(have, found)
     assert merged.target_roles == "Data Analyst"
     assert merged.locations == "Manchester"
-    assert merged.experience_level == "entry"
+    assert merged.experience_levels == ["entry"]
     assert merged.skills.splitlines() == ["python", "Excel", "FastAPI"]
     assert [row[0] for row in merged.certifications] == ["Full UK driving licence", "ITIL 4"]
-    assert filled == ["locations", "experience level", "1 skill", "1 certification or licence"]
+    assert filled == ["locations", "experience levels", "1 skill", "1 certification or licence"]
 
 
 class _Claude:
@@ -237,11 +237,11 @@ async def test_d43_uploading_a_cv_fills_the_form_but_saves_nothing(
     response = await _register_and_upload(client)
 
     assert response.status_code == 200
-    assert "We read your CV and filled in target roles, locations, experience level, 3 skills, 1 certification or licence" in response.text
+    assert "We read your CV and filled in target roles, locations, experience levels, 3 skills, 1 certification or licence" in response.text
     assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in response.text
     assert "Python\nFastAPI\nPostgreSQL</textarea>" in response.text
     assert "Kubernetes" not in response.text
-    assert '<option value="entry" selected>' in response.text
+    assert 'name="experience_levels" value="entry" checked/>' in response.text
     assert "<CV_DATA>" in claude.sent and "BSc Business Management" in claude.sent
     assert session.scalar(select(ApplicantPreference)) is None
     spend = session.scalars(select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_cv_read)).all()
