@@ -145,6 +145,23 @@ async def test_t30_the_saved_profile_shows_on_the_form(client: httpx.AsyncClient
     assert '<option value="licence" selected>Licence</option>' in text
 
 
+async def test_automatic_tailoring_covers_my_locations_unless_i_widen_it(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    assert '<option value="my_locations" selected>Only jobs in my locations</option>' in (await client.get("/profile")).text
+    await client.post("/profile", data=PROFILE)
+    profile = session.scalar(select(ApplicantProfile).where(ApplicantProfile.applicant_id == _applicant(session).id))
+    assert profile.tailor_outside_locations is False
+
+    await client.post("/profile", data={**PROFILE, "tailor_scope": "everywhere"})
+
+    session.refresh(profile)
+    assert profile.tailor_outside_locations is True
+    text = (await client.get("/profile")).text
+    assert '<option value="everywhere" selected>Also jobs outside my locations</option>' in text
+
+
 async def test_d63_several_levels_are_saved_and_shown_ticked(client: httpx.AsyncClient, session: Session) -> None:
     await _register(client)
     assert (await client.post("/profile", data={**PROFILE, "experience_levels": ["mid", "entry"]})).status_code == 303
