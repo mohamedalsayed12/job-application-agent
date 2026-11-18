@@ -175,10 +175,24 @@ class InterviewRequestStatus(StrEnum):
 
 class TailoredCvStatus(StrEnum):
     pending = "pending"
+    running = "running"
     waiting_budget = "waiting_budget"
     ready = "ready"
     skipped = "skipped"
     failed = "failed"
+
+
+# Listed jobs with these verdicts are tailored with no click, Apply before Consider.
+TAILOR_VERDICTS = ("Apply", "Consider")
+
+
+def auto_tailored(verdict: str | None) -> bool:
+    return verdict in TAILOR_VERDICTS
+
+
+def attempt_failed(status: str, draft: object) -> bool:
+    """A ready file whose latest rebuild failed. The previous download stays."""
+    return status == TailoredCvStatus.ready.value and isinstance(draft, dict) and bool(draft.get("last_error"))
 
 
 class CompanyResearchStatus(StrEnum):
@@ -685,12 +699,14 @@ class CompanyResearch(_UuidPk, Base):
     research: Mapped[dict[str, Any]] = mapped_column(JSONB())
     official_domain: Mapped[str | None] = mapped_column(Text())
     fetched_at: Mapped[datetime] = mapped_column(TZ)
+    # Wording read from the employer's own site, once the homepage title names the company.
+    site_terms: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 
 
 class TailoredCv(_UuidPk, Base):
-    """D55: one tailored CV package per person and Apply/Consider job."""
+    """One tailored CV package per person and job: automatic for listed Apply/Consider jobs, else on request."""
 
     __tablename__ = "tailored_cv"
     __table_args__ = (
@@ -709,8 +725,10 @@ class TailoredCv(_UuidPk, Base):
     applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
     job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(Text())
-    # Hash of advert, CV bytes, profile and company-research input; a change means a new package.
+    # Hash of the advert and CV bytes; a change means a new package.
     input_hash: Mapped[str] = mapped_column(Text())
+    # When the person asked for this package; None when only an Apply/Consider verdict wants it.
+    requested_at: Mapped[datetime | None] = mapped_column(TZ)
     # Structured draft after grounding, keywords list, ATS coverage table.
     draft: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     # Plain text written from the final draft; PDF and DOCX are rendered on download.

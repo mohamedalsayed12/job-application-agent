@@ -26,6 +26,7 @@ from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field
 from app.cleaning.linking import is_primary
+from app.core.config import get_settings
 from app.core.db import get_db
 from app.matching import semantic
 from app.matching.semantic import Embedder, closeness, vectors_for
@@ -42,7 +43,8 @@ from app.models import (
     SummaryStatus,
     TailoredCv,
 )
-from app.tailor.ui import tailored_block
+from app.tailor.run import tailor_allowed
+from app.tailor.ui import listing_tailor
 
 router = APIRouter(prefix="/listings", tags=["listings"])
 
@@ -391,7 +393,7 @@ def _plain_list(title: str, items: list[str]) -> str:
     return f'<p>{_e(title)}</p><ul class="plain">' + "".join(f"<li>{_e(item)}</li>" for item in items) + "</ul>"
 
 
-def render_listing(item: Listing, csrf: str = "") -> str:
+def render_listing(item: Listing, csrf: str = "", *, tailor_ok: bool = True) -> str:
     if item.summary:
         about = f"<p>{_e(item.summary)}</p><p><small>AI summary, checked against the posting.</small></p>"
     else:
@@ -432,7 +434,7 @@ def render_listing(item: Listing, csrf: str = "") -> str:
 {_skills(item)}
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 {_fit_report(item)}
-{tailored_block(item.job_id, item.tailored, verdict=(item.reasons.get("report") or {}).get("verdict"))}
+{listing_tailor(item.job_id, item.tailored, csrf, verdict=(item.reasons.get("report") or {}).get("verdict"), allowed=tailor_ok)}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url, item.job_id, csrf)}
@@ -559,7 +561,8 @@ def listings_page(
     hint = _discover_hint(db, applicant, preference, everywhere=everywhere, sort=sort) if show == "roles" else ""
     if listings:
         csrf = csrf_field(request)
-        body = "".join(render_listing(item, csrf) for item in listings)
+        tailor_ok = tailor_allowed(get_settings(), applicant.id)
+        body = "".join(render_listing(item, csrf, tailor_ok=tailor_ok) for item in listings)
     elif preference is None:
         body = '<div class="card"><p>Fill in <a href="/profile">your profile</a> and we\'ll find your matches.</p></div>'
     else:
