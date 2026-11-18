@@ -1,10 +1,10 @@
 """Read a CV with AI to suggest profile entries the person then checks (D43).
 
 Only the person's own request starts a read: uploading a CV or pressing the fill button. The CV
-text goes to the AI provider; the suggestions come back to the form and are never stored. Every
-skill, place and certification must appear in the CV text, so the AI can't add things that aren't
-there. Target roles are the one thing it may infer, because a CV rarely names the job someone
-wants next.
+text goes to the AI provider; the suggestions come back to the form (kept in the session until Save)
+and are never written to the profile until the person presses Save. Every skill, place and
+certification must appear in the CV text, so the AI can't add things that aren't there. Target
+roles are the one thing it may infer, because a CV rarely names the job someone wants next.
 """
 
 from __future__ import annotations
