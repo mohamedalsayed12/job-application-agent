@@ -1,7 +1,7 @@
 """D54: LinkedIn is the one job source, read through the Black Falcon Data scraper on Apify.
 
 Once a day each person the AI works for gets one LinkedIn search per target role and
-location, for entry-level jobs posted in the last few days. Each search is one Apify run:
+location, for jobs at the levels they chose (D63) posted in the last few days. Each search is one Apify run:
 the gateway allows 30 seconds a request, so the run is started, then checked until it
 ends, then its results are read. Every run is reserved against the budget first and
 settled at what Apify says it cost.
@@ -14,7 +14,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -23,6 +23,7 @@ from urllib.parse import quote, urlencode
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.applicants.levels import Levels, chosen_or_inferred, linkedin_levels, saved_levels
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
@@ -37,19 +38,19 @@ from app.models import (
 )
 
 SOURCE = "linkedin"
-ENTRY_LEVEL = "2"
 
 
 @dataclass(frozen=True, slots=True)
 class Search:
     role: str
     location: str
+    levels: Levels
 
     def url(self, *, posted_within_days: int) -> str:
         query = {
             "keywords": self.role,
             "location": self.location,
-            "f_E": ENTRY_LEVEL,
+            "f_E": linkedin_levels(self.levels),
             "f_TPR": f"r{posted_within_days * 86400}",
             "sortBy": "DD",
         }
@@ -67,17 +68,25 @@ class LinkedinReport:
 
 
 def searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Search]:
-    """Every target role in every wanted location, once each however many people share it."""
+    """Every target role in every wanted location at the person's levels (D63).
+
+    People share a search when LinkedIn would be asked the same thing; it then carries all of their levels.
+    """
     query = select(ApplicantPreference)
     if applicant_ids is not None:
         query = query.where(ApplicantPreference.applicant_id.in_(applicant_ids))
-    found: dict[tuple[str, str], Search] = {}
+    saved = saved_levels(session)
+    found: dict[tuple[str, str, str], Search] = {}
     for preference in session.scalars(query):
+        levels = chosen_or_inferred(saved.get(preference.applicant_id, frozenset()), preference.target_roles)
         for role in preference.target_roles:
             for location in preference.locations or ["United Kingdom"]:
-                search = Search(role.strip(), location.strip())
-                found.setdefault((search.role.lower(), search.location.lower()), search)
-    return sorted(found.values(), key=lambda search: (search.role.lower(), search.location.lower()))
+                key = (role.strip().lower(), location.strip().lower(), linkedin_levels(levels))
+                earlier = found.get(key)
+                found[key] = (
+                    replace(earlier, levels=earlier.levels | levels) if earlier else Search(role.strip(), location.strip(), levels)
+                )
+    return [found[key] for key in sorted(found)]
 
 
 def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
