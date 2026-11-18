@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.applicants.cv import cv_for
+from app.applicants.cv import application_cv
 from app.applications.extension_device import applicant_for_token
 from app.applications.fill_safety import assert_plan_has_no_submit_clicks
 from app.applications.prepare import (
@@ -96,7 +96,8 @@ def download_cv(
     if tailored is not None:
         content, file_type = tailored, CvFileType.pdf.value
     else:
-        cv = cv_for(db, applicant_id)
+        application = get_application(db, application_id, applicant_id) if application_id else None
+        cv = application_cv(db, applicant_id, application)
         if cv is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No CV uploaded")
         content, file_type = bytes(cv.content), cv.file_type

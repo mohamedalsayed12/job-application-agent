@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.anthropic import AiCallFailure, AiCallResponse
 from app.ai.injection import looks_like_injection
+from app.applicants.cv import cvs_by_applicant, pick_base_cv
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
@@ -30,7 +31,6 @@ from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.verdicts import job_text
 from app.models import (
-    CvFile,
     CvFileType,
     Job,
     JobReport,
@@ -70,6 +70,7 @@ class _Work:
     posting: str
     cv: str
     input_hash: str
+    cv_file_id: uuid.UUID
 
 
 @dataclass
@@ -197,11 +198,7 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     if not pairs:
         return []
 
-    applicant_ids = {applicant_id for applicant_id, _ in pairs}
-    cvs = {
-        row.applicant_id: row
-        for row in session.scalars(select(CvFile).where(CvFile.applicant_id.in_(applicant_ids)))
-    }
+    cvs = cvs_by_applicant(session, {applicant_id for applicant_id, _ in pairs})
     jobs = {
         row.id: row
         for row in session.scalars(select(Job).where(Job.id.in_({job_id for _, job_id in pairs})))
@@ -214,7 +211,7 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
         job = jobs.get(job_id)
         if job is None or not job.description:
             continue
-        cv_file = cvs.get(applicant_id)
+        cv_file = pick_base_cv(cvs.get(applicant_id, []), title=job.title, advert=job.description)
         if cv_file is None:
             _ensure_skipped(session, applicant_id, job_id, reason="no_cv", now=now)
             continue
@@ -261,6 +258,7 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
                     posting=posting,
                     cv=text,
                     input_hash=wanted,
+                    cv_file_id=cv_file.id,
                 ),
             )
         )
@@ -435,6 +433,7 @@ async def _process_one(
     row = _row_for(session, item)
     row.status = TailoredCvStatus.ready.value
     row.input_hash = item.input_hash
+    row.cv_file_id = item.cv_file_id
     row.draft = tailored
     row.cover_letter = letter
     row.keywords = keywords
