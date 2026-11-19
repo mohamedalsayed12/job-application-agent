@@ -188,7 +188,9 @@ Running it again is safe. Afterwards the table holds only the current matches.
 ## Listings
 
 Logged-in people see their matched jobs at `/listings`, best match first, with the reasons for each
-score, LinkedIn as the source, and the apply link. Saving a profile matches that person straight away.
+score, LinkedIn as the source, and the apply link. A job you have an application for also
+shows its status (Preparing, Needs your input, Ready to fill, Filled, Applied, Not applying, Failed).
+Saving a profile matches that person straight away.
 The rules are in `MVP.md` decision D42.
 
 ## Job summaries
