@@ -85,7 +85,7 @@ because the app sends no email. The rules are in `MVP.md` decision D37.
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
 certifications and licences, experience levels and optional travel distance. They can keep up to 10
 CVs (PDF or DOCX, up to 5 MB each), label them by target job, and choose a primary CV. Uploading
-a CV or asking to fill the profile sends its text to the AI provider for editable suggestions.
+a CV or asking to fill the profile sends its text to the AI provider, which parses it with Resume-Matcher's parser, for editable suggestions.
 When AI reads a CV, the job titles it suggests appear as checkboxes under the target roles, and ticked ones are
 added on save. Under the box the page lists the related titles that are searched as well (D67). Tailoring and
 application preparation choose a CV for the job. Only its owner can download it.
@@ -226,6 +226,13 @@ European Commission. Our list is an adapted version of it.
 | Deps | uv + `pyproject.toml` |
 | Settings | pydantic-settings (`.env`) |
 | Tests | pytest + httpx + pytest-asyncio |
+
+## Credits
+
+CV parsing (`app/applicants/resume_parse.py`) and CV tailoring (`app/tailor/`) are ported from
+[Resume-Matcher](https://github.com/srbhr/Resume-Matcher) at commit 959e458, under the Apache
+License 2.0. The licence is in `app/tailor/LICENSE-resume-matcher.txt`, and
+each ported file names the file it came from and what was changed.
 
 ## Notes
 

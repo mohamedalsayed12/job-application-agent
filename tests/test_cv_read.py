@@ -25,6 +25,7 @@ from app.applicants.cv_read import (
     cv_text,
     grounded,
 )
+from app.applicants.resume_parse import restore_skills
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
@@ -37,6 +38,7 @@ from app.models import (
     SpendKind,
     SpendLedger,
 )
+from app.skills.taxonomy import load_taxonomy
 from tests.jobs import _public_resolve
 from tests.test_profile import PASSWORD, PROFILE, WORD_MAIN
 
@@ -45,19 +47,62 @@ CV_LINES = [
     "Manchester, United Kingdom",
     "BSc Business Management, University of Manchester, 2027",
     "Skills: Python, FastAPI, PostgreSQL & SQL",
+    "Junior Developer, Acme Ltd, Jan 2025 - Present",
+    "Cached search results in Redis and built the React front end",
+    "Set up GitHub Actions to run the tests on every push",
     "Projects: built a job search API in Python",
     "Full UK driving licence",
 ]
+# Resume-Matcher's parse of CV_LINES, with made-up items (Leeds, Kubernetes, AWS) and without the
+# skills named only in the job bullets (Redis, React, GitHub Actions).
 FOUND = {
+    "personalInfo": {
+        "name": "Sam Example", "title": "", "email": "", "phone": "", "location": "Manchester, United Kingdom",
+        "website": "", "linkedin": "", "github": "",
+    },
+    "summary": "",
+    "workExperience": [
+        {
+            "id": 1, "title": "Junior Developer", "company": "Acme Ltd", "location": "", "years": "Jan 2025 - Present",
+            "description": [CV_LINES[5], CV_LINES[6]],
+        }
+    ],
+    "education": [
+        {"id": 1, "institution": "University of Manchester", "degree": "BSc Business Management", "years": "2027", "description": ""}
+    ],
+    "personalProjects": [],
+    "additional": {
+        "technicalSkills": ["Python", "FastAPI", "PostgreSQL", "Kubernetes"],
+        "languages": [],
+        "certificationsTraining": [
+            {"name": "Full UK driving licence", "issuer": "DVLA", "is_licence": True, "expires_on": ""},
+            {"name": "AWS Solutions Architect", "issuer": "Amazon", "is_licence": False, "expires_on": "2030-01-01"},
+        ],
+        "awards": [],
+    },
+    "jobSearch": {
+        "targetRoles": ["Junior Python Developer", "Graduate Software Engineer"],
+        "locations": ["Manchester", "Leeds"],
+        "aimedAt": "",
+        "experienceLevels": ["entry"],
+    },
+}
+FLAT = {
     "target_roles": ["Junior Python Developer", "Graduate Software Engineer"],
     "locations": ["Manchester", "Leeds"],
     "experience_levels": ["entry"],
     "skills": ["Python", "FastAPI", "PostgreSQL", "Kubernetes"],
-    "certifications": [
-        {"name": "Full UK driving licence", "issuer": "DVLA", "is_licence": True, "expires_on": ""},
-        {"name": "AWS Solutions Architect", "issuer": "Amazon", "is_licence": False, "expires_on": "2030-01-01"},
-    ],
+    "certifications": FOUND["additional"]["certificationsTraining"],
 }
+
+
+def _parsed(*, roles: list[str] | None = None, aimed_at: str = "", **additional: object) -> dict:
+    """FOUND with its job-search block and additional fields changed."""
+    return {
+        **FOUND,
+        "jobSearch": {**FOUND["jobSearch"], "aimedAt": aimed_at, **({"targetRoles": roles} if roles else {})},
+        "additional": {**FOUND["additional"], **additional},
+    }
 
 
 def _docx(lines: list[str]) -> bytes:
@@ -121,12 +166,12 @@ def test_d43_a_file_without_readable_text_is_refused(content: bytes, file_type: 
 
 def test_d43_the_job_a_cv_is_written_for_must_appear_in_it() -> None:
     text = "\n".join(["Data Analyst", *CV_LINES])
-    kept = grounded({**FOUND, "aimed_at": "Data Analyst"}, text)
-    invented = grounded({**FOUND, "aimed_at": "Astronaut"}, text)
+    kept = grounded({**FLAT, "aimed_at": "Data Analyst"}, text)
+    invented = grounded({**FLAT, "aimed_at": "Astronaut"}, text)
     assert kept.aimed_at == "Data Analyst"
     assert invented.aimed_at == ""
-    inside = grounded({**FOUND, "aimed_at": "IT"}, "Worked with ward teams")
-    own_word = grounded({**FOUND, "aimed_at": "IT"}, "IT Support\nWorked with ward teams")
+    inside = grounded({**FLAT, "aimed_at": "IT"}, "Worked with ward teams")
+    own_word = grounded({**FLAT, "aimed_at": "IT"}, "IT Support\nWorked with ward teams")
     assert inside.aimed_at == ""
     assert own_word.aimed_at == "IT"
 
@@ -141,7 +186,7 @@ def test_d43_a_typed_location_and_level_stay() -> None:
 
 
 def test_d43_only_what_the_cv_says_is_kept_but_roles_may_be_inferred() -> None:
-    found = grounded({**FOUND, "experience_levels": ["expert", "entry", "mid"]}, "\n".join(CV_LINES))
+    found = grounded({**FLAT, "experience_levels": ["expert", "entry", "mid"]}, "\n".join(CV_LINES))
     assert found.target_roles == ["Junior Python Developer", "Graduate Software Engineer"]
     assert found.locations == ["Manchester"]
     assert found.skills == ["Python", "FastAPI", "PostgreSQL"]
@@ -258,27 +303,42 @@ def _money(session: Session, cap: str) -> None:
     session.flush()
 
 
-async def _register_and_upload(client: httpx.AsyncClient) -> httpx.Response:
+DOCX = ("cv.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+PDF = ("cv.pdf", "application/pdf")
+
+
+async def _register_and_upload(
+    client: httpx.AsyncClient, kind: tuple[str, str] = DOCX, lines: list[str] = CV_LINES
+) -> httpx.Response:
     assert (await client.post("/register", data={"email": "cv@example.com", "password": PASSWORD})).status_code == 303
-    files = {"cv": ("cv.docx", _docx(CV_LINES), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
-    return await client.post("/profile/cv", files=files)
+    content = _docx(lines) if kind == DOCX else _pdf(lines)
+    return await client.post("/profile/cv", files={"cv": (kind[0], content, kind[1])})
 
 
+@pytest.mark.parametrize("kind", [DOCX, PDF], ids=["docx", "pdf"])
 async def test_d43_uploading_a_cv_fills_the_form_but_saves_nothing(
-    client: httpx.AsyncClient, session: Session, claude: _Claude
+    client: httpx.AsyncClient, session: Session, claude: _Claude, kind: tuple[str, str]
 ) -> None:
+    load_taxonomy(session)
     _money(session, "2")
-    response = await _register_and_upload(client)
+    response = await _register_and_upload(client, kind)
 
     assert response.status_code == 200
-    assert "We read your CV and filled in locations, experience levels, 3 skills, 1 certification or licence" in response.text
+    assert "We read your CV and filled in locations, experience levels, " in response.text
+    assert "1 certification or licence, 1 degree" in response.text
     assert "Tick any job titles from your CV you want to search for." in response.text
     assert "The file is saved" in response.text
     assert 'placeholder="Junior Software Engineer"></textarea>' in response.text
-    for role in FOUND["target_roles"]:
+    for role in FLAT["target_roles"]:
         assert f'name="cv_roles" value="{role}"/> {role}</label>' in response.text
-    assert "Python\nFastAPI\nPostgreSQL</textarea>" in response.text
-    assert "Kubernetes" not in response.text
+    assert ">Manchester</textarea>" in response.text
+    skills = response.text.split('name="skills"')[1].split(">", 1)[1].split("</textarea>")[0].splitlines()
+    assert skills[:3] == ["Python", "FastAPI", "PostgreSQL"]
+    assert {"Redis", "React", "GitHub Actions"} <= set(skills)
+    for made_up in ("Kubernetes", "Leeds", "AWS Solutions Architect"):
+        assert made_up not in response.text
+    assert "Full UK driving licence" in response.text
+    assert "BSc Business Management</textarea>" in response.text
     assert 'name="experience_levels" value="entry" checked/>' in response.text
     assert "<CV_DATA>" in claude.sent and "BSc Business Management" in claude.sent
     assert session.scalar(select(ApplicantPreference)) is None
@@ -294,7 +354,7 @@ async def test_d43_suggestions_stay_after_refresh_until_save(
 
     again = await client.get("/profile")
     assert again.status_code == 200
-    assert _offered(again.text, *FOUND["target_roles"])
+    assert _offered(again.text, *FLAT["target_roles"])
     assert "The file is saved" in again.text
     assert 'name="experience_levels" value="entry" checked/>' in again.text
     assert "cv.docx" in again.text
@@ -303,8 +363,8 @@ async def test_d43_suggestions_stay_after_refresh_until_save(
     claude.broken = True
     failed = await client.post("/profile/cv/fill")
     assert "Try again later" in failed.text
-    assert _offered(failed.text, *FOUND["target_roles"])
-    assert _offered((await client.get("/profile")).text, *FOUND["target_roles"])
+    assert _offered(failed.text, *FLAT["target_roles"])
+    assert _offered((await client.get("/profile")).text, *FLAT["target_roles"])
 
     rejected = await client.post(
         "/profile",
@@ -347,7 +407,7 @@ async def test_d43_a_second_cv_adds_to_the_draft_and_deleting_its_source_drops_i
     await _register_and_upload(client)
     first = session.scalars(select(CvFile)).one()
 
-    claude.payload = {**FOUND, "target_roles": ["Data Analyst"], "skills": ["Python"], "certifications": []}
+    claude.payload = _parsed(roles=["Data Analyst"], technicalSkills=["Python"], certificationsTraining=[])
     files = {"cv": ("two.docx", _docx(CV_LINES), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
     second_page = await client.post("/profile/cv", files=files)
     assert _offered(second_page.text, "Junior Python Developer", "Graduate Software Engineer", "Data Analyst")
@@ -374,13 +434,29 @@ def test_d43_draft_cookie_budget_counts_unicode_escapes() -> None:
     assert _set_cookie_bytes({**base, _PROFILE_DRAFT: payload}) > _MAX_SET_COOKIE_BYTES
 
 
+@pytest.mark.parametrize("kind", [DOCX, PDF], ids=["docx", "pdf"])
+async def test_d43_a_scanned_or_blank_cv_is_not_sent(
+    client: httpx.AsyncClient, session: Session, claude: _Claude, kind: tuple[str, str]
+) -> None:
+    _money(session, "2")
+    response = await _register_and_upload(client, kind, lines=[" "])
+    assert "find text in your CV. A scanned PDF has none." in response.text
+    assert claude.calls == 0
+
+
+def test_d43_skills_the_parse_dropped_from_a_skills_line_come_back() -> None:
+    text = "Skills: Python, FastAPI, Pydantic, Alembic\nBuilt services with Python, FastAPI and Celery for a charity"
+    parsed = restore_skills({**FOUND, "additional": {**FOUND["additional"], "technicalSkills": ["Python", "FastAPI"]}}, text)
+    assert parsed["additional"]["technicalSkills"] == ["Python", "FastAPI", "Pydantic", "Alembic"]
+
+
 async def test_d43_the_fill_button_reads_the_stored_cv_again(client: httpx.AsyncClient, session: Session, claude: _Claude) -> None:
     _money(session, "2")
     await _register_and_upload(client)
     again = await client.post("/profile/cv/fill")
     assert again.status_code == 200
     assert "We read your CV but found nothing new" in again.text
-    assert _offered(again.text, *FOUND["target_roles"])
+    assert _offered(again.text, *FLAT["target_roles"])
     assert claude.calls == 2
 
 
@@ -446,7 +522,7 @@ async def test_d43_typed_answers_stay_and_an_empty_label_takes_the_title_in_the_
     assert (await client.post("/register", data={"email": "cv@example.com", "password": PASSWORD})).status_code == 303
     saved = await client.post("/profile", data={**PROFILE, "target_roles": "Data Analyst", "skills": "Excel"})
     assert saved.status_code == 303
-    claude.payload = {**FOUND, "aimed_at": "Astronaut"}
+    claude.payload = _parsed(aimed_at="Astronaut")
     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     first = await client.post(
         "/profile/cv",
@@ -457,11 +533,12 @@ async def test_d43_typed_answers_stay_and_an_empty_label_takes_the_title_in_the_
     assert 'value="Nurse"' in first.text
     assert 'value="Astronaut"' not in first.text
     assert ">Data Analyst</textarea>" in first.text
-    assert _offered(first.text, *FOUND["target_roles"])
-    assert "Excel\nPython\nFastAPI\nPostgreSQL</textarea>" in first.text
+    assert _offered(first.text, *FLAT["target_roles"])
+    skills = first.text.split('name="skills"')[1].split(">", 1)[1].split("</textarea>")[0].splitlines()
+    assert skills[:4] == ["Excel", "Python", "FastAPI", "PostgreSQL"]
     assert session.scalar(select(ApplicantPreference)).target_roles == ["Data Analyst"]
 
-    claude.payload = {**FOUND, "aimed_at": "Data Analyst"}
+    claude.payload = _parsed(aimed_at="Data Analyst")
     second = await client.post(
         "/profile/cv",
         files={"cv": ("cv.docx", _docx(["Data Analyst", *CV_LINES]), mime)},
