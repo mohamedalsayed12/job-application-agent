@@ -367,3 +367,20 @@ async def test_a_listing_shows_the_drafted_messages_for_each_contact(client: htt
     assert f'action="/jobs/{job.id}/outreach/{contact.id}/copy"' in page
     assert "Pat Quiet" in page and f'action="/jobs/{job.id}/outreach/{quiet.id}/draft"' in page
 
+
+
+async def test_the_job_page_shows_outreach_too(client: httpx.AsyncClient, session: Session) -> None:
+    from app.api.jobs import get_gateway
+
+    async def _gateway():
+        yield None
+
+    app.dependency_overrides[get_gateway] = _gateway
+    await _jobs(session)
+    await _register_with_profile(client)
+    job = _job(session, 1)
+    assert "mark this job as applied to reach out" in (await client.get(f"/jobs/{job.id}")).text
+
+    _mark_applied(session, job.id)
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert f'action="/jobs/{job.id}/outreach/find"' in page

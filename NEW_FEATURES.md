@@ -92,7 +92,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 **Goal.** After the user marks an application submitted, find hiring managers / company figures for that job, research public signals, draft a human message from a curated success-pattern library, let the user edit, then send via Gmail or copy for LinkedIn.
 
 **Flow**
-1. User marks the job as applied → job page shows **Find people** (Apify LinkedIn people / employees actors, budget-gated).
+1. User marks the job as applied → the job's card on `/listings` and its job page show **Find people** (and, once drafted, each contact's messages in folded sections under the summary; before applying they say to mark the job applied) (Apify LinkedIn people / employees actors, budget-gated).
 2. Pick contact → **Research & draft** (About + quotes as evidence).
 3. User edits subject/body.
 4. **Send with Gmail** (OAuth) or **Copy for LinkedIn** + open profile.
