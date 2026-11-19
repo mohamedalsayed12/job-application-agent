@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -10,6 +11,8 @@ from decimal import Decimal
 
 import httpx
 import pytest
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,7 +30,7 @@ from app.models import (
     TailoredCv,
     TailoredCvStatus,
 )
-from app.tailor.ats import pdf_text
+from app.tailor.ats import ats_report, pdf_text
 from app.tailor.improver import Change, apply_diffs
 from app.tailor.preservation import finalize_ai_resume
 from app.tailor.refiner import remove_ai_phrases
@@ -257,6 +260,43 @@ def test_rendered_cv_has_an_ats_readable_text_layer() -> None:
     assert "University of Manchester" in text
     assert "PostgreSQL" in text
     assert render_docx(MASTER).startswith(b"PK")
+
+
+def test_rendered_cv_text_is_the_resume_and_nothing_else() -> None:
+    lines = pdf_text(render_pdf(MASTER)).splitlines()
+
+    assert lines == [
+        "Mohammed Example",
+        "Skills",
+        "Python, FastAPI, PostgreSQL",
+        "Experience",
+        "student society",
+        "•",
+        BULLET,
+        "Education",
+        "BSc Business Management · University of Manchester · 2027",
+    ]
+
+
+def _pdf_with_reportlab_bullet_names() -> bytes:
+    buffer = io.BytesIO()
+    style = getSampleStyleSheet()["Normal"]
+    story = [
+        Paragraph("Mohammed Example", style),
+        ListFlowable([ListItem(Paragraph(BULLET, style), value="bullet")], bulletType="bullet", start="bullet"),
+    ]
+    SimpleDocTemplate(buffer).build(story)
+    return buffer.getvalue()
+
+
+def test_ats_check_fails_a_pdf_with_text_the_resume_lacks() -> None:
+    def report(pdf: bytes) -> dict:
+        return ats_report(pdf_bytes=pdf, resume=MASTER, master=MASTER, keywords=_KEYWORDS, warnings=[])
+
+    broken = report(_pdf_with_reportlab_bullet_names())
+    assert broken["checks"]["no_stray_text"] is False
+    assert broken["passed"] is False
+    assert report(render_pdf(MASTER))["passed"] is True
 
 
 async def test_apply_job_gets_ready_package(session: Session) -> None:
