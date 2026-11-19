@@ -1,4 +1,4 @@
-"""Check, store, replace and delete a person's CV. Its text is never read (D25, D38)."""
+"""Check, store, replace and delete a person's CV (D25, D38). Reading its text is app/applicants/cv_read.py (D43)."""
 
 from __future__ import annotations
 

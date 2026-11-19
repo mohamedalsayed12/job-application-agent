@@ -128,7 +128,7 @@ class Settings(BaseSettings):
 
     # D43: reading a CV to fill the profile form. Blank model = provider default.
     ai_cv_model: str = ""
-    ai_cv_max_output_tokens: int = 1500
+    ai_cv_max_output_tokens: int = 8000
     ai_cv_max_chars: int = 24000
 
     # D50: the AI judging whether each job fits each person. Blank model = provider default.

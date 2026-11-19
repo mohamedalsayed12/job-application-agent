@@ -28,7 +28,7 @@ from app.matching.report import write_reports
 from app.quality import store_results
 from app.skills.taxonomy import map_job_skills
 from app.summaries.generate import summarise_matches
-from app.tailor import write_tailored_cvs
+from app.tailor.run import write_tailored_cvs
 
 # Searches run once a day; the short poll keeps AI work on the backlog moving.
 DEFAULT_POLL_SECONDS = 60

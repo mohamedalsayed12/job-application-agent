@@ -76,8 +76,10 @@ because the app sends no email. The rules are in `MVP.md` decision D37.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
 certifications and licences, experience level and optional travel distance. They can upload one
-CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner can download it,
-and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
+CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner can download it.
+Its text is read only when they upload it or press "Fill my profile from my CV": Claude parses it
+with Resume-Matcher's parser, and the suggestions fill empty fields for them to check before Save
+(decision D43). `/account` also deletes the account. The rules are in decision D38.
 
 Admins log in at `/admin/login` with `ADMIN_KEY`. The session lasts 12 hours. Scripts can send
 the key in an `X-Admin-Key` header instead. The key is not accepted in a URL.
@@ -204,6 +206,13 @@ European Commission. Our list is an adapted version of it.
 | Deps | uv + `pyproject.toml` |
 | Settings | pydantic-settings (`.env`) |
 | Tests | pytest + httpx + pytest-asyncio |
+
+## Credits
+
+CV parsing (`app/applicants/resume_parse.py`) and CV tailoring (`app/tailor/`) are ported from
+[Resume-Matcher](https://github.com/srbhr/Resume-Matcher) at commit 959e458, under the Apache
+License 2.0. The licence is in `app/tailor/LICENSE-resume-matcher.txt`, and
+each ported file names the file it came from and what was changed.
 
 ## Notes
 
