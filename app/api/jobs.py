@@ -31,6 +31,7 @@ from app.models import (
     TailoredCvStatus,
     auto_tailored,
 )
+from app.outreach.ui import load_outreach, outreach_block
 from app.summaries.generate import Shown, summary_for_view
 from app.tailor.render import render_letter_docx, render_letter_pdf
 from app.tailor.run import request_tailored_cv, tailor_allowed, tailors_outside_locations
@@ -49,7 +50,7 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         await gateway.aclose()
 
 
-def _body(job: Job, shown: Shown, tailored: str, step: str) -> str:
+def _body(job: Job, shown: Shown, tailored: str, step: str, outreach: str) -> str:
     if shown.summary:
         about = (
             f"<p>{html.escape(shown.summary)}</p>"
@@ -68,6 +69,7 @@ def _body(job: Job, shown: Shown, tailored: str, step: str) -> str:
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
 {tailored}
 {step}
+{outreach}
 <p><a href="/jobs/{job.id}/interview">Interview practice for this job</a></p>
 </div>
 """
@@ -117,7 +119,8 @@ async def job_page(
         allowed=tailor_allowed(settings, applicant.id),
     ) + cover_letter_text(row)
     step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf)
-    return page(job.title, _body(job, shown, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
+    outreach = outreach_block(job_id, load_outreach(db, applicant.id, [job_id])[job_id], csrf)
+    return page(job.title, _body(job, shown, tailored, step, outreach), header=applicant_bar(request, "matches"), narrow=True)
 
 
 @router.post("/{job_id}/tailor", dependencies=[Depends(require_csrf)])
