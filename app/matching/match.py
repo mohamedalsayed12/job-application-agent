@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -123,6 +124,18 @@ _ENTRY_ADVERT = re.compile(
     re.IGNORECASE,
 )
 _NEGATED = re.compile(r"\bnot (?:an? |for )?$", re.IGNORECASE)
+# D46: an explicit ask for 2 or more years. A range that starts lower ("1-2 years", "0 to 2 years") doesn't count.
+_TWO_PLUS_YEARS = re.compile(
+    r"(?<![-–\d])(?<![-–] )(?<!to )\b2\s*\+?\s*(?:(?:-|–|to)\s*\d+\s*)?(?:years?|yrs?)\b\s*\+?"
+    r"[^.]{0,60}\bexperience",
+    re.IGNORECASE,
+)
+_GRADUATES_WELCOME = re.compile(
+    r"\b(?:recent |new )?graduates? (?:are )?(?:welcome|encouraged to apply)\b|\bwelcome (?:recent |new )?graduates?\b|"
+    r"\bgraduate (?:scheme|programme|program)\b|\bno (?:prior |previous )?experience (?:is )?(?:required|needed|necessary)\b",
+    re.IGNORECASE,
+)
+_GRADUATE_OR_JUNIOR_TITLE = re.compile(r"\b(?:graduate|grad|junior|jr\.?)\b", re.IGNORECASE)
 
 
 class RoleKind(StrEnum):
@@ -245,23 +258,58 @@ def match_role(
     return min(found, key=lambda fit: fit.kind != RoleKind.exact) if found else None
 
 
-def entry_evidence(title: str, description: str | None) -> str | None:
+def entry_evidence(title: str, description: str | None, *, ai_level: str | None = None) -> str | None:
     """Where the job shows it is entry level, or None when it doesn't (D46).
 
     A plain "Backend Developer" with nothing in the advert about level is left out:
-    someone asking for graduate and junior roles sees only those.
+    someone asking for graduate and junior roles sees only those. The AI reading the
+    advert as entry level counts last, so it never outweighs the title or the years asked for.
     """
     if NOT_ENTRY_TITLE.search(title):
         return None
-    if ENTRY_TITLE.search(title):
+    if _GRADUATE_OR_JUNIOR_TITLE.search(title):
         return ENTRY_IN_TITLE
     text = description or ""
+    if _TWO_PLUS_YEARS.search(text) and not _GRADUATES_WELCOME.search(text):
+        return None
+    if ENTRY_TITLE.search(title):
+        return ENTRY_IN_TITLE
     if YEARS_REQUIRED.search(text):
         return None
     for found in _ENTRY_ADVERT.finditer(text):
         if not _NEGATED.search(text[max(0, found.start() - 14) : found.start()]):
             return ENTRY_IN_ADVERT
-    return None
+    return ENTRY_BY_AI if ai_level == "entry" else None
+
+
+def shut_out(
+    title: str,
+    description: str | None,
+    subjects: list[frozenset[str]],
+    *,
+    level: str | None,
+    target_roles: Sequence[str],
+    degrees: Sequence[str],
+    ai_level: str | None = None,
+) -> bool:
+    """The hard exclusions (D45, D46), checked before anything lists a job or pays the AI to read it.
+
+    `subjects` is `required_fields(description)`. `ai_level` is the level the AI read in the advert, if any.
+    """
+    if level == ExperienceLevel.internship:
+        return not _INTERNSHIP_TITLE.search(title) or bool(_APPRENTICE_TITLE.search(title))
+    if _INTERNSHIP_TITLE.search(title) and (
+        level == ExperienceLevel.entry or not any(_INTERNSHIP_TITLE.search(role) for role in target_roles)
+    ):
+        return True
+    if _APPRENTICE_TITLE.search(title) and not any(_APPRENTICE_TITLE.search(role) for role in target_roles):
+        return True
+    wants_entry = level == ExperienceLevel.entry or (
+        bool(target_roles) and all(ENTRY_TITLE.search(role) for role in target_roles)
+    )
+    if wants_entry and entry_evidence(title, description, ai_level=ai_level) is None:
+        return True
+    return degree_shuts_out(subjects, list(degrees))
 
 
 def _fit_internship(title: str, words: set[str], role: str) -> RoleMatch | None:
@@ -499,6 +547,16 @@ def _match_applicant(
         verdict = verdicts.get(facts.job_id)
         if verdict is not None and not verdict.fits:
             continue
+        if shut_out(
+            facts.title,
+            facts.description,
+            subjects[facts.job_id],
+            level=level,
+            target_roles=preference.target_roles,
+            degrees=degrees,
+            ai_level=verdict.level if verdict is not None else None,
+        ):
+            continue
         # D52: once the full report is written, its score decides as well.
         fit_report = fit_reports.get(facts.job_id) if verdict is not None else None
         if fit_report is not None and fit_report.score < ADD_LINE:
@@ -512,8 +570,9 @@ def _match_applicant(
             entry=level == ExperienceLevel.entry,
         ) or match_by_skills(facts.title, facts.description, skill_fit, level=level)
         if role is None and verdict is not None:
-            role = RoleMatch(target="", kind=RoleKind.ai, level=ENTRY_BY_AI if verdict.level == "entry" else None)
-        if role is None or degree_shuts_out(subjects[facts.job_id], degrees):
+            evidence = entry_evidence(facts.title, facts.description, ai_level=verdict.level)
+            role = RoleMatch(target="", kind=RoleKind.ai, level=evidence)
+        if role is None:
             continue
         job = session.get(Job, facts.job_id)
         salary = salary_match_status(

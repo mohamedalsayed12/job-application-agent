@@ -39,6 +39,8 @@ class Profile:
     text: str
     digest: str
     roles: tuple[str, ...] = ()
+    level: str | None = None
+    degrees: tuple[str, ...] = ()
 
 
 def job_text(
@@ -85,6 +87,8 @@ def load_profiles(session: Session, applicant_ids: set[uuid.UUID] | None = None)
             text,
             digest(text),
             roles=tuple(preference.target_roles),
+            level=profile.experience_level if profile else None,
+            degrees=tuple(profile.degrees or ()) if profile else (),
         )
     return out
 

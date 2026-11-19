@@ -352,6 +352,7 @@ async def test_budget_wait_leaves_waiting_status(session: Session) -> None:
     )
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
     await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
 
     run = await write_tailored_cvs(
         session, gateway=gateway, settings=settings, persist=session.flush, now=SOON

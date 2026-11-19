@@ -30,6 +30,7 @@ from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.verdicts import job_text
 from app.models import (
+    ApplicantJobMatch,
     CvFile,
     CvFileType,
     Job,
@@ -190,6 +191,8 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     existing = {
         (row.applicant_id, row.job_id): row for row in session.scalars(select(TailoredCv))
     }
+    # Tailoring follows a report only while its job is on the person's matches; a request always counts.
+    matched = set(session.execute(select(ApplicantJobMatch.applicant_id, ApplicantJobMatch.job_id)).tuples())
     pairs = [
         pair
         for pair in reports.keys() | existing.keys()
@@ -212,6 +215,8 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     for applicant_id, job_id in pairs:
         report = reports.get((applicant_id, job_id))
         current = existing.get((applicant_id, job_id))
+        if (applicant_id, job_id) not in matched and (current is None or current.input_hash != REQUESTED):
+            continue
         job = jobs.get(job_id)
         if job is None or not job.description:
             continue

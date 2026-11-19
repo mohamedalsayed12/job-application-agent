@@ -26,7 +26,14 @@ from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.batches import Ask, Spend, ask_in_batches
-from app.matching.match import location_fit, showable, wanted_locations, worth_judging
+from app.matching.degrees import required_fields
+from app.matching.match import (
+    location_fit,
+    showable,
+    shut_out,
+    wanted_locations,
+    worth_judging,
+)
 from app.matching.verdicts import (
     ADD_LINE,
     PROMPT_VERSION,
@@ -67,6 +74,8 @@ score: your overall judgement from 1.0 to 5.0, one decimal place. It is not an a
 matter most, and red flags pull it down. 4.5 or more is a strong match, worth applying straight away. 4.0 to 4.4 is
 a good match, worth applying. 3.5 to 3.9 is decent but not worth applying without a specific reason. Below 3.5, don't apply.
 Location and the person's salary wishes are checked elsewhere: ignore them.
+An internship, placement or apprenticeship never fits a person whose level is entry. It fits only a person whose level is
+internship or whose target roles name one.
 
 level is the experience level the advert asks for: entry, mid, senior, or unclear.
 reason is one plain sentence saying why, naming only things the advert or the profile states.
@@ -167,10 +176,22 @@ def _todo(session: Session, now: datetime, applicant_ids: set[uuid.UUID] | None 
     work: list[tuple[bool, float, _Work]] = []
     for facts, text in jobs:
         job_digest = digest(text)
+        subjects = required_fields(facts.description)
         for profile in profiles.values():
             if not worth_judging(facts.title, list(profile.roles)):
                 continue
             if facts.sector != profile.sector or done.get((profile.applicant_id, facts.job_id)) == (job_digest, profile.digest):
+                continue
+            # The most the AI can add is reading the advert as entry level, so ask the gate with that.
+            if shut_out(
+                facts.title,
+                facts.description,
+                subjects,
+                level=profile.level,
+                target_roles=profile.roles,
+                degrees=profile.degrees,
+                ai_level="entry",
+            ):
                 continue
             near, _ = location_fit(wanted.get(profile.applicant_id, []), facts.places, facts.remote_type)
             work.append((not near, -facts.first_seen_at.timestamp(), _Work(profile, facts, text, job_digest)))
