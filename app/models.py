@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     LargeBinary,
     Numeric,
     Text,
@@ -95,6 +96,7 @@ class SpendKind(StrEnum):
     ai_job_judge = "ai_job_judge"
     ai_fit_report = "ai_fit_report"
     ai_cv_tailor = "ai_cv_tailor"
+    ai_search_ideas = "ai_search_ideas"
     linkedin_jobs = "linkedin_jobs"
     indeed_jobs = "indeed_jobs"
     apply_form = "apply_form"
@@ -112,7 +114,6 @@ class SpendKind(StrEnum):
 
 
 class ApplicationStatus(StrEnum):
-    preparing = "preparing"
     ready_to_fill = "ready_to_fill"
     filled_awaiting_review = "filled_awaiting_review"
     # Set only by the person ("I've applied"), never by the extension.
@@ -120,12 +121,6 @@ class ApplicationStatus(StrEnum):
     needs_input = "needs_input"
     failed = "failed"
     abandoned = "abandoned"
-
-
-class AtsKind(StrEnum):
-    greenhouse = "greenhouse"
-    lever = "lever"
-    unknown = "unknown"
 
 
 # Prefer-not-to-say default for optional demographic application answers.
@@ -182,10 +177,28 @@ class InterviewRequestStatus(StrEnum):
 
 class TailoredCvStatus(StrEnum):
     pending = "pending"
+    running = "running"
     waiting_budget = "waiting_budget"
     ready = "ready"
     skipped = "skipped"
     failed = "failed"
+
+
+# Listed jobs with these verdicts are tailored with no click, Apply before Consider.
+TAILOR_VERDICTS = ("Apply", "Consider")
+
+
+def auto_tailored(verdict: str | None, *, location_fit: bool, outside_locations: bool) -> bool:
+    """Whether a listed job gets a tailored CV with no click.
+
+    `location_fit` is the listings' "My locations" rule, so the person's scope setting matches what they see there.
+    """
+    return verdict in TAILOR_VERDICTS and (location_fit or outside_locations)
+
+
+def attempt_failed(status: str, draft: object) -> bool:
+    """A ready file whose latest rebuild failed. The previous download stays."""
+    return status == TailoredCvStatus.ready.value and isinstance(draft, dict) and bool(draft.get("last_error"))
 
 
 class CompanyResearchStatus(StrEnum):
@@ -357,6 +370,8 @@ class ApplicantProfile(_UuidPk, Base):
     travel_distance_miles: Mapped[int | None] = mapped_column(Integer())
     # As typed, such as "BSc Business Management". Studying for one counts. Used only in the AI score (D62).
     degrees: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    # Automatic tailoring spends the AI budget, so by default it covers only jobs in the person's locations.
+    tailor_outside_locations: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
     updated_at: Mapped[datetime] = _updated()
 
 
@@ -393,23 +408,28 @@ class ApplicantCertification(_UuidPk, Base):
 
 
 class CvFile(_UuidPk, Base):
-    """D38: the file itself lives here, loaded only when its owner downloads it."""
+    """D38, D65: one of a person's CVs. The file loads only when its content is read."""
 
     __tablename__ = "cv_file"
     __table_args__ = (
         _text_in("file_type", CvFileType),
         CheckConstraint("size_bytes BETWEEN 1 AND 5242880", name="size_bytes"),
+        Index("uq_cv_file_one_primary", "applicant_id", unique=True, postgresql_where=text("is_primary")),
     )
 
     applicant_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(),
         ForeignKey("applicant.id", ondelete="CASCADE"),
-        unique=True,
+        index=True,
     )
     content: Mapped[bytes] = mapped_column(LargeBinary(), deferred=True)
     file_type: Mapped[str] = mapped_column(Text())
     size_bytes: Mapped[int] = mapped_column(Integer())
     uploaded_at: Mapped[datetime] = mapped_column(TZ)
+    # The kind of job this CV is written for, such as "Data Analyst". It decides which CV a job gets.
+    label: Mapped[str] = mapped_column(Text(), default="", server_default=text("''"))
+    # Used for a job no label fits.
+    is_primary: Mapped[bool] = mapped_column(Boolean(), default=False, server_default=text("false"))
 
 
 class SpendLedger(_UuidPk, Base):
@@ -687,12 +707,14 @@ class CompanyResearch(_UuidPk, Base):
     research: Mapped[dict[str, Any]] = mapped_column(JSONB())
     official_domain: Mapped[str | None] = mapped_column(Text())
     fetched_at: Mapped[datetime] = mapped_column(TZ)
+    # Wording read from the employer's own site, once the homepage title names the company.
+    site_terms: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 
 
 class TailoredCv(_UuidPk, Base):
-    """D55: one tailored CV package per person and Apply/Consider job."""
+    """One tailored CV package per person and job: automatic for listed Apply/Consider jobs, else on request."""
 
     __tablename__ = "tailored_cv"
     __table_args__ = (
@@ -711,8 +733,10 @@ class TailoredCv(_UuidPk, Base):
     applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
     job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(Text())
-    # Hash of advert, CV bytes, profile and company-research input; a change means a new package.
+    # Hash of the advert and CV bytes; a change means a new package.
     input_hash: Mapped[str] = mapped_column(Text())
+    # When the person asked for this package; None when only an Apply/Consider verdict wants it.
+    requested_at: Mapped[datetime | None] = mapped_column(TZ)
     # Structured draft after grounding, keywords list, ATS coverage table.
     draft: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     # Plain text written from the final draft; PDF and DOCX are rendered on download.
@@ -723,6 +747,8 @@ class TailoredCv(_UuidPk, Base):
         Uuid(), ForeignKey("company_research.id", ondelete="SET NULL")
     )
     company_research_available: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
+    # The person's CV this package was tailored from (D65).
+    cv_file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("cv_file.id", ondelete="SET NULL"))
     pdf_content: Mapped[bytes | None] = mapped_column(LargeBinary(), deferred=True)
     docx_content: Mapped[bytes | None] = mapped_column(LargeBinary(), deferred=True)
     pdf_size_bytes: Mapped[int | None] = mapped_column(Integer())
@@ -732,6 +758,27 @@ class TailoredCv(_UuidPk, Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class TailorRun(_UuidPk, Base):
+    """The paid steps of an unfinished tailored CV package, so a crash resumes instead of paying again.
+
+    One per package and input. It is deleted when the package finishes, and with the package or the account.
+    """
+
+    __tablename__ = "tailor_run"
+    __table_args__ = (UniqueConstraint("tailored_cv_id", name="uq_tailor_run_tailored_cv_id"),)
+
+    tailored_cv_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("tailored_cv.id", ondelete="CASCADE"))
+    input_hash: Mapped[str] = mapped_column(Text())
+    # Step name to its parsed output, model, tokens, cost and spend_ledger id. JSON, not JSONB:
+    # JSONB reorders keys, and a reused step must give the CV the same shape a fresh call would.
+    steps: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict, server_default=text("'{}'"))
+    # Attempts that started on this input and never finished.
+    crashes: Mapped[int] = mapped_column(Integer(), default=0, server_default=text("0"))
+    last_error: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 
@@ -766,6 +813,9 @@ class ApplicationAnswers(_UuidPk, Base):
     ethnicity: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     disability: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     veteran: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    saved_questions: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB(), default=list, server_default=text("'[]'::jsonb")
+    )
     updated_at: Mapped[datetime] = _updated()
 
 
@@ -776,7 +826,6 @@ class Application(_UuidPk, Base):
     __table_args__ = (
         UniqueConstraint("applicant_id", "job_id", name="uq_application_applicant_job"),
         _text_in("status", ApplicationStatus),
-        _text_in("ats_kind", AtsKind, nullable=True),
         Index("ix_application_applicant_status", "applicant_id", "status"),
     )
 
@@ -784,11 +833,12 @@ class Application(_UuidPk, Base):
     job_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="CASCADE"))
     apply_url: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(Text())
-    ats_kind: Mapped[str | None] = mapped_column(Text())
     schema_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     fill_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     missing_fields: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     error: Mapped[str | None] = mapped_column(Text())
+    # The person's CV the extension uploads when no tailored one is ready (D65).
+    cv_file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("cv_file.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 

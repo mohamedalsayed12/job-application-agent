@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import html
+import json
+import uuid
+from base64 import b64encode
 from datetime import UTC, datetime
 from itertools import zip_longest
 
 from fastapi import APIRouter, Depends, Form, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from itsdangerous import TimestampSigner
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
@@ -16,31 +20,42 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import FormRefused, csrf_field, require_csrf
+from app.api.interview_intel import interview_card
 from app.api.jobs import get_gateway
 from app.applicants.cv import (
     MAX_CV_BYTES,
+    MAX_CVS,
     MAX_UPLOAD_BODY_BYTES,
     MEDIA_TYPES,
     CvRefused,
-    cv_for,
+    base_cv,
+    cvs_of,
     delete_cv,
+    owned_cv,
+    replace_cv,
+    save_cv_choices,
     store_cv,
+    suggest_label,
 )
 from app.applicants.cv_read import CvRead, CvSuggestions, ReadOutcome, read_cv
-from app.applicants.levels import LEVELS
+from app.applicants.levels import LEVELS, chosen_or_inferred, in_order
 from app.applicants.profile import (
     MAX_ITEM_LENGTH,
+    MAX_DEGREES,
+    MAX_LOCATIONS,
+    MAX_ROLES,
+    MAX_SKILLS,
     CertificationInput,
     load_profile,
     parse_certification,
     parse_profile_input,
     save_profile,
 )
+from app.applicants.search_ideas import ProfileAsk, SearchIdeas, suggest_search
 from app.applicants.service import PreferenceValidationError
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
-from app.api.interview_intel import interview_card
 from app.matching.match import match_all
 from app.matching.related_titles import expand_titles, with_related
 from app.models import Applicant, CvFile, CvFileType
@@ -51,6 +66,10 @@ router = APIRouter(prefix="/profile", tags=["profile"])
 _SEE_OTHER = status.HTTP_303_SEE_OTHER
 _SPARE_CERTIFICATION_ROWS = 3
 _SALARY_PERIODS = ("year", "month", "day", "hour")
+_MY_LOCATIONS = "my_locations"
+_EVERYWHERE = "everywhere"
+# Session-only copy of the filled form after a CV read. Not the saved profile (D43).
+_PROFILE_DRAFT = "profile_draft"
 _CSRF = [Depends(require_csrf)]
 # Without scripts the form still works: people type their skills into the box.
 _SKILL_SEARCH_SCRIPT = """<script>
@@ -76,6 +95,22 @@ document.getElementById("skill-add").addEventListener("click", () => {
 </script>"""
 
 
+_DRAFT_SCALARS = (
+    "target_roles",
+    "locations",
+    "salary_amount",
+    "salary_currency",
+    "salary_period",
+    "travel_distance",
+    "skills",
+    "degrees",
+)
+_DRAFT_LISTS = ("experience_levels", "cert_name", "cert_issuer", "cert_kind", "cert_expiry")
+# Browsers drop Set-Cookie over 4096 bytes; measure like Starlette's SessionMiddleware.
+_MAX_SET_COOKIE_BYTES = 4096
+_SET_COOKIE_FLAGS = "; path=/; Max-Age=1209600; httponly; samesite=lax; Secure"
+
+
 class ProfileFields:
     """What the form shows: the saved profile, or what was just typed when it needs correcting."""
 
@@ -95,6 +130,10 @@ class ProfileFields:
         cert_expiry: list[str] = Form(default=[]),
         degrees: str = Form(""),
         cv_roles: list[str] = Form(default=[]),
+        tailor_scope: str = Form(_MY_LOCATIONS),
+        cv_id: list[str] = Form(default=[]),
+        cv_label: list[str] = Form(default=[]),
+        cv_primary: str = Form(""),
     ) -> None:
         self.target_roles = target_roles
         self.locations = locations
@@ -107,9 +146,41 @@ class ProfileFields:
         self.degrees = degrees
         # Job titles the CV suggested and the person ticked, added to their target roles on save.
         self.cv_roles = cv_roles
+        self.tailor_scope = tailor_scope
         self.certifications = [
             tuple(row) for row in zip_longest(cert_name, cert_issuer, cert_kind, cert_expiry, fillvalue="")
         ]
+        self.cv_id = cv_id
+        self.cv_label = cv_label
+        self.cv_primary = cv_primary
+
+    def to_draft(self) -> dict[str, object]:
+        return {
+            **{key: getattr(self, key) for key in _DRAFT_SCALARS},
+            "experience_levels": list(self.experience_levels),
+            "cert_name": [row[0] for row in self.certifications],
+            "cert_issuer": [row[1] for row in self.certifications],
+            "cert_kind": [row[2] for row in self.certifications],
+            "cert_expiry": [row[3] for row in self.certifications],
+        }
+
+    @classmethod
+    def from_draft(cls, raw: object) -> ProfileFields | None:
+        if not isinstance(raw, dict):
+            return None
+        scalars: dict[str, str] = {}
+        for key in _DRAFT_SCALARS:
+            value = raw.get(key, "")
+            if not isinstance(value, str):
+                return None
+            scalars[key] = value
+        lists: dict[str, list[str]] = {}
+        for key in _DRAFT_LISTS:
+            value = raw.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                return None
+            lists[key] = value
+        return cls(**scalars, **lists)
 
 
 def _saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
@@ -131,7 +202,54 @@ def _saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
         cert_expiry=[str(item.expires_on or "") for item in certifications],
         degrees="\n".join(profile.degrees) if profile else "",
         cv_roles=[],
+        tailor_scope=_EVERYWHERE if profile and profile.tailor_outside_locations else _MY_LOCATIONS,
     )
+
+
+def _set_cookie_bytes(session_data: dict[str, object]) -> int:
+    """Byte length of the Set-Cookie header Starlette would emit for this session body."""
+    signed = TimestampSigner("size-check").sign(b64encode(json.dumps(session_data).encode("utf-8")))
+    return len(f"jaa_session={signed.decode('ascii')}{_SET_COOKIE_FLAGS}")
+
+
+def _stash_draft(request: Request, fields: ProfileFields, notice: str | None, source: uuid.UUID | None = None) -> bool:
+    payload = {"notice": notice, "source_cv": str(source) if source else None, **fields.to_draft()}
+    trial = {key: request.session[key] for key in request.session}
+    trial[_PROFILE_DRAFT] = payload
+    if _set_cookie_bytes(trial) > _MAX_SET_COOKIE_BYTES:
+        return False
+    request.session[_PROFILE_DRAFT] = payload
+    return True
+
+
+def _clear_draft(request: Request) -> None:
+    request.session.pop(_PROFILE_DRAFT, None)
+
+
+def _clear_draft_from(request: Request, cv_id: uuid.UUID) -> None:
+    """Suggestions read from a CV that is now deleted would point at a file that is gone."""
+    raw = request.session.get(_PROFILE_DRAFT)
+    if isinstance(raw, dict) and raw.get("source_cv") == str(cv_id):
+        _clear_draft(request)
+
+
+def _draft_view(request: Request) -> tuple[ProfileFields, str | None] | None:
+    raw = request.session.get(_PROFILE_DRAFT)
+    if raw is None:
+        return None
+    fields = ProfileFields.from_draft(raw)
+    if fields is None:
+        _clear_draft(request)
+        return None
+    notice = raw.get("notice") if isinstance(raw, dict) else None
+    return fields, notice if isinstance(notice, str) else None
+
+
+def _form_fields(request: Request, db: Session, applicant: Applicant) -> tuple[ProfileFields, str | None]:
+    draft = _draft_view(request)
+    if draft is not None:
+        return draft
+    return _saved_fields(db, applicant), None
 
 
 def _options(pairs: list[tuple[str, str]], selected: str) -> str:
@@ -158,32 +276,74 @@ def _size_text(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes >= 1024 * 1024 else f"{max(size_bytes // 1024, 1)} KB"
 
 
-def _cv_section(request: Request, cv: CvFile | None, error: str | None) -> str:
-    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
-    current = (
-        f"""
+def _cv_row(request: Request, cv: CvFile, *, label: str | None = None, checked: bool | None = None) -> str:
+    shown = cv.label if label is None else label
+    mark = " checked" if (cv.is_primary if checked is None else checked) else ""
+    accept = ".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return f"""
 <div class="cv-current">
-  <span>Your CV: <a href="/profile/cv">cv.{html.escape(cv.file_type)}</a>, {_size_text(cv.size_bytes)},
-  uploaded {cv.uploaded_at:%d %B %Y}.</span>
+  <span>
+    <input form="profile-form" type="hidden" name="cv_id" value="{cv.id}"/>
+    <input form="profile-form" name="cv_label" aria-label="Job this CV is for" placeholder="Job this CV is for"
+      value="{html.escape(shown)}"/>
+    <label><input form="profile-form" type="radio" name="cv_primary" value="{cv.id}"{mark}/> Primary</label>
+    <a href="/profile/cv/{cv.id}">cv.{html.escape(cv.file_type)}</a>, {_size_text(cv.size_bytes)},
+    uploaded {cv.uploaded_at:%d %B %Y}.
+  </span>
   <span class="cv-actions">
-    <form method="post" action="/profile/cv/fill">{csrf_field(request)}<button type="submit" class="primary">Fill my profile from my CV</button></form>
-    <form method="post" action="/profile/cv/delete">{csrf_field(request)}<button type="submit" class="danger">Delete CV</button></form>
+    <form method="post" action="/profile/cv/{cv.id}/fill">{csrf_field(request)}<button type="submit" class="primary">Fill my profile from this CV</button></form>
+    <form method="post" action="/profile/cv/{cv.id}/delete">{csrf_field(request)}<button type="submit" class="danger">Delete</button></form>
   </span>
 </div>
+<form method="post" action="/profile/cv/{cv.id}/replace" enctype="multipart/form-data" class="cv-replace">
+  {csrf_field(request)}
+  <input name="cv" type="file" required aria-label="New version of this CV" accept="{accept}"/>
+  <button type="submit">Replace this CV</button>
+</form>
 """
-        if cv
-        else ""
+
+
+def _cv_section(request: Request, cvs: list[CvFile], error: str | None, fields: ProfileFields | None = None) -> str:
+    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    # A failed save still has the labels just typed. The database copy is the one that was rolled back.
+    # A page built from the database leaves these as form markers, not a submitted list.
+    submitted = (
+        dict(zip(fields.cv_id, fields.cv_label, strict=False))
+        if fields is not None and isinstance(fields.cv_id, list) and fields.cv_id
+        else {}
+    )
+    chosen = fields.cv_primary if submitted and fields is not None and isinstance(fields.cv_primary, str) else None
+    listed = "".join(
+        _cv_row(
+            request,
+            cv,
+            label=submitted[str(cv.id)] if str(cv.id) in submitted else None,
+            checked=str(cv.id) == chosen if submitted else None,
+        )
+        for cv in cvs
+    )
+    hint = (
+        f"You can keep up to {MAX_CVS}. Delete one before uploading another."
+        if len(cvs) >= MAX_CVS
+        else "PDF or Word (.docx), up to "
+        f"{MAX_CV_BYTES // (1024 * 1024)} MB. You can keep up to {MAX_CVS}, each aimed at a different job."
     )
     return f"""
 <section class="card">
-<h2>4. Your CV</h2>
+<h2>4. Your CVs</h2>
 {message}
-{current}
+{listed}
+<p class="hint">The label says which job a CV is for. The primary one is used when none of the labels fit.
+Press Save and find my matches to keep a label or a new primary. Reading a CV adds to your target roles and skills
+and fills only the empty fields. Those suggestions stay on the form if you reload, but they are not part of your
+profile until you press Save and find my matches.</p>
 <form method="post" action="/profile/cv" enctype="multipart/form-data" class="dropzone">
   {csrf_field(request)}
-  <p><b>{"Replace your CV" if cv else "Upload your CV"}</b></p>
-  <p class="hint">PDF or Word (.docx), up to {MAX_CV_BYTES // (1024 * 1024)} MB. When you upload it, AI reads it to fill in the
-  form above for you to check. Nothing is saved until you press Save.</p>
+  <p><b>{"Upload another CV" if cvs else "Upload your CV"}</b></p>
+  <p class="hint">{hint} Your file is saved as soon as you upload it. AI then fills the form above for you to check.</p>
+  <label>Job this CV is for <span class="hint">optional</span>
+    <input name="label" placeholder="Data Analyst"/>
+  </label>
   <input name="cv" type="file" required aria-label="CV file"
     accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"/>
   <p><button type="submit">Upload</button></p>
@@ -210,6 +370,8 @@ _PROFILE_STYLE = """<style>
 .certs td { padding: 0.3rem; }
 .certs input, .certs select { margin: 0; }
 .form-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.25rem; }
+.cv-current input[name="cv_label"] { width: 14rem; margin: 0; }
+.cv-replace { margin: 0 0 0.75rem; }
 </style>"""
 
 
@@ -243,6 +405,10 @@ def _profile_page(
         for level, facts in LEVELS.items()
     )
     periods = _options([(period, f"a {period}") for period in _SALARY_PERIODS], fields.salary_period)
+    scopes = _options(
+        [(_MY_LOCATIONS, "Only jobs in my locations"), (_EVERYWHERE, "Also jobs outside my locations")],
+        fields.tailor_scope,
+    )
     rows = [*fields.certifications, *[("", "", "certification", "")] * _SPARE_CERTIFICATION_ROWS]
     return page(
         "Your profile",
@@ -271,6 +437,9 @@ def _profile_page(
     <label>Locations <span class="hint">one per line</span>
       <textarea name="locations" rows="2" required placeholder="Manchester">{html.escape(fields.locations)}</textarea>
     </label>
+    <p class="hint">Not sure what to search for? AI can suggest job titles that fit your skills and degrees, and towns
+    near your locations, for you to check before anything is searched.
+    <button type="submit" formaction="/profile/ideas" formnovalidate>Suggest roles and places</button></p>
     <fieldset class="checks">
       <legend>Experience levels <span class="hint">tick every level you want, at least one</span></legend>
       {levels}
@@ -290,6 +459,11 @@ def _profile_page(
       <textarea name="degrees" rows="2" placeholder="BSc Business Management">{html.escape(fields.degrees)}</textarea>
     </label>
     <p class="hint">Used when scoring how well a job fits you.</p>
+    <label>Tailor my CV automatically for
+      <select name="tailor_scope">{scopes}</select>
+    </label>
+    <p class="hint">When the AI says Apply or Consider for a job, we write a CV tailored to it without you asking.
+    Each one uses some of the monthly AI budget. You can still ask for a tailored CV on any open job.</p>
   </section>
 
   <section class="card">
@@ -313,7 +487,7 @@ def _profile_page(
     </table></div>
   </section>
 </form>
-{_cv_section(request, cv_for(db, applicant.id), cv_error)}
+{_cv_section(request, cvs_of(db, applicant.id), cv_error, fields)}
 {interview_card(request, [line.strip() for line in fields.target_roles.splitlines() if line.strip()])}
 <div class="form-foot">
   <a class="button danger" href="/account#delete">Delete my account and data</a>
@@ -340,7 +514,8 @@ def skill_suggestions(
 def profile_form(
     request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)
 ) -> HTMLResponse:
-    return _profile_page(request, db, applicant, _saved_fields(db, applicant))
+    fields, notice = _form_fields(request, db, applicant)
+    return _profile_page(request, db, applicant, fields, notice=notice)
 
 
 @router.post("", response_model=None, dependencies=_CSRF)
@@ -366,8 +541,10 @@ async def profile_save(
             skills=fields.skills.splitlines(),
             certifications=certifications,
             degrees=fields.degrees.splitlines(),
+            tailor_outside_locations=fields.tailor_scope == _EVERYWHERE,
         )
         save_profile(db, applicant.id, profile)
+        _save_cv_choices(db, applicant.id, fields)
         db.commit()
         await expand_titles(
             db, profile.preference.target_roles, gateway=gateway, settings=get_settings(), persist=db.commit
@@ -375,9 +552,12 @@ async def profile_save(
         # A new profile sees its matches now, not after the next collection.
         match_all(db, now=datetime.now(UTC), applicant_ids={applicant.id})
         db.commit()
-    except PreferenceValidationError as exc:
+    except (PreferenceValidationError, CvRefused) as exc:
         db.rollback()
+        if not _stash_draft(request, fields, None):
+            _clear_draft(request)
         return _profile_page(request, db, applicant, fields, error=str(exc), status_code=400)
+    _clear_draft(request)
     return RedirectResponse("/listings", status_code=_SEE_OTHER)
 
 
@@ -392,12 +572,14 @@ def limit_cv_upload(request: Request, applicant: Applicant = Depends(require_log
         raise FormRefused(status.HTTP_429_TOO_MANY_REQUESTS, "Too many uploads. Wait a while and try again.")
 
 
-async def read_cv_upload(request: Request) -> bytes | None:
+async def read_cv_upload(request: Request) -> tuple[bytes | None, str]:
     form = await request.form()
     try:
         upload = form.get("cv")
         # One byte over the limit is enough for check_cv to refuse the file.
-        return await upload.read(MAX_CV_BYTES + 1) if isinstance(upload, UploadFile) else None
+        content = await upload.read(MAX_CV_BYTES + 1) if isinstance(upload, UploadFile) else None
+        raw_label = form.get("label")
+        return content, raw_label if isinstance(raw_label, str) else ""
     finally:
         await form.close()
 
@@ -412,6 +594,19 @@ _READ_PROBLEMS = {
 
 def _lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _save_cv_choices(db: Session, applicant_id: uuid.UUID, fields: ProfileFields) -> None:
+    try:
+        labels = {
+            uuid.UUID(str(raw_id)): label
+            for raw_id, label in zip(fields.cv_id, fields.cv_label, strict=True)
+        }
+        primary = uuid.UUID(str(fields.cv_primary)) if fields.cv_primary else None
+    except ValueError as exc:
+        raise CvRefused("One of these CVs isn't valid. Reload the page and try again.") from exc
+    if labels or primary is not None:
+        save_cv_choices(db, applicant_id, labels, primary)
 
 
 def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFields, list[str], list[str]]:
@@ -464,80 +659,126 @@ def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFi
         cert_expiry=[row[3] for row in rows],
         degrees="\n".join([*degrees, *new_degrees]),
         cv_roles=fields.cv_roles,
+        tailor_scope=fields.tailor_scope,
     )
     return merged, filled, offer
 
 
-def _after_read(request: Request, db: Session, applicant: Applicant, read: CvRead) -> HTMLResponse:
-    fields = _saved_fields(db, applicant)
+def _after_read(request: Request, db: Session, applicant: Applicant, cv: CvFile, read: CvRead) -> HTMLResponse:
+    # Build on the open draft, so reading a second CV adds to the first one's suggestions.
+    current, _ = _form_fields(request, db, applicant)
     if read.suggestions is None:
-        return _profile_page(request, db, applicant, fields, notice=_READ_PROBLEMS[read.outcome])
-    fields, filled, offer = fill_from_cv(fields, read.suggestions)
+        return _profile_page(request, db, applicant, current, notice=_READ_PROBLEMS[read.outcome])
+    name = f'your CV "{cv.label}"' if cv.label else "your CV"
+    fields, filled, offer = fill_from_cv(current, read.suggestions)
     if not filled and not offer:
-        notice = "We read your CV but found nothing new to add to your profile."
-    else:
-        notice = (
-            (f"We read your CV and filled in {', '.join(filled)}. " if filled else "We read your CV. ")
-            + ("Tick any job titles from your CV you want to search for. " if offer else "")
-            + "Check everything, change anything that's wrong, then press Save and find my matches. "
-            "Nothing is saved until you do."
-        )
+        notice = f"We read {name} but found nothing new to add to your profile. The file is saved."
+        return _profile_page(request, db, applicant, current, notice=notice)
+    notice = (
+        (f"We read {name} and filled in {', '.join(filled)}. " if filled else f"We read {name}. ")
+        + ("Tick any job titles from your CV you want to search for. " if offer else "")
+        + "The file is saved. Check everything, change anything that's wrong, then press Save and find my matches "
+        "to keep these suggestions."
+    )
+    if not _stash_draft(request, fields, notice, cv.id):
+        _clear_draft(request)
+        notice += " If you reload this page before saving, the suggestions will be gone."
     return _profile_page(request, db, applicant, fields, notice=notice, cv_offer=offer)
 
 
-async def _read_stored_cv(db: Session, applicant: Applicant, gateway: FetchGateway) -> CvRead | None:
-    cv = cv_for(db, applicant.id)
-    if cv is None:
-        return None
-    return await read_cv(db, applicant.id, cv.content, CvFileType(cv.file_type), gateway=gateway, settings=get_settings())
+_IDEA_PROBLEMS = {
+    ReadOutcome.budget: "This month's AI budget is used up, so we couldn't suggest roles and places.",
+    ReadOutcome.provider_failed: "Suggesting roles and places didn't work this time. Try again later.",
+    ReadOutcome.not_configured: "Suggesting roles and places isn't set up on this server.",
+}
 
 
-@router.post(
-    "/cv",
-    response_model=None,
-    dependencies=[Depends(require_login), Depends(limit_cv_upload), Depends(require_csrf)],
-)
-async def cv_upload(
+def _ask(fields: ProfileFields) -> ProfileAsk:
+    """Unsaved form text, so it is held to the profile limits before it goes to the AI at a fixed price."""
+
+    def capped(text: str, limit: int) -> tuple[str, ...]:
+        return tuple(line for line in _lines(text) if len(line) <= MAX_ITEM_LENGTH)[:limit]
+
+    travel = fields.travel_distance.strip()
+    roles = capped(fields.target_roles, MAX_ROLES)
+    ticked = frozenset(level for level in LEVELS if level.value in fields.experience_levels)
+    return ProfileAsk(
+        skills=capped(fields.skills, MAX_SKILLS),
+        degrees=capped(fields.degrees, MAX_DEGREES),
+        experience_levels=tuple(level.value for level in in_order(chosen_or_inferred(ticked, roles))),
+        target_roles=roles,
+        locations=capped(fields.locations, MAX_LOCATIONS),
+        travel_miles=int(travel) if travel.isdecimal() and len(travel) <= 3 else None,
+    )
+
+
+def add_ideas(fields: ProfileFields, ideas: SearchIdeas, settings: Settings) -> tuple[ProfileFields, str]:
+    """The form with the suggested roles and places added, up to the profile limits, and what to tell the person."""
+    roles, places = _lines(fields.target_roles), _lines(fields.locations)
+    new_roles = list(ideas.roles[: max(MAX_ROLES - len(roles), 0)])
+    new_places = list(ideas.places[: max(MAX_LOCATIONS - len(places), 0)])
+    if not new_roles and not new_places:
+        full = len(ideas.roles) + len(ideas.places)
+        return fields, (
+            f"Your profile already has the most roles and places it can hold ({MAX_ROLES} each)."
+            if full
+            else "We found no new roles or places to suggest."
+        )
+    roles += [idea.title for idea in new_roles]
+    places += new_places
+    merged = ProfileFields(
+        target_roles="\n".join(roles),
+        locations="\n".join(places),
+        salary_amount=fields.salary_amount,
+        salary_currency=fields.salary_currency,
+        salary_period=fields.salary_period,
+        experience_levels=fields.experience_levels,
+        travel_distance=fields.travel_distance,
+        skills=fields.skills,
+        cert_name=[row[0] for row in fields.certifications],
+        cert_issuer=[row[1] for row in fields.certifications],
+        cert_kind=[row[2] for row in fields.certifications],
+        cert_expiry=[row[3] for row in fields.certifications],
+        degrees=fields.degrees,
+    )
+    said = []
+    if new_roles:
+        said.append("Roles: " + "; ".join(f"{idea.title} (from your {', '.join(idea.because)})" for idea in new_roles) + ".")
+    if new_places:
+        said.append(f"Places near you: {', '.join(new_places)}.")
+    searches = len(roles) * max(len(places), 1)
+    cost = searches * (settings.linkedin_max_results * settings.linkedin_unit_price + settings.linkedin_run_price)
+    said.append(
+        "They're in the form now. Remove any you don't want, then press Save and find my matches. "
+        f"As it stands, your profile runs {searches} LinkedIn search{'es' if searches != 1 else ''} a day, "
+        f"costing up to £{cost:.2f}."
+    )
+    return merged, " ".join(said)
+
+
+@router.post("/ideas", response_model=None, dependencies=_CSRF)
+async def search_ideas(
     request: Request,
-    content: bytes | None = Depends(read_cv_upload),
+    fields: ProfileFields = Depends(),
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
     gateway: FetchGateway = Depends(get_gateway),
 ) -> Response:
-    try:
-        store_cv(db, applicant.id, content)
-        db.commit()
-    except CvRefused as exc:
-        db.rollback()
-        return _profile_page(request, db, applicant, _saved_fields(db, applicant), cv_error=str(exc), status_code=400)
-    read = await _read_stored_cv(db, applicant, gateway)
-    # Without AI set up, uploading works as it always did.
-    if read is None or read.outcome == ReadOutcome.not_configured:
-        return RedirectResponse("/profile", status_code=_SEE_OTHER)
-    return _after_read(request, db, applicant, read)
-
-
-@router.post("/cv/fill", response_model=None, dependencies=_CSRF)
-async def cv_fill(
-    request: Request,
-    applicant: Applicant = Depends(require_login),
-    db: Session = Depends(get_db),
-    gateway: FetchGateway = Depends(get_gateway),
-) -> Response:
+    """Works on what the form holds now, saved or not, and saves nothing."""
+    ask = _ask(fields)
+    if not ask.skills and not ask.degrees:
+        return _profile_page(request, db, applicant, fields, notice="Add your skills or a degree first, then ask for suggestions.")
     if not throttle.take_cv_upload_attempt(str(applicant.id)):
         raise FormRefused(status.HTTP_429_TOO_MANY_REQUESTS, "Too many tries. Wait a while and try again.")
-    read = await _read_stored_cv(db, applicant, gateway)
-    if read is None:
-        return RedirectResponse("/profile", status_code=_SEE_OTHER)
-    return _after_read(request, db, applicant, read)
+    settings = get_settings()
+    found = await suggest_search(db, applicant.id, ask, gateway=gateway, settings=settings)
+    if isinstance(found, ReadOutcome):
+        return _profile_page(request, db, applicant, fields, notice=_IDEA_PROBLEMS[found])
+    fields, notice = add_ideas(fields, found, settings)
+    return _profile_page(request, db, applicant, fields, notice=notice)
 
 
-@router.get("/cv")
-def cv_download(applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
-    """There is no file ID in the URL, so the only CV anyone can ask for is their own."""
-    cv = cv_for(db, applicant.id)
-    if cv is None:
-        return page("No CV", '<h1>No CV</h1><p><a href="/profile">Back to your profile</a></p>', status_code=404)
+def _cv_response(cv: CvFile) -> Response:
     return Response(
         cv.content,
         media_type=MEDIA_TYPES[CvFileType(cv.file_type)],
@@ -549,8 +790,126 @@ def cv_download(applicant: Applicant = Depends(require_login), db: Session = Dep
     )
 
 
-@router.post("/cv/delete", dependencies=_CSRF)
-def cv_delete(applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> RedirectResponse:
-    delete_cv(db, applicant.id)
+def _missing_cv() -> HTMLResponse:
+    return page("No CV", '<h1>No CV</h1><p><a href="/profile">Back to your profile</a></p>', status_code=404)
+
+
+async def _show_read(
+    request: Request, db: Session, applicant: Applicant, cv: CvFile, content: bytes, gateway: FetchGateway
+) -> Response:
+    read = await read_cv(
+        db, applicant.id, content, CvFileType(cv.file_type), gateway=gateway, settings=get_settings()
+    )
+    if read.suggestions is not None and read.suggestions.aimed_at and not cv.label:
+        suggest_label(cv, read.suggestions.aimed_at)
+        db.commit()
+    if read.outcome == ReadOutcome.not_configured:
+        return RedirectResponse("/profile", status_code=_SEE_OTHER)
+    return _after_read(request, db, applicant, cv, read)
+
+
+@router.post(
+    "/cv",
+    response_model=None,
+    dependencies=[Depends(require_login), Depends(limit_cv_upload), Depends(require_csrf)],
+)
+async def cv_upload(
+    request: Request,
+    upload: tuple[bytes | None, str] = Depends(read_cv_upload),
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
+) -> Response:
+    content, label = upload
+    try:
+        cv = store_cv(db, applicant.id, content, label=label)
+        db.commit()
+    except CvRefused as exc:
+        db.rollback()
+        fields, notice = _form_fields(request, db, applicant)
+        return _profile_page(request, db, applicant, fields, cv_error=str(exc), notice=notice, status_code=400)
+    return await _show_read(request, db, applicant, cv, content or b"", gateway)
+
+
+@router.post(
+    "/cv/{cv_id}/replace",
+    response_model=None,
+    dependencies=[Depends(require_login), Depends(limit_cv_upload), Depends(require_csrf)],
+)
+async def cv_replace(
+    cv_id: uuid.UUID,
+    request: Request,
+    upload: tuple[bytes | None, str] = Depends(read_cv_upload),
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
+) -> Response:
+    content, label = upload
+    try:
+        cv = replace_cv(db, applicant.id, cv_id, content, label=label)
+        db.commit()
+    except CvRefused as exc:
+        db.rollback()
+        fields, notice = _form_fields(request, db, applicant)
+        return _profile_page(request, db, applicant, fields, cv_error=str(exc), notice=notice, status_code=400)
+    return await _show_read(request, db, applicant, cv, content or b"", gateway)
+
+
+async def _fill_one(
+    request: Request, db: Session, applicant: Applicant, cv: CvFile | None, gateway: FetchGateway
+) -> Response:
+    if cv is None:
+        return RedirectResponse("/profile", status_code=_SEE_OTHER)
+    if not throttle.take_cv_upload_attempt(str(applicant.id)):
+        raise FormRefused(status.HTTP_429_TOO_MANY_REQUESTS, "Too many tries. Wait a while and try again.")
+    return await _show_read(request, db, applicant, cv, bytes(cv.content), gateway)
+
+
+@router.post("/cv/fill", response_model=None, dependencies=_CSRF)
+async def cv_fill(
+    request: Request,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
+) -> Response:
+    return await _fill_one(request, db, applicant, base_cv(db, applicant.id), gateway)
+
+
+@router.post("/cv/{cv_id}/fill", response_model=None, dependencies=_CSRF)
+async def cv_fill_one(
+    cv_id: uuid.UUID,
+    request: Request,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
+) -> Response:
+    return await _fill_one(request, db, applicant, owned_cv(db, applicant.id, cv_id), gateway)
+
+
+@router.get("/cv")
+def cv_download(applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
+    """The primary CV. A specific one is /profile/cv/{id}, and another person's id is a 404."""
+    cv = base_cv(db, applicant.id)
+    if cv is None:
+        return _missing_cv()
+    return _cv_response(cv)
+
+
+@router.get("/cv/{cv_id}")
+def cv_download_one(
+    cv_id: uuid.UUID, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)
+) -> Response:
+    cv = owned_cv(db, applicant.id, cv_id)
+    if cv is None:
+        return _missing_cv()
+    return _cv_response(cv)
+
+
+@router.post("/cv/{cv_id}/delete", dependencies=_CSRF)
+def cv_delete(
+    request: Request, cv_id: uuid.UUID, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)
+) -> RedirectResponse:
+    delete_cv(db, applicant.id, cv_id)
     db.commit()
+    _clear_draft_from(request, cv_id)
     return RedirectResponse("/profile", status_code=_SEE_OTHER)

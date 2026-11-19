@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.api.listings import load_listings, render_listing
@@ -20,6 +20,11 @@ from app.matching.match import match_all
 from app.matching.report import write_reports
 from app.models import (
     Applicant,
+    ApplicantJobMatch,
+    ApplicantPreference,
+    ApplicantProfile,
+    BudgetPolicy,
+    CvFile,
     Job,
     JobReport,
     SpendKind,
@@ -27,7 +32,7 @@ from app.models import (
     TailoredCv,
     TailoredCvStatus,
 )
-from app.tailor.ats import pdf_text
+from app.tailor.ats import docx_text, pdf_text
 from app.tailor.improver import Change, apply_diffs
 from app.tailor.preservation import finalize_ai_resume
 from app.tailor.refiner import remove_ai_phrases
@@ -38,7 +43,7 @@ from app.tailor.render import (
     render_pdf,
 )
 from app.tailor.resume import ground_parsed
-from app.tailor.run import write_tailored_cvs
+from app.tailor.run import request_tailored_cv, write_tailored_cvs
 from tests.test_cv_read import _docx
 from tests.test_fit_report import CV_LINES, _Ai, _person_with_a_cv, _report
 from tests.test_judge import _policy, _settings
@@ -180,6 +185,21 @@ class _TailorAi(_Ai):
         return super().__call__(request)
 
 
+class _FailParse(_TailorAi):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_parse = False
+        self.parse_failures = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        system = json.loads(request.content).get("system", "") if request.content else ""
+        if self.fail_parse and system.startswith("You are a JSON extraction engine"):
+            self.fail_parse = False
+            self.parse_failures += 1
+            return httpx.Response(500, json={"error": "down"})
+        return super().__call__(request)
+
+
 async def _prepare(session: Session, ai: _TailorAi):
     applicant = await _person_with_a_cv(session)
     gateway = ai.gateway()
@@ -268,9 +288,11 @@ def test_rendered_cv_has_an_ats_readable_text_layer() -> None:
     pdf = render_pdf(MASTER)
 
     text = pdf_text(pdf)
-    assert "Mohammed Example" in text
-    assert "University of Manchester" in text
-    assert "PostgreSQL" in text
+    docx = docx_text(render_docx(MASTER))
+    assert "Mohammed Example" in text and "Mohammed Example" in docx
+    assert "University of Manchester" in text and "University of Manchester" in docx
+    assert "PostgreSQL" in text and "PostgreSQL" in docx
+    assert "Experience" in text and "Experience" in docx
     assert render_docx(MASTER).startswith(b"PK")
 
 
@@ -278,11 +300,17 @@ async def test_apply_job_gets_ready_package(session: Session) -> None:
     ai = _TailorAi()
     applicant, gateway, settings = await _prepare(session, ai)
 
+    stored = session.scalar(select(CvFile).where(CvFile.applicant_id == applicant))
+    stored.label = "Backend Developer"
+    store_cv(session, applicant, b"%PDF-1.7\nother cv", label="Data Analyst")
+    session.flush()
+
     await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
 
     assert ai.tailor_calls == ["parse", "keywords", "diffs", "inject", "letter"]
     row = _package(session, applicant)
     assert row.status == TailoredCvStatus.ready.value
+    assert row.cv_file_id == stored.id
     text = " ".join(pdf_text(row.pdf_content).split())
     assert "Led a REST API web service in Python with FastAPI and PostgreSQL for a student society." in text
     assert "Spearheaded" not in text
@@ -313,6 +341,17 @@ async def test_apply_job_gets_ready_package(session: Session) -> None:
     assert "Tailored CV ready" in html
     assert "Keyword match 50%" in html
     assert f"/jobs/{listings[0].job_id}/tailored.pdf" in html
+    assert "tailored.docx" in html
+    assert "from the advert" in html
+    assert "Company website:" in html
+    docx = docx_text(row.docx_content)
+    assert "REST API" in docx
+    assert row.ats_report["checks"]["one_column"]
+    assert row.ats_report["checks"]["no_tables"]
+    assert row.ats_report["checks"]["no_images"]
+    assert row.ats_report["checks"]["docx_text_extracted"]
+    assert row.ats_report["checks"]["standard_headings"]
+    assert row.ats_report["passed"]
     assert f"/jobs/{listings[0].job_id}/cover-letter.pdf" in html
 
 
@@ -396,6 +435,7 @@ async def test_budget_wait_leaves_waiting_status(session: Session) -> None:
     )
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
     await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
 
     run = await write_tailored_cvs(
         session, gateway=gateway, settings=settings, persist=session.flush, now=SOON
@@ -453,7 +493,7 @@ async def test_any_job_can_be_tailored_on_request(client: httpx.AsyncClient, ses
     assert "Tailor my CV for this job" in (await client.get(f"/jobs/{job.id}")).text
 
     assert (await client.post(f"/jobs/{job.id}/tailor")).status_code == 303
-    assert "Tailoring your CV" in (await client.get(f"/jobs/{job.id}")).text
+    assert "Tailored CV queued." in (await client.get(f"/jobs/{job.id}")).text
 
     ai = _TailorAi()
     settings = _settings(ai_tailor_unit_price=Decimal("0.003"))
@@ -486,6 +526,43 @@ async def test_a_failed_package_can_be_tried_again(client: httpx.AsyncClient, se
     session.refresh(row)
     assert row.status == TailoredCvStatus.pending.value
     assert row.applicant_id == applicant.id
+
+
+async def test_an_apply_job_that_is_not_listed_offers_the_button(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    applicant, job = await _person_on_a_job_without_a_report(session, client)
+    session.execute(delete(ApplicantJobMatch))
+    session.add(
+        JobReport(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            verdict="Apply",
+            score=Decimal("4.0"),
+            report={"verdict": "Apply"},
+            input_hash="h",
+            model="m",
+            prompt_version="p",
+        )
+    )
+    # Left behind by an earlier cycle when the job was still listed.
+    session.add(
+        TailoredCv(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            status=TailoredCvStatus.waiting_budget.value,
+            input_hash="old",
+            prompt_version="p",
+        )
+    )
+    session.flush()
+
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert "Tailor my CV for this job" in page
+    assert "waiting on the monthly budget" not in page
+
+    await client.post(f"/jobs/{job.id}/tailor")
+    assert "Tailor my CV for this job" not in (await client.get(f"/jobs/{job.id}")).text
 
 
 async def test_people_outside_the_ai_list_get_no_button(
@@ -528,3 +605,327 @@ async def test_download_is_owner_only(session: Session) -> None:
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
+
+
+_MACHINE = "Built a dynamic, results-driven REST API in Python with FastAPI and PostgreSQL for a student society."
+_PAGE = (
+    "<html><head><title>Acme</title></head><body>"
+    + " ".join(["Payments platform reliability"] * 30)
+    + "</body></html>"
+).encode()
+
+
+def _model(payload: dict) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "model": "claude-haiku-5-5",
+            "content": [{"type": "text", "text": json.dumps(payload)}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 20, "output_tokens": 20},
+        },
+    )
+
+
+class _Running(_TailorAi):
+    def __init__(self, session: Session) -> None:
+        super().__init__()
+        self.session = session
+        self.seen: list[str | None] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if "api.anthropic.com" in str(request.url):
+            system = json.loads(request.content).get("system", "")
+            if system.startswith("You are a JSON extraction engine"):
+                row = self.session.scalar(select(TailoredCv))
+                self.seen.append(row.status if row is not None else None)
+        return super().__call__(request)
+
+
+class _Machine(_TailorAi):
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if "api.anthropic.com" not in str(request.url):
+            return super().__call__(request)
+        system = json.loads(request.content).get("system", "")
+        if system.startswith("You are a resume editor repairing"):
+            self.tailor_calls.append("revise")
+            return _model({"changes": [], "strategy_notes": ""})
+        if system.startswith("You are an expert resume editor"):
+            self.tailor_calls.append("diffs")
+            return _model(
+                {
+                    "changes": [
+                        {
+                            "path": "workExperience[0].description[0]",
+                            "action": "replace",
+                            "original": BULLET,
+                            "value": _MACHINE,
+                            "reason": "tone",
+                        }
+                    ],
+                    "strategy_notes": "",
+                }
+            )
+        return super().__call__(request)
+
+
+class _Site(_TailorAi):
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        host = request.url.host or ""
+        if host.endswith("acme.example"):
+            if request.url.path == "/robots.txt":
+                return httpx.Response(404)
+            return httpx.Response(200, headers={"content-type": "text/html"}, content=_PAGE)
+        return super().__call__(request)
+
+
+async def test_only_listed_apply_and_consider_jobs_are_tailored(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    report = session.scalars(select(JobReport)).one()
+    job = session.get(Job, report.job_id)
+
+    session.execute(delete(ApplicantJobMatch))
+    session.flush()
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert session.scalars(select(TailoredCv)).first() is None
+
+    match_all(session, now=SOON)
+    job.freshness = "closed"
+    session.flush()
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert session.scalars(select(TailoredCv)).first() is None
+
+    job.freshness = "open"
+    report.verdict = "Skip"
+    report.report = {**report.report, "verdict": "Skip"}
+    session.flush()
+    match_all(session, now=SOON)
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert session.scalars(select(TailoredCv)).first() is None
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    card = render_listing(listings[0], "<input>")
+    assert "Tailor my CV for this job" in card
+    assert "Tailored CV queued" not in card
+
+    request_tailored_cv(session, applicant, job.id, now=SOON)
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert run.outcomes["ready"] == 1
+
+
+async def test_a_listed_consider_job_is_queued_then_tailored(session: Session) -> None:
+    ai = _Running(session)
+    applicant, gateway, settings = await _prepare(session, ai)
+    report = session.scalars(select(JobReport)).one()
+    report.verdict = "Consider"
+    report.report = {**report.report, "verdict": "Consider"}
+    session.flush()
+    match_all(session, now=SOON)
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    assert "Tailored CV queued." in render_listing(listings[0])
+    assert "Tailor my CV" not in render_listing(listings[0])
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert "running" in ai.seen
+    row = _package(session, applicant)
+    assert row.status == TailoredCvStatus.ready.value
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    page = render_listing(listings[0])
+    assert "Tailored CV ready" in page
+    assert "Tailor my CV" not in page
+
+
+async def test_a_machine_written_line_is_sent_back_and_then_restored(session: Session) -> None:
+    ai = _Machine()
+    applicant, gateway, settings = await _prepare(session, ai)
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert "revise" in ai.tailor_calls
+    text = " ".join(pdf_text(_package(session, applicant).pdf_content).split())
+    assert "dynamic" not in text.lower()
+    assert "results-driven" not in text.lower()
+    assert "Built a REST API in Python with FastAPI and PostgreSQL" in text
+
+
+async def test_company_wording_is_shown_and_not_added_as_a_skill(session: Session) -> None:
+    ai = _Site()
+    applicant, gateway, settings = await _prepare(session, ai)
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    row = _package(session, applicant)
+    sources = {item["term"]: item["source"] for item in row.keywords["sources"]}
+    assert sources["Payments"] == "company"
+    assert "Payments" not in row.draft["additional"]["technicalSkills"]
+    text = " ".join(pdf_text(row.pdf_content).split())
+    assert "Payments" not in text
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    card = render_listing(listings[0])
+    assert "Payments" in card
+    assert "from the company website" in card
+    assert row.company_research_available is True
+
+
+async def test_a_failed_refresh_keeps_the_file_and_does_not_retry(session: Session) -> None:
+    ai = _FailParse()
+    applicant, gateway, settings = await _prepare(session, ai)
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    row = _package(session, applicant)
+    previous = row.pdf_content
+    old_hash = row.input_hash
+    job = session.get(Job, row.job_id)
+    assert job is not None
+    job.description = (job.description or "") + "\nMust have owned a payments platform."
+    ai.fail_parse = True
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert row.status == TailoredCvStatus.ready.value
+    assert row.pdf_content == previous
+    assert row.input_hash != old_hash
+    assert row.draft["last_error"]
+    failed_once = ai.parse_failures
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert ai.parse_failures == failed_once
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    card = render_listing(listings[0])
+    assert "The latest attempt failed" in card
+    assert "Try again" in card
+    request_tailored_cv(session, applicant, row.job_id, now=SOON)
+    assert row.status == TailoredCvStatus.pending.value
+
+
+async def test_a_budget_wait_keeps_a_ready_cv_visible(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    row = _package(session, applicant)
+    previous = row.pdf_content
+    old_hash = row.input_hash
+    job = session.get(Job, row.job_id)
+    assert job is not None
+    job.description = (job.description or "") + "\nAnother requirement."
+    policy = session.scalars(select(BudgetPolicy)).one()
+    policy.money_cap = Decimal("0")
+
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert run.stopped_by == "budget"
+    assert row.status == TailoredCvStatus.ready.value
+    assert row.pdf_content == previous
+    assert row.input_hash == old_hash
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    card = render_listing(listings[0])
+    assert "tailored.pdf" in card
+    assert "waiting on the monthly budget" not in card
+
+
+def _away_from_the_job(session: Session, applicant_id: uuid.UUID) -> None:
+    preference = session.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant_id))
+    preference.locations = ["Leeds"]
+    session.flush()
+    match_all(session, now=SOON)
+    assert session.scalar(select(ApplicantJobMatch.location_fit)) is False
+
+
+async def test_an_apply_job_outside_my_locations_waits_for_a_click_by_default(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    _away_from_the_job(session, applicant)
+    job_id = session.scalars(select(JobReport.job_id)).one()
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert session.scalars(select(TailoredCv)).first() is None
+    assert load_listings(session, applicant, everywhere=False, page_number=1)[0] == []
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    card = render_listing(listings[0], "<input>")
+    assert "Tailor my CV for this job" in card
+    assert "Tailored CV queued" not in card
+
+    request_tailored_cv(session, applicant, job_id, now=SOON)
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert run.outcomes["ready"] == 1
+
+
+async def test_an_apply_job_outside_my_locations_is_tailored_when_i_widen_the_scope(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    _away_from_the_job(session, applicant)
+    session.add(ApplicantProfile(applicant_id=applicant, experience_levels=["entry"], tailor_outside_locations=True))
+    session.flush()
+
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    assert "Tailored CV queued." in render_listing(listings[0])
+    assert "Tailor my CV" not in render_listing(listings[0])
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert run.outcomes["ready"] == 1
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    assert "Tailored CV ready" in render_listing(listings[0])
+
+
+async def test_a_package_left_unfinished_outside_the_scope_offers_the_button(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    job_id = session.scalars(select(JobReport.job_id)).one()
+    # Queued while the job was in the person's locations, then they moved.
+    session.add(
+        TailoredCv(
+            applicant_id=applicant,
+            job_id=job_id,
+            status=TailoredCvStatus.pending.value,
+            input_hash="old",
+            prompt_version="p",
+        )
+    )
+    _away_from_the_job(session, applicant)
+
+    listings, _ = load_listings(session, applicant, everywhere=True, page_number=1)
+    card = render_listing(listings[0], "<input>")
+    assert "Tailor my CV for this job" in card
+    assert "Tailored CV queued" not in card
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert run.outcomes.get("ready", 0) == 0
+
+
+async def test_the_job_page_follows_the_tailoring_scope(client: httpx.AsyncClient, session: Session) -> None:
+    applicant, job = await _person_on_a_job_without_a_report(session, client)
+    session.add(
+        JobReport(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            verdict="Apply",
+            score=Decimal("4.0"),
+            report={"verdict": "Apply"},
+            input_hash="h",
+            model="m",
+            prompt_version="p",
+        )
+    )
+    session.add(
+        ApplicantJobMatch(
+            applicant_id=applicant.id,
+            job_id=job.id,
+            score=Decimal("0.8"),
+            reasons={"report": {"verdict": "Apply"}},
+            role_match=True,
+            location_fit=False,
+            salary_status="unknown",
+        )
+    )
+    session.flush()
+
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert "Tailor my CV for this job" in page
+    assert "Tailored CV queued" not in page
+
+    session.add(ApplicantProfile(applicant_id=applicant.id, experience_levels=["entry"], tailor_outside_locations=True))
+    session.flush()
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert "Tailored CV queued." in page
+    assert "Tailor my CV for this job" not in page

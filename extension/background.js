@@ -1,4 +1,5 @@
 const DEFAULT_API = "http://127.0.0.1:8000";
+const ALLOWED = new Set(["fill", "select", "check", "upload_cv"]);
 
 async function settings() {
   const stored = await chrome.storage.local.get(["apiBase", "token"]);
@@ -8,82 +9,135 @@ async function settings() {
   };
 }
 
-async function fetchReady() {
+async function api(path, options) {
   const { apiBase, token } = await settings();
-  if (!token) return [];
-  const response = await fetch(`${apiBase}/extension/applications/ready`, {
-    headers: { Authorization: `Bearer ${token}` },
+  const response = await fetch(`${apiBase}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options && options.headers),
+    },
   });
+  return response;
+}
+
+async function fetchReady() {
+  const { token } = await settings();
+  if (!token) return [];
+  const response = await api("/extension/applications/ready");
   if (!response.ok) return [];
   return response.json();
 }
 
 async function reportStatus(id, status, error) {
-  const { apiBase, token } = await settings();
-  await fetch(`${apiBase}/extension/applications/${id}/status`, {
+  await api(`/extension/applications/${id}/status`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status, error: error || null }),
   });
 }
 
-function urlsMatch(a, b) {
+function toBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function fetchCv(applicationId) {
+  const response = await api(`/extension/cv?application_id=${encodeURIComponent(applicationId)}`);
+  if (!response.ok) return null;
+  const type = response.headers.get("Content-Type") || "application/pdf";
+  const name = (response.headers.get("Content-Disposition") || "").includes(".docx") ? "cv.docx" : "cv.pdf";
+  return { base64: toBase64(await response.arrayBuffer()), type, name };
+}
+
+async function inject(tabId) {
   try {
-    const left = new URL(a);
-    const right = new URL(b);
-    return left.origin === right.origin && left.pathname.replace(/\/$/, "") === right.pathname.replace(/\/$/, "");
-  } catch {
-    return a === b;
+    await chrome.tabs.sendMessage(tabId, { type: "jaa-ping" });
+  } catch (_) {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
   }
 }
 
-async function fillActiveTab() {
-  const { apiBase, token } = await settings();
+async function fillActiveTab(applicationId) {
+  const { token } = await settings();
   if (!token) return { ok: false, error: "Set an extension token in the popup." };
-  const ready = await fetchReady();
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !tab.url) return { ok: false, error: "No active tab." };
-  const match = ready.find((row) => urlsMatch(row.apply_url, tab.url));
-  if (!match) return { ok: false, error: "No ready fill plan for this page." };
-  const plan = match.fill_plan || { steps: [] };
-  const allowed = new Set(["fill", "select", "check", "upload_cv"]);
-  for (const step of plan.steps || []) {
-    if (!allowed.has(step.action)) {
-      return { ok: false, error: "Refusing a plan with a disallowed action." };
-    }
+  if (!tab?.id) return { ok: false, error: "No active tab." };
+  const ready = await fetchReady();
+  const match = applicationId
+    ? ready.find((row) => row.id === applicationId)
+    : ready.length === 1
+      ? ready[0]
+      : null;
+  if (!match) {
+    return { ok: false, error: ready.length ? "Choose which application to fill." : "No application is ready to fill." };
   }
+  await inject(tab.id);
+  let highlighted = "";
+  let filledAny = false;
+  let waitingForNext = false;
+  // shortcut: two passes, so one Next click. Upgrade when a form has more than two steps.
+  for (let pass = 0; pass < 2; pass += 1) {
+    const scan = await chrome.tabs.sendMessage(tab.id, { type: "jaa-scan" });
+    if (!scan?.fields?.length) {
+      if (pass === 0) return { ok: false, error: "No form fields on this page." };
+      waitingForNext = true;
+      break;
+    }
+    const planned = await api(`/extension/applications/${match.id}/plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fields: scan.fields }),
+    });
+    if (!planned.ok) return { ok: false, error: "Could not build a fill plan." };
+    const body = await planned.json();
+    if (body.status === "needs_input") {
+      await chrome.tabs.sendMessage(tab.id, { type: "jaa-notice", text: body.notice });
+      return { ok: false, needsInput: true, error: body.notice };
+    }
+    const steps = body.plan?.steps || [];
+    for (const step of steps) {
+      if (!ALLOWED.has(step.action)) return { ok: false, error: "Refusing a plan with a disallowed action." };
+    }
+    const cv = steps.some((step) => step.action === "upload_cv") ? await fetchCv(match.id) : null;
+    if (steps.some((step) => step.action === "upload_cv") && !cv) {
+      return { ok: false, error: "Could not download the CV." };
+    }
+    const filled = await chrome.tabs.sendMessage(tab.id, {
+      type: "jaa-fill",
+      steps,
+      cv,
+      notice: body.notice,
+      final: pass === 1 || !scan.hasNext,
+    });
+    if (!filled?.ok) {
+      await reportStatus(match.id, "failed", filled?.error || "Fill failed");
+      return { ok: false, error: filled?.error || "Fill failed" };
+    }
+    highlighted = filled.highlighted || highlighted;
+    filledAny = true;
+    waitingForNext = Boolean(filled.advanced);
+    if (!filled.advanced) break;
+  }
+  if (!filledAny) return { ok: false, error: "No form fields on this page." };
+  if (waitingForNext) return { ok: false, error: "The next step is not filled yet. Click Fill again." };
+  await reportStatus(match.id, "filled_awaiting_review");
+  await chrome.action.setBadgeText({ text: "!" });
+  await chrome.action.setBadgeBackgroundColor({ color: "#0a7" });
   try {
-    await chrome.tabs.sendMessage(tab.id, { type: "jaa-ping" });
+    chrome.notifications.create({
+      type: "basic",
+      title: "Application ready to review",
+      message: "Everything is filled in. Review the form and click Submit yourself.",
+    });
   } catch (_) {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    /* notifications optional */
   }
-  const result = await chrome.tabs.sendMessage(tab.id, {
-    type: "jaa-fill",
-    plan,
-    applicationId: match.id,
-    apiBase,
-    token,
-  });
-  if (result?.ok) {
-    await reportStatus(match.id, "filled_awaiting_review");
-    await chrome.action.setBadgeText({ text: "!" });
-    await chrome.action.setBadgeBackgroundColor({ color: "#0a7" });
-    try {
-      chrome.notifications.create({
-        type: "basic",
-        title: "Application ready to review",
-        message: "Fields are filled. Review the form and submit yourself.",
-      });
-    } catch (_) {
-      /* notifications optional */
-    }
-    return { ok: true };
-  }
-  await reportStatus(match.id, "failed", result?.error || "Fill failed");
-  return { ok: false, error: result?.error || "Fill failed" };
+  return { ok: true, highlighted };
 }
 
 chrome.alarms.create("jaa-poll", { periodInMinutes: 1 });
@@ -95,7 +149,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "jaa-fill-active") {
-    fillActiveTab().then(sendResponse);
+    fillActiveTab(message.applicationId).then(sendResponse);
     return true;
   }
   return false;

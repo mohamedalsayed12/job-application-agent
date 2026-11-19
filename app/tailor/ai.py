@@ -36,8 +36,9 @@ KEYWORDS_SCHEMA = {
         **{field: {"type": "array", "items": {"type": "string"}} for field in _LISTS},
         "experience_years": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
         "seniority_level": {"type": "string"},
+        "company_website": {"type": "string"},
     },
-    "required": ["company", "role", *_LISTS, "experience_years", "seniority_level"],
+    "required": ["company", "role", *_LISTS, "experience_years", "seniority_level", "company_website"],
 }
 COVER_LETTER_SCHEMA = {
     "type": "object",
@@ -68,6 +69,7 @@ async def extract_job_keywords(
     keywords = {
         **call.payload,
         **{field: [item.strip() for item in call.payload[field] if item.strip()] for field in _LISTS},
+        "company_website": str(call.payload.get("company_website") or "").strip(),
     }
     return keywords, call
 
@@ -119,6 +121,30 @@ async def inject_keywords(
     return call.payload, call
 
 
+async def revise_voice(
+    gateway: FetchGateway,
+    *,
+    master: dict[str, Any],
+    tailored: dict[str, Any],
+    findings: list[dict[str, str]],
+    posting: str,
+    settings: Settings,
+    api_key: str,
+) -> tuple[list[Change], AiCallResponse] | AiCallFailure:
+    """One quoted-diff pass over lines that still sound machine-written."""
+    listed = "\n".join(f"- {item['path']}: {item['detail']} in {item['line']}" for item in findings)
+    prompt = prompts.REVISE_PROMPT.format(
+        findings=listed,
+        current_resume=json.dumps(tailored, ensure_ascii=False),
+        master_resume=json.dumps(master, ensure_ascii=False),
+        job_description=posting[:MAX_INJECT_POSTING_CHARS],
+    )
+    call = await _ask(gateway, prompts.REVISE_SYSTEM, prompt, CHANGE_SCHEMA, settings=settings, api_key=api_key)
+    if isinstance(call, AiCallFailure):
+        return call
+    return changes_from(call.payload), call
+
+
 async def generate_cover_letter(
     gateway: FetchGateway, *, resume: dict[str, Any], posting: str, settings: Settings, api_key: str
 ) -> tuple[str | None, AiCallResponse] | AiCallFailure:
@@ -146,6 +172,11 @@ def keywords_for_prompt(keywords: dict[str, Any]) -> str:
         )
     if keywords.get("keywords"):
         sections.append("Additional keywords to weave in naturally:\n- " + "\n- ".join(keywords["keywords"]))
+    if keywords.get("company_keywords"):
+        sections.append(
+            "Language from the company website (only where the resume already supports it):\n- "
+            + "\n- ".join(keywords["company_keywords"])
+        )
     return "\n\n".join(sections) or "No specific keywords extracted."
 
 
