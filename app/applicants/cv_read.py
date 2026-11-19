@@ -159,6 +159,12 @@ def _key(text: str) -> str:
     return " ".join(text.casefold().split())
 
 
+def _whole(key: str) -> str:
+    """Whole words: "JavaScript" is not "Java" and "C++" is not "C". A full stop is part of a
+    word only between letters, so "Node.js" is not "JS" but a sentence ending "Go." still is "Go"."""
+    return rf"(?<![\w+#])(?<!\w\.){re.escape(key)}(?![\w+#])(?!\.\w)"
+
+
 def _strings(values: object, limit: int) -> list[str]:
     if not isinstance(values, list):
         return []
@@ -174,7 +180,7 @@ def grounded(payload: dict, text: str) -> CvSuggestions:
     haystack = _key(text)
 
     def in_cv(value: str) -> bool:
-        return _key(value) in haystack
+        return re.search(_whole(_key(value)), haystack) is not None
 
     certifications = []
     for item in payload.get("certifications") or []:
