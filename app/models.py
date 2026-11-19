@@ -291,6 +291,7 @@ class ApplicantPreference(_UuidPk, Base):
     salary_amount: Mapped[Decimal | None] = mapped_column(Numeric())
     salary_currency: Mapped[str | None] = mapped_column(Text())
     salary_period: Mapped[str | None] = mapped_column(Text())
+    listing_sort: Mapped[str] = mapped_column(Text(), server_default=text("'newest'"))
     updated_at: Mapped[datetime] = _updated()
 
 
