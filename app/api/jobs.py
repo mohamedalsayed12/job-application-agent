@@ -39,7 +39,7 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         await gateway.aclose()
 
 
-def _body(job: Job, shown: Shown, tailored: str, step: str) -> str:
+def _body(job: Job, shown: Shown, tailored: str, step: str, notice: str | None) -> str:
     if shown.summary:
         about = (
             f"<p>{html.escape(shown.summary)}</p>"
@@ -49,10 +49,11 @@ def _body(job: Job, shown: Shown, tailored: str, step: str) -> str:
     else:
         about = f'<div style="white-space: pre-line">{html.escape(job.description or "No description was given.")}</div>'
     last_seen = job.last_seen_at.strftime("%d %b %Y %H:%M UTC") if job.last_seen_at else "not recorded"
+    refusal = f'<p class="error">{html.escape(notice)}</p>' if notice else ""
     return f"""
 <p><a href="/listings">← Back to your matches</a></p>
 <div class="card">
-<h1>{html.escape(job.title)}</h1>
+{refusal}<h1>{html.escape(job.title)}</h1>
 <p>{html.escape(job.company_name)}. {html.escape(place_names(job))}.</p>
 {about}
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
@@ -88,7 +89,7 @@ async def job_page(
         job_id, _tailored_for(db, applicant.id, job_id), csrf, allowed=tailor_allowed(settings, applicant.id)
     )
     step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf)
-    return page(job.title, _body(job, shown, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
+    return page(job.title, _body(job, shown, tailored, step, request.query_params.get("notice")), header=applicant_bar(request, "matches"), narrow=True)
 
 
 @router.post("/{job_id}/tailor", dependencies=[Depends(require_csrf)])

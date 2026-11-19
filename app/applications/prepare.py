@@ -14,7 +14,7 @@ from app.applications.mapper import build_fill_plan
 from app.applications.schema import schema_to_json
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.models import Applicant, Application, ApplicationStatus, Job
+from app.models import Applicant, Application, ApplicationStatus, Job, JobFreshness
 
 
 class PrepareRefused(Exception):
@@ -59,6 +59,8 @@ async def prepare_application(
     job = session.get(Job, job_id)
     if job is None:
         raise PrepareRefused("That job was not found.")
+    if job.freshness != JobFreshness.open:
+        raise PrepareRefused("This job is closed, so it can no longer be prepared.")
     apply_url = (job.apply_url or "").strip()
     if not apply_url.lower().startswith(("http://", "https://")):
         raise PrepareRefused("This job has no usable apply link.")
@@ -149,6 +151,17 @@ def mark_submitted(session: Session, applicant_id: uuid.UUID, job: Job) -> Appli
     else:
         row.status = ApplicationStatus.submitted.value
         row.error = None
+    session.flush()
+    return row
+
+
+def mark_abandoned(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> Application | None:
+    """The person decides not to apply. Only an existing, unsent application can be dropped."""
+    row = application_for_job(session, applicant_id, job_id)
+    if row is None or row.status == ApplicationStatus.submitted.value:
+        return None
+    row.status = ApplicationStatus.abandoned.value
+    row.error = None
     session.flush()
     return row
 

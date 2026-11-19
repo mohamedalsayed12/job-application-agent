@@ -56,7 +56,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 - Prefer tailored CV upload when a package exists; otherwise master CV.
 - Refuse fill when required answers are still missing (`needs_input`); do not notify “ready to submit” until the form is fully filled.
 
-**New data (on top of §1).** Optional user-reported `submitted` / `abandoned` on `application`; notification already covered by fill-agent badge + in-app banner.
+**New data (on top of §1).** Optional user-reported `submitted` / `abandoned` on `application`; notification already covered by fill-agent badge + in-app banner. The person sets `abandoned` with **I'm not applying** (job page and application card). A `needs_input`, `failed` or `abandoned` application can be prepared again from the same two places; closed jobs cannot be prepared, but an existing application can still be marked applied. A refused prepare shows its reason on the job page.
 
 **Status.** The extension stops before Submit, and the person can mark the application submitted or record an application sent elsewhere. No automatic submit is implemented.
 
