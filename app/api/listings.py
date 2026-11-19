@@ -42,6 +42,7 @@ from app.models import (
     SummaryStatus,
     TailoredCv,
 )
+from app.outreach.ui import JobOutreach, load_outreach, outreach_block
 from app.tailor.ui import tailored_block
 
 router = APIRouter(prefix="/listings", tags=["listings"])
@@ -110,6 +111,7 @@ class Listing:
     source: str
     apply_url: str
     tailored: TailoredCv | None = None
+    outreach: JobOutreach = JobOutreach()
 
 
 def salary_text(job: Job) -> str:
@@ -221,6 +223,7 @@ def load_listings(
             )
         )
     } if jobs else {}
+    outreach = load_outreach(session, applicant_id, [job.id for job in jobs])
     listings = [
         Listing(
             job_id=job.id,
@@ -239,6 +242,7 @@ def load_listings(
             source=sources[job.id],
             apply_url=job.apply_url,
             tailored=tailored.get(job.id),
+            outreach=outreach[job.id],
         )
         for match, job in rows
     ]
@@ -433,6 +437,7 @@ def render_listing(item: Listing, csrf: str = "") -> str:
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 {_fit_report(item)}
 {tailored_block(item.job_id, item.tailored, verdict=(item.reasons.get("report") or {}).get("verdict"))}
+{outreach_block(item.job_id, item.outreach, csrf)}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url, item.job_id, csrf)}
