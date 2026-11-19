@@ -80,7 +80,7 @@ async def run_cycle(
     if reported.written:
         match_all(session, now=datetime.now(UTC), applicant_ids=reported.written)
         save()
-    # D60: tailor a CV for Apply / Consider reports; budget waits leave packages pending.
+    # D60: tailor a CV for every listed job scoring 3.0 or more; budget waits leave packages pending.
     await write_tailored_cvs(session, gateway=gateway, settings=get_settings(), persist=save)
     # Every cycle, not only after collection: a backlog stopped by the day's token cap carries on tomorrow.
     await summarise_matches(session, gateway=gateway, settings=settings, persist=save)

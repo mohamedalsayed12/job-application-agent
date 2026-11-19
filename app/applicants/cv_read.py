@@ -44,7 +44,7 @@ from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.models import CvFileType, ExperienceLevel, SpendKind
+from app.models import CvFileType, SpendKind
 from app.skills.mapping import find_in_text
 from app.skills.taxonomy import label_index
 

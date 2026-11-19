@@ -17,7 +17,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import Numeric, Select, delete, func, select
 from sqlalchemy.orm import Session
 
 from app.applicants.levels import LEVELS, Levels, chosen_or_inferred, saved_levels
@@ -452,6 +452,27 @@ def _can_be_shown(facts: JobFacts, quality: JobQuality) -> bool:
         and quality.unique
         and quality.confidence != Confidence.low
     )
+
+
+# D53: the score out of 5 shown for a job, in SQL: the fit report's, else the quick AI score. Unscored jobs get 0.
+AI_SCORE_SQL = func.coalesce(
+    ApplicantJobMatch.reasons["report"]["score"].astext.cast(Numeric),
+    ApplicantJobMatch.reasons["ai"]["score"].astext.cast(Numeric),
+    0,
+)
+
+
+def listed(*, everywhere: bool = False) -> Select[tuple[ApplicantJobMatch, Job]]:
+    """Jobs on people's listings: matched, still open, and in their locations unless they ask for everywhere.
+
+    Matching already leaves out what a person must never see (training roles, degree rules, unsafe jobs).
+    """
+    query = (
+        select(ApplicantJobMatch, Job)
+        .join(Job, Job.id == ApplicantJobMatch.job_id)
+        .where(Job.freshness == JobFreshness.open)
+    )
+    return query if everywhere else query.where(ApplicantJobMatch.location_fit.is_(True))
 
 
 def showable(session: Session, now: datetime) -> list[JobFacts]:

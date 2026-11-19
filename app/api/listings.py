@@ -18,7 +18,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import Numeric, case, func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
@@ -30,7 +30,9 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.matching import semantic
 from app.matching.report import VERDICTS
+from app.matching.match import AI_SCORE_SQL, listed
 from app.matching.semantic import Embedder, closeness, vectors_for
+from app.matching.verdicts import auto_tailored
 from app.models import (
     Application,
     ApplicationStatus,
@@ -47,7 +49,6 @@ from app.models import (
     ListingVerdict,
     SummaryStatus,
     TailoredCv,
-    auto_tailored,
 )
 from app.tailor.run import tailor_allowed, tailors_outside_locations
 from app.tailor.ui import listing_tailor
@@ -127,8 +128,9 @@ class Listing:
     last_seen_at: datetime | None
     source: str
     apply_url: str
+    location_fit: bool
     tailored: TailoredCv | None = None
-    # Tailored with no click: an Apply or Consider verdict in the person's tailoring scope.
+    # Tailored with no click: an AI score of 3.0 or more in the person's tailoring scope.
     auto_tailor: bool = False
     application_status: str | None = None
     outreach: JobOutreach = JobOutreach()
@@ -164,14 +166,6 @@ def ai_score(reasons: dict) -> Decimal | None:
     return None
 
 
-# D53: the same score in SQL, for sorting. Jobs not scored yet sort last, by the rules score (never shown).
-_AI_SCORE_SQL = func.coalesce(
-    ApplicantJobMatch.reasons["report"]["score"].astext.cast(Numeric),
-    ApplicantJobMatch.reasons["ai"]["score"].astext.cast(Numeric),
-    0,
-)
-
-
 # Best match (D54): the AI score out of 5, then the fit report's verdict, then the rules score, then newest. Unscored jobs go last.
 _VERDICT_RANK = case(
     *((ApplicantJobMatch.reasons["report"]["verdict"].astext == verdict, rank) for rank, verdict in enumerate(VERDICTS)),
@@ -181,8 +175,8 @@ _VERDICT_RANK = case(
 
 def _sort_order(sort: Sort) -> tuple:
     if sort == "newest":
-        return Job.first_seen_at.desc(), _AI_SCORE_SQL.desc()
-    return _AI_SCORE_SQL.desc(), _VERDICT_RANK, ApplicantJobMatch.score.desc(), Job.first_seen_at.desc()
+        return Job.first_seen_at.desc(), AI_SCORE_SQL.desc()
+    return AI_SCORE_SQL.desc(), _VERDICT_RANK, ApplicantJobMatch.score.desc(), Job.first_seen_at.desc()
 
 
 def _sources(session: Session, jobs: list[Job]) -> dict[uuid.UUID, str]:
@@ -258,14 +252,7 @@ def load_listings(
 
     With a search, the same jobs come closest in meaning first (D48).
     """
-    query = (
-        select(ApplicantJobMatch, Job)
-        .join(Job, Job.id == ApplicantJobMatch.job_id)
-        .where(*_visible_to(applicant_id))
-    )
-    if not everywhere:
-        query = query.where(ApplicantJobMatch.location_fit.is_(True))
-    query = _only(query, show)
+    query = _only(listed(everywhere=everywhere).where(ApplicantJobMatch.applicant_id == applicant_id), show)
     if role and show != "skills":
         query = query.where(ApplicantJobMatch.reasons["role"]["target"].astext == role)
     total = session.scalar(select(func.count()).select_from(query.subquery()))
@@ -323,9 +310,10 @@ def load_listings(
             last_seen_at=job.last_seen_at,
             source=sources[job.id],
             apply_url=job.apply_url,
+            location_fit=match.location_fit,
             tailored=tailored.get(job.id),
             auto_tailor=auto_tailored(
-                (match.reasons.get("report") or {}).get("verdict"),
+                ai_score(match.reasons),
                 location_fit=match.location_fit,
                 outside_locations=outside,
             ),
@@ -347,15 +335,8 @@ def _only(query, show: Show):
 
 
 def count_skill_matches(session: Session, applicant_id: uuid.UUID, *, everywhere: bool) -> int:
-    query = (
-        select(func.count())
-        .select_from(ApplicantJobMatch)
-        .join(Job, Job.id == ApplicantJobMatch.job_id)
-        .where(*_visible_to(applicant_id), ApplicantJobMatch.reasons["role"]["kind"].astext == _SKILLS_KIND)
-    )
-    if not everywhere:
-        query = query.where(ApplicantJobMatch.location_fit.is_(True))
-    return session.scalar(query) or 0
+    query = _only(listed(everywhere=everywhere).where(ApplicantJobMatch.applicant_id == applicant_id), "skills")
+    return session.scalar(select(func.count()).select_from(query.subquery())) or 0
 
 
 def _e(value: object) -> str:

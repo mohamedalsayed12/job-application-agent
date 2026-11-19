@@ -32,22 +32,19 @@ from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.matching.verdicts import job_text
+from app.matching.match import AI_SCORE_SQL, listed
+from app.matching.verdicts import auto_tailored, job_text
 from app.models import (
-    ApplicantJobMatch,
     ApplicantProfile,
     CvFile,
     CvFileType,
     Job,
     JobFreshness,
-    JobReport,
     SpendKind,
-    TAILOR_VERDICTS,
     TailoredCv,
     TailoredCvStatus,
     TailorRun,
     attempt_failed,
-    auto_tailored,
 )
 from app.tailor import ai
 from app.tailor.ats import ats_report
@@ -167,7 +164,8 @@ async def write_tailored_cvs(
                 row.status = TailoredCvStatus.ready.value
             else:
                 row.status = TailoredCvStatus.waiting_budget.value
-                row.input_hash = item.input_hash
+                if row.input_hash != REQUESTED:
+                    row.input_hash = item.input_hash
                 row.prompt_version = PROMPT_VERSION
             row.updated_at = now
             session.flush()
@@ -229,7 +227,7 @@ def request_tailored_cv(
 
 
 def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
-    """Packages due now: requests oldest first, then listed Apply jobs, then listed Consider jobs, best score first.
+    """Packages due now: requests oldest first, then every listed job scoring ADD_LINE or more, best score first.
 
     A closed job is never tailored. A job hidden from the listings, or outside the person's tailoring scope, is
     tailored only when the person asked and it is still open.
@@ -237,29 +235,20 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     allowed = settings.ai_applicants()
     is_open = Job.freshness == JobFreshness.open
     rows = {(row.applicant_id, row.job_id): row for row in session.scalars(select(TailoredCv))}
-    rank: dict[tuple[uuid.UUID, uuid.UUID], tuple[int, float]] = {
-        (applicant_id, job_id): (1 + TAILOR_VERDICTS.index(verdict), -float(score))
-        for applicant_id, job_id, verdict, score, location_fit, outside in session.execute(
-            select(
-                JobReport.applicant_id,
-                JobReport.job_id,
-                JobReport.verdict,
-                JobReport.score,
-                ApplicantJobMatch.location_fit,
-                ApplicantProfile.tailor_outside_locations,
-            )
-            .join(
-                ApplicantJobMatch,
-                (ApplicantJobMatch.applicant_id == JobReport.applicant_id)
-                & (ApplicantJobMatch.job_id == JobReport.job_id),
-            )
-            .join(Job, Job.id == JobReport.job_id)
-            .outerjoin(ApplicantProfile, ApplicantProfile.applicant_id == JobReport.applicant_id)
-            .where(JobReport.verdict.in_(TAILOR_VERDICTS), is_open)
+    outside = set(
+        session.scalars(
+            select(ApplicantProfile.applicant_id).where(ApplicantProfile.tailor_outside_locations.is_(True))
         )
-        if auto_tailored(verdict, location_fit=location_fit, outside_locations=bool(outside))
+    )
+    # Every listed job scoring ADD_LINE or more is tailored with no click, whatever its verdict, inside the
+    # person's tailoring scope. `listed` is the same "on this person's listings" rule the listings page uses.
+    rank: dict[tuple[uuid.UUID, uuid.UUID], tuple[int, float, float]] = {
+        (match.applicant_id, match.job_id): (1, -float(score), -job.first_seen_at.timestamp())
+        for match, job, score in session.execute(listed(everywhere=True).add_columns(AI_SCORE_SQL))
+        if auto_tailored(score, location_fit=match.location_fit, outside_locations=match.applicant_id in outside)
     }
-    rank |= {pair: (0, row.requested_at.timestamp()) for pair, row in rows.items() if row.requested_at is not None}
+    # A button press is demand of its own, for any open job the person opened: those go first, oldest first.
+    rank |= {pair: (0, row.requested_at.timestamp(), 0.0) for pair, row in rows.items() if row.requested_at is not None}
     pairs = sorted((pair for pair in rank if allowed is None or pair[0] in allowed), key=rank.__getitem__)
     if not pairs:
         return []
