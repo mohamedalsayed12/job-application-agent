@@ -80,7 +80,8 @@ CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner ca
 and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
 
 Admins log in at `/admin/login` with `ADMIN_KEY`. The session lasts 12 hours. Scripts can send
-the key in an `X-Admin-Key` header instead. The key is not accepted in a URL.
+the key in an `X-Admin-Key` header instead. Wrong header keys share the login form's limit of
+10 per 15 minutes per IP. The key is not accepted in a URL.
 
 Before the site is public:
 

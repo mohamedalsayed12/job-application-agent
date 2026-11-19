@@ -171,6 +171,29 @@ async def test_a_wrong_admin_key_is_refused_and_then_limited(client: httpx.Async
     assert (await client.get("/admin/quality")).status_code == 401
 
 
+async def test_wrong_admin_key_headers_are_limited_like_the_login_form(client: httpx.AsyncClient) -> None:
+    for _ in range(10):
+        assert (await client.get("/admin/quality", headers={"X-Admin-Key": "wrong"})).status_code == 401
+    assert (await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})).status_code == 429
+    refused = await client.post(
+        "/admin/accounts/set-password-link", data={"email": "no@example.com"}, headers={"X-Admin-Key": ADMIN}
+    )
+    assert refused.status_code == 429
+    assert (await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})).status_code == 429
+
+
+async def test_wrong_keys_on_a_form_post_header_also_count(client: httpx.AsyncClient) -> None:
+    for _ in range(10):
+        response = await client.post("/login", data={"email": EMAIL, "password": PASSWORD}, headers={"X-Admin-Key": "x"})
+        assert response.status_code == 403
+    assert (await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})).status_code == 429
+
+
+async def test_a_script_with_the_right_key_is_not_limited(client: httpx.AsyncClient) -> None:
+    for _ in range(15):
+        assert (await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})).status_code == 200
+
+
 async def test_admin_log_out_ends_admin_access_but_not_the_applicant_session(client: httpx.AsyncClient) -> None:
     await _log_in_as_applicant_and_admin(client)
     assert (await _post_from(client, "/account", "/admin/logout", {})).status_code == 303

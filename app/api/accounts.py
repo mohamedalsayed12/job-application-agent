@@ -44,10 +44,6 @@ _SEE_OTHER = status.HTTP_303_SEE_OTHER
 _CSRF = [Depends(require_csrf)]
 
 
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
-
-
 def _error(message: str | None) -> str:
     return f'<p class="error">{html.escape(message)}</p>' if message else ""
 
@@ -124,7 +120,7 @@ def register_form(request: Request) -> HTMLResponse:
 def register_submit(
     request: Request, email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)
 ) -> Response:
-    if not throttle.take_register_attempt(_client_ip(request)):
+    if not throttle.take_register_attempt(throttle.client_ip(request)):
         return _credentials_page(
             request, "Register", "/register", new_password=True, error=_TOO_MANY, email=email, status_code=429
         )
@@ -148,7 +144,7 @@ def login_form(request: Request) -> HTMLResponse:
 def login_submit(
     request: Request, email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)
 ) -> Response:
-    ip = _client_ip(request)
+    ip = throttle.client_ip(request)
     if not throttle.login_allowed(email, ip):
         return _credentials_page(
             request, "Log in", "/login", new_password=False, error=_TOO_MANY, email=email, status_code=429
@@ -229,7 +225,7 @@ def account_delete(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    email, ip = applicant.email, _client_ip(request)
+    email, ip = applicant.email, throttle.client_ip(request)
     if not throttle.login_allowed(email, ip):
         return _account_page(request, applicant, error=_TOO_MANY, status_code=429)
     if authenticate(db, email=email, password=password) is None:
@@ -284,7 +280,7 @@ def set_password_form(request: Request, token: str = Query(...), db: Session = D
 def set_password_submit(
     request: Request, token: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)
 ) -> Response:
-    if not throttle.take_set_password_attempt(_client_ip(request)):
+    if not throttle.take_set_password_attempt(throttle.client_ip(request)):
         return _bad_link(_TOO_MANY, status_code=429)
     try:
         set_password(db, token=token, password=password)
@@ -323,7 +319,7 @@ def admin_login_form(request: Request) -> HTMLResponse:
 
 @admin_session_router.post("/login", response_class=HTMLResponse, dependencies=_CSRF)
 def admin_login(request: Request, admin_key: str = Form(...)) -> Response:
-    if not throttle.take_admin_login_attempt(_client_ip(request)):
+    if not throttle.take_admin_login_attempt(throttle.client_ip(request)):
         return _admin_login_page(request, error=_TOO_MANY, status_code=429)
     if not admin_key_matches(admin_key):
         return _admin_login_page(request, error="That key is wrong.", status_code=401)
