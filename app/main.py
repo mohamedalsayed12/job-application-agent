@@ -2,11 +2,12 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.accounts import admin_router as admin_accounts_router
-from app.api.accounts import admin_session_router
+from app.api.accounts import admin_session_router, current_applicant
 from app.api.accounts import router as accounts_router
 from app.api.applicants import router as applicants_router
 from app.api.applications import router as applications_router
@@ -24,6 +25,7 @@ from app.api.profile import router as profile_router
 from app.api.quality import router as quality_router
 from app.api.workflow import router as workflow_router
 from app.core.config import get_settings
+from app.models import Applicant
 
 SESSION_DAYS = 14
 
@@ -65,3 +67,8 @@ app.include_router(admin_session_router)
 app.include_router(admin_accounts_router)
 app.include_router(applicants_router)
 app.include_router(quality_router)
+
+
+@app.get("/", include_in_schema=False)
+def home(applicant: Applicant | None = Depends(current_applicant)) -> RedirectResponse:
+    return RedirectResponse("/listings" if applicant else "/login", status_code=303)

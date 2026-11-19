@@ -431,3 +431,16 @@ async def test_a_forged_admin_marker_is_not_made_valid_by_login(client: httpx.As
     await client.post("/logout")
     assert (await _login(client)).status_code == 303
     assert (await client.get("/admin/applicants")).status_code == 401
+
+
+async def test_home_sends_a_visitor_to_login(client: httpx.AsyncClient) -> None:
+    response = await client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+async def test_home_sends_a_logged_in_applicant_to_listings(client: httpx.AsyncClient) -> None:
+    await _register(client)
+    response = await client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/listings"
