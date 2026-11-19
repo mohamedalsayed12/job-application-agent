@@ -307,3 +307,16 @@ async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: h
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register
     assert register.count('href="/privacy"') == 2
+
+
+async def test_home_sends_a_visitor_to_login(client: httpx.AsyncClient) -> None:
+    response = await client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+async def test_home_sends_a_logged_in_applicant_to_listings(client: httpx.AsyncClient) -> None:
+    await _register(client)
+    response = await client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/listings"
