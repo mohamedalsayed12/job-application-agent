@@ -18,7 +18,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import Numeric, func, select
+from sqlalchemy import Numeric, case, func, select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
@@ -28,6 +28,7 @@ from app.api.forms import csrf_field
 from app.cleaning.linking import is_primary
 from app.core.db import get_db
 from app.matching import semantic
+from app.matching.report import VERDICTS
 from app.matching.semantic import Embedder, closeness, vectors_for
 from app.models import (
     Applicant,
@@ -150,6 +151,19 @@ _AI_SCORE_SQL = func.coalesce(
 )
 
 
+# Best match (D54): the AI score out of 5, then the fit report's verdict, then the rules score, then newest. Unscored jobs go last.
+_VERDICT_RANK = case(
+    *((ApplicantJobMatch.reasons["report"]["verdict"].astext == verdict, rank) for rank, verdict in enumerate(VERDICTS)),
+    else_=len(VERDICTS),
+)
+
+
+def _sort_order(sort: Sort) -> tuple:
+    if sort == "newest":
+        return Job.first_seen_at.desc(), _AI_SCORE_SQL.desc()
+    return _AI_SCORE_SQL.desc(), _VERDICT_RANK, ApplicantJobMatch.score.desc(), Job.first_seen_at.desc()
+
+
 def _sources(session: Session, jobs: list[Job]) -> dict[uuid.UUID, str]:
     by_job: dict[uuid.UUID, list[JobPosting]] = defaultdict(list)
     for job_id, posting in session.execute(
@@ -178,7 +192,7 @@ def load_listings(
     search: str = "",
     embedder: Embedder | None = None,
 ) -> tuple[list[Listing], int]:
-    """One page of open matched jobs, best score (or newest) first, and how many there are in all.
+    """One page of open matched jobs, newest (or best match) first, and how many there are in all.
 
     With a search, the same jobs come closest in meaning first (D48).
     """
@@ -193,8 +207,7 @@ def load_listings(
     if role and show != "skills":
         query = query.where(ApplicantJobMatch.reasons["role"]["target"].astext == role)
     total = session.scalar(select(func.count()).select_from(query.subquery()))
-    first = (Job.first_seen_at.desc(), _AI_SCORE_SQL.desc()) if sort == "newest" else (_AI_SCORE_SQL.desc(), ApplicantJobMatch.score.desc(), Job.first_seen_at.desc())
-    query = query.order_by(*first, Job.company_name, Job.title, Job.id)
+    query = query.order_by(*_sort_order(sort), Job.company_name, Job.title, Job.id)
     start = (page_number - 1) * PAGE_SIZE
     if search and embedder is not None:
         everything = session.execute(query).all()
@@ -442,7 +455,7 @@ def render_listing(item: Listing, csrf: str = "") -> str:
 
 
 def _query(**params: object) -> str:
-    return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "newest", "roles")}))
+    return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "roles")}))
 
 
 def _option(value: str, label: str, selected: str) -> str:
@@ -452,7 +465,7 @@ def _option(value: str, label: str, selected: str) -> str:
 def _order(search: str, sort: Sort) -> str:
     if search:
         return f"Closest in meaning to &ldquo;{_e(search)}&rdquo; first. <a href=\"/listings\">Clear search</a>"
-    return f"Sorted by {'newest' if sort == 'newest' else 'AI score'}."
+    return f"Sorted by {'newest' if sort == 'newest' else 'best match'}."
 
 
 def _filters(
@@ -477,7 +490,7 @@ def _filters(
     {_option("0", "My locations", "1" if everywhere else "0")}{_option("1", "All locations", "1" if everywhere else "0")}
   </select></label>
   <label>Sort by<select name="sort" onchange="this.form.submit()">
-    {_option("newest", "Newest first", sort)}{_option("score", "AI score", sort)}
+    {_option("newest", "Newest", sort)}{_option("score", "Best match", sort)}
   </select></label>
   <div><noscript><button type="submit">Apply filters</button></noscript>
     <p class="salary-note">{salary} · <a href="/profile">Edit</a></p></div>
@@ -534,13 +547,18 @@ def listings_page(
     page_number: int = Query(1, alias="page", ge=1),
     everywhere: bool = Query(False),
     role: str = Query("", max_length=200),
-    # Operator request (2026-11-10): newest jobs first unless the person picks match score.
-    sort: Sort = Query("newest"),
+    sort: Sort | None = Query(None),
     show: Show = Query("roles"),
     q: str = Query("", max_length=200),
     embedder: Callable[[], Embedder] = Depends(search_embedder),
 ) -> HTMLResponse:
     search = " ".join(q.split())
+    preference = db.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant.id))
+    if sort is None:
+        sort = preference.listing_sort if preference else "newest"
+    elif preference is not None and preference.listing_sort != sort:
+        preference.listing_sort = sort
+        db.commit()
     listings, total = load_listings(
         db,
         applicant.id,
@@ -554,7 +572,6 @@ def listings_page(
     )
     if search:
         db.commit()
-    preference = db.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant.id))
     where = "in every location" if everywhere else "in your locations"
     hint = _discover_hint(db, applicant, preference, everywhere=everywhere, sort=sort) if show == "roles" else ""
     if listings:

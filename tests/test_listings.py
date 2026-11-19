@@ -284,7 +284,33 @@ async def test_the_listings_show_the_newest_jobs_first_by_default(client: httpx.
     page = (await client.get("/listings")).text
 
     assert "Sorted by newest." in page
-    assert '<option value="newest" selected>Newest first</option>' in page
+    assert '<option value="newest" selected>Newest</option>' in page
     newest = (await client.get("/listings", params={"sort": "newest"})).text
     assert _titles(page) == _titles(newest)
+
+
+async def test_the_sort_choice_is_remembered_until_changed(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+
+    chosen = (await client.get("/listings", params={"sort": "score"})).text
+    assert "Sorted by best match." in chosen
+    assert "Sorted by best match." in (await client.get("/listings")).text
+
+    assert "Sorted by newest." in (await client.get("/listings", params={"sort": "newest"})).text
+    assert "Sorted by newest." in (await client.get("/listings")).text
+
+
+async def test_best_match_breaks_an_equal_score_by_the_fit_verdict(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    junior = _job(session, 1).id
+    graduate = _job(session, 2).id
+    for job_id, verdict in ((junior, "Consider"), (graduate, "Apply")):
+        match = session.scalars(select(ApplicantJobMatch).where(ApplicantJobMatch.job_id == job_id)).one()
+        match.reasons = {**match.reasons, "report": {"verdict": verdict}}
+    session.commit()
+
+    page = (await client.get("/listings", params={"sort": "score"})).text
+    assert _titles(page)[:2] == ["Graduate Backend Developer", "Junior Backend Developer"]
 
