@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
+from app.api.listings import visible_job
 from app.applicants.apply_answers import (
     MAX_SAVED,
     AnswersRefused,
@@ -130,6 +131,7 @@ def prepare(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
+    visible_job(db, applicant.id, job_id)
     try:
         row = prepare_application(db, applicant_id=applicant.id, job_id=job_id)
         db.commit()
@@ -201,9 +203,7 @@ def applied(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    job = db.get(Job, job_id)
-    if job is None or job.freshness != JobFreshness.open:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    job = visible_job(db, applicant.id, job_id)
     mark_submitted(db, applicant.id, job)
     db.commit()
     return RedirectResponse(f"/jobs/{job_id}", status_code=_SEE_OTHER)

@@ -8,7 +8,7 @@ import secrets
 from fastapi import Request
 from fastapi.responses import HTMLResponse
 
-from app.api.admin_auth import admin_key_matches
+from app.api.admin_auth import admin_key_header_ok
 from app.api.admin_html import page
 
 _MAX_FORM_FILES = 1
@@ -35,7 +35,7 @@ def csrf_field(request: Request) -> str:
 
 async def require_csrf(request: Request) -> None:
     """On every POST route. A valid admin-key header is exempt: other sites can't set that header."""
-    if admin_key_matches(request.headers.get("X-Admin-Key")):
+    if admin_key_header_ok(request, request.headers.get("X-Admin-Key")):
         return
     form = await request.form(max_files=_MAX_FORM_FILES, max_fields=_MAX_FORM_FIELDS)
     expected = request.session.get("csrf")

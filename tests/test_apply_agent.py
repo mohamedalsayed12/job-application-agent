@@ -44,7 +44,7 @@ from app.models import (
     TailoredCv,
     TailoredCvStatus,
 )
-from tests.jobs import _li, _store
+from tests.jobs import _li, _public_resolve, _store, show_to
 
 EMAIL = "apply-agent@example.com"
 PASSWORD = "correct horse battery"
@@ -205,6 +205,7 @@ def test_a_complete_plan_reopens_a_failed_application() -> None:
 async def test_prepare_readies_the_job_for_the_extension(client: httpx.AsyncClient, session: Session) -> None:
     await _register(client)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
 
     response = await client.post("/applications", data={"job_id": str(job.id)})
 
@@ -411,6 +412,7 @@ async def test_after_review_the_person_marks_the_application_submitted(
     await _register(client)
     applicant = _applicant(session)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     row = _ready_application(session, applicant, job)
     row.status = ApplicationStatus.filled_awaiting_review.value
     session.flush()
@@ -428,6 +430,7 @@ async def test_a_job_applied_for_elsewhere_can_be_marked_applied(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     await _register(client)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     assert "Prepare apply" in (await client.get(f"/jobs/{job.id}")).text
 
     assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
@@ -509,6 +512,7 @@ async def test_missing_answer_is_named_saved_and_reused(
         ),
     )
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     prepared = await client.post("/applications", data={"job_id": str(job.id)})
     assert prepared.status_code == 303
     row = session.scalar(select(Application).where(Application.job_id == job.id))
@@ -548,6 +552,7 @@ async def test_missing_answer_is_named_saved_and_reused(
         [_li(9002, title="Support Engineer", **{"applyUrl": "https://careers.example.com/jobs/9002/apply"})],
     )
     other = session.scalar(select(Job).where(Job.title == "Support Engineer"))
+    show_to(session, applicant.id, other.id)
     assert (await client.post("/applications", data={"job_id": str(other.id)})).status_code == 303
     second = session.scalar(select(Application).where(Application.job_id == other.id))
     reworded = _plan_fields(("f0", "Please tell us why you want this role", "why"))
@@ -567,6 +572,7 @@ async def test_plan_rejects_an_invented_model_value(
     await _register(client)
     applicant = _applicant(session)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     await client.post("/applications", data={"job_id": str(job.id)})
     row = session.scalar(select(Application).where(Application.job_id == job.id))
     token = issue_token(session, applicant.id)

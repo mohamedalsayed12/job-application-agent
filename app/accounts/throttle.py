@@ -9,6 +9,7 @@ from __future__ import annotations
 from limits import parse
 from limits.storage import MemoryStorage
 from limits.strategies import MovingWindowRateLimiter
+from starlette.requests import Request
 
 _FAILED_LOGIN_LIMITS = (
     # One person mistyping or guessing from one place.
@@ -25,6 +26,10 @@ _CV_UPLOAD = parse("20/hour")
 
 _storage = MemoryStorage()
 _limiter = MovingWindowRateLimiter(_storage)
+
+
+def client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
 def _login_keys(email: str, ip: str) -> dict[str, tuple[str, ...]]:
@@ -53,6 +58,15 @@ def take_set_password_attempt(ip: str) -> bool:
 
 def take_admin_login_attempt(ip: str) -> bool:
     return _limiter.hit(_ADMIN_LOGIN, "admin-login", ip)
+
+
+def admin_key_header_allowed(ip: str) -> bool:
+    """Scripts send the key in a header. Wrong ones count against the admin login form's limit."""
+    return _limiter.test(_ADMIN_LOGIN, "admin-login", ip)
+
+
+def record_wrong_admin_key_header(ip: str) -> None:
+    _limiter.hit(_ADMIN_LOGIN, "admin-login", ip)
 
 
 def take_cv_upload_attempt(applicant_id: str) -> bool:

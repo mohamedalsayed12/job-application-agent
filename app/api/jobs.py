@@ -15,7 +15,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.api.listings import place_names
+from app.api.listings import place_names, visible_job
 from app.applications.prepare import application_for_job
 from app.applications.ui import apply_step
 from app.core.config import get_settings
@@ -87,10 +87,7 @@ async def job_page(
     db: Session = Depends(get_db),
     gateway: FetchGateway = Depends(get_gateway),
 ) -> HTMLResponse:
-    job = db.get(Job, job_id)
-    # D23: only open jobs are shown.
-    if job is None or job.freshness != JobFreshness.open:
-        raise HTTPException(status_code=404)
+    job = visible_job(db, applicant.id, job_id)
     settings = get_settings()
     shown = await summary_for_view(db, job, gateway=gateway, settings=settings, persist=db.commit)
     csrf = csrf_field(request)
@@ -126,9 +123,7 @@ def request_tailor(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    job = db.get(Job, job_id)
-    if job is None or job.freshness != JobFreshness.open:
-        raise HTTPException(status_code=404)
+    visible_job(db, applicant.id, job_id)
     if not tailor_allowed(get_settings(), applicant.id):
         raise HTTPException(status_code=403)
     request_tailored_cv(db, applicant.id, job_id)

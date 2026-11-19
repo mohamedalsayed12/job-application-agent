@@ -159,6 +159,28 @@ def _offered(text: str, *roles: str) -> bool:
     return all(f'name="cv_roles" value="{role}"/>' in text for role in roles)
 
 
+def test_d43_a_skill_or_place_must_be_a_whole_word_in_the_cv() -> None:
+    text = "Sam, Manchester. Built apps in JavaScript at Google. Excellence awards 2025."
+    made_up = {
+        "skills": ["Java", "Go", "R", "C", "Excel", "Script"],
+        "locations": ["Man", "Chester"],
+        "certifications": [{"name": "CE", "issuer": "Go", "is_licence": False, "expires_on": ""}],
+    }
+    found = grounded(made_up, text)
+    assert (found.skills, found.locations, found.certifications) == ([], [], [])
+
+
+def test_d43_whole_words_still_match_symbols_and_phrases() -> None:
+    text = "Skills: C++, C#, .NET, Node.js and Go.\nMachine learning in Python/Django. AWS Certified Cloud Practitioner (Amazon)."
+    payload = {
+        "skills": ["C++", "C#", ".NET", "Node.js", "Go", "Machine Learning", "Python", "Django", "C", "JS", "Node"],
+        "certifications": [{"name": "AWS Certified Cloud Practitioner", "issuer": "Amazon", "is_licence": False, "expires_on": ""}],
+    }
+    found = grounded(payload, text)
+    assert found.skills == ["C++", "C#", ".NET", "Node.js", "Go", "Machine Learning", "Python", "Django"]
+    assert found.certifications == [Certification("AWS Certified Cloud Practitioner", "Amazon", False, "")]
+
+
 def _fields(**values: object) -> ProfileFields:
     blank = dict.fromkeys(("target_roles", "locations", "salary_amount", "travel_distance", "skills", "degrees"), "")
     lists = dict.fromkeys(("experience_levels", "cert_name", "cert_issuer", "cert_kind", "cert_expiry", "cv_roles", "cv_offer"), [])

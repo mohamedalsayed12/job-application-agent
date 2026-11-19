@@ -16,7 +16,6 @@ from sqlalchemy import delete, select
 
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.listings import load_listings, render_listing
@@ -41,7 +40,7 @@ from app.models import (
 from app.tailor.ats import docx_text, pdf_text
 
 
-from app.tailor.ats import ats_report, pdf_text
+from app.tailor.ats import ats_report
 from app.tailor.improver import Change, apply_diffs
 from app.tailor.preservation import finalize_ai_resume
 from app.tailor.refiner import remove_ai_phrases
@@ -53,6 +52,7 @@ from app.tailor.render import (
 )
 from app.tailor.resume import ground_parsed
 from app.tailor.run import request_tailored_cv, write_tailored_cvs
+from tests.jobs import show_to
 from tests.test_cv_read import _docx
 from tests.test_fit_report import CV_LINES, _Ai, _person_with_a_cv, _report
 from tests.test_judge import _policy, _settings
@@ -214,6 +214,7 @@ async def _prepare(session: Session, ai: _TailorAi):
     gateway = ai.gateway()
     settings = _settings(ai_report_unit_price=Decimal("0.0015"), ai_tailor_unit_price=Decimal("0.003"))
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
     await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
     match_all(session, now=SOON)
     return applicant, gateway, settings
@@ -480,6 +481,7 @@ async def test_budget_wait_leaves_waiting_status(session: Session) -> None:
         ai_tailor_unit_price=Decimal("0.003"),
     )
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
     await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
     match_all(session, now=SOON)
 
@@ -530,6 +532,7 @@ async def _person_on_a_job_without_a_report(session: Session, client: httpx.Asyn
     store_cv(session, applicant.id, _docx(CV_LINES))
     await _jobs(session, ("Data Analyst", "Leeds, UK"))
     job = session.scalar(select(Job).where(Job.title == "Data Analyst"))
+    show_to(session, applicant.id, job.id)
     assert session.scalar(select(JobReport).where(JobReport.job_id == job.id)) is None
     return applicant, job
 
@@ -574,7 +577,7 @@ async def test_a_failed_package_can_be_tried_again(client: httpx.AsyncClient, se
     assert row.applicant_id == applicant.id
 
 
-async def test_an_apply_job_that_is_not_listed_offers_the_button(
+async def test_an_apply_job_that_is_not_listed_has_no_page_or_tailoring(
     client: httpx.AsyncClient, session: Session
 ) -> None:
     applicant, job = await _person_on_a_job_without_a_report(session, client)
@@ -603,12 +606,10 @@ async def test_an_apply_job_that_is_not_listed_offers_the_button(
     )
     session.flush()
 
-    page = (await client.get(f"/jobs/{job.id}")).text
-    assert "Tailor my CV for this job" in page
-    assert "waiting on the monthly budget" not in page
-
-    await client.post(f"/jobs/{job.id}/tailor")
-    assert "Tailor my CV for this job" not in (await client.get(f"/jobs/{job.id}")).text
+    response = await client.get(f"/jobs/{job.id}")
+    assert response.status_code == 404
+    assert "This job isn't available" in response.text
+    assert (await client.post(f"/jobs/{job.id}/tailor")).status_code == 404
 
 
 async def test_people_outside_the_ai_list_get_no_button(
@@ -941,6 +942,7 @@ async def test_a_package_left_unfinished_outside_the_scope_offers_the_button(ses
 
 async def test_the_job_page_follows_the_tailoring_scope(client: httpx.AsyncClient, session: Session) -> None:
     applicant, job = await _person_on_a_job_without_a_report(session, client)
+    session.execute(delete(ApplicantJobMatch))
     session.add(
         JobReport(
             applicant_id=applicant.id,
