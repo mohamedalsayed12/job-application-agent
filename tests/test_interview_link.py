@@ -78,7 +78,7 @@ async def test_an_unmatched_job_offers_no_practice_link_and_a_friendly_page(
     direct = await client.get(f"/jobs/{job.id}/interview")
     assert direct.status_code == 404
     assert direct.headers["content-type"].startswith("text/html")
-    assert "available for this job" in direct.text
+    assert "This job isn&#39;t available" in direct.text or "This job isn't available" in direct.text
 
 
 async def test_a_matched_job_links_to_practice_and_shows_a_queued_request(

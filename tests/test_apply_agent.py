@@ -464,6 +464,7 @@ async def test_a_refused_prepare_shows_its_message_on_the_job_page(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     await _register(client)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     job.apply_url = "mailto:hr@example.com"
     session.flush()
 
@@ -487,8 +488,8 @@ async def test_a_closed_job_cannot_be_prepared_but_an_existing_application_can_b
     other.freshness = JobFreshness.closed
     session.commit()
     refused = await client.post("/applications", data={"job_id": str(other.id)})
-    assert refused.headers["location"].startswith("/applications?notice=")
-    assert "closed" in (await client.get(refused.headers["location"])).text
+    assert refused.status_code == 404
+    assert "closed" in refused.text
     assert (await client.post(f"/jobs/{other.id}/applied")).status_code == 404
 
     assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
@@ -510,6 +511,7 @@ async def test_a_stuck_application_can_be_prepared_again(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     await _register(client)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     row = _ready_application(session, _applicant(session), job)
     row.status = status.value
     row.error = "Could not read the application form."
@@ -530,6 +532,7 @@ async def test_the_person_can_say_they_are_not_applying(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     await _register(client)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     row = _ready_application(session, _applicant(session), job)
     assert "not applying" in (await client.get(f"/jobs/{job.id}")).text
     assert "not applying" in (await client.get(f"/applications/{row.id}")).text

@@ -27,7 +27,7 @@ from app.models import (
     JobVerdict,
     TailoredCv,
 )
-from app.tailor import write_tailored_cvs
+from app.tailor.run import write_tailored_cvs
 from tests.jobs import _job, _store
 from tests.test_cv_read import _docx
 from tests.test_cv_tailor import _TailorAi
@@ -100,6 +100,7 @@ async def test_d46_a_fits_verdict_of_5_lists_and_reports_only_entry_level_jobs(s
     applicant = await _entry_level_person(session)
     _ai_says_every_job_fits(session, applicant)
     ai = _Ai()
+    match_all(session, now=SOON)
 
     await write_reports(
         session,
