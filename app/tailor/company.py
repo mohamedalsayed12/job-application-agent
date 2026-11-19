@@ -1,4 +1,4 @@
-"""Fetch and cache employer mission / vision / values from public pages (D55)."""
+"""Fetch and cache employer mission / vision / values from public pages (D60)."""
 
 from __future__ import annotations
 

@@ -4,9 +4,11 @@ Personal outreach on an open matched job: find contacts via Apify LinkedIn peopl
 
 ## Decisions
 
-- **D55 / contacts.** People discovery uses Apify actors configured as `APIFY_OUTREACH_HM_ACTOR`, `APIFY_OUTREACH_EMPLOYEES_ACTOR`, and `APIFY_OUTREACH_PROFILE_ACTOR`. This app still never fetches `linkedin.com` (D19 / D54).
-- **D56 / send.** Gmail OAuth only (no SMTP app password). Default `OUTREACH_GMAIL_DRY_RUN=true` records a dry-run send without calling Gmail. LinkedIn is copy + open profile.
-- **D57 / patterns.** Patterns live in `app/outreach/data/patterns.json` (versioned). No live Reddit or LinkedIn scraping for “what works”.
+Outreach is decision D57 in `MVP.md`. The points below are parts of it.
+
+- **Contacts.** People discovery uses Apify actors configured as `APIFY_OUTREACH_HM_ACTOR`, `APIFY_OUTREACH_EMPLOYEES_ACTOR`, and `APIFY_OUTREACH_PROFILE_ACTOR`. This app still never fetches `linkedin.com` (D19 / D54).
+- **Send.** Gmail OAuth only (no SMTP app password). Default `OUTREACH_GMAIL_DRY_RUN=true` records a dry-run send without calling Gmail. LinkedIn is copy + open profile.
+- **Patterns.** Patterns live in `app/outreach/data/patterns.json` (versioned). No live Reddit or LinkedIn scraping for “what works”.
 - **D37 narrowed.** Email transport exists for user-approved outreach only; password reset remains admin one-time links.
 
 ## Spend

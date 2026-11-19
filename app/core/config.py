@@ -31,8 +31,13 @@ class Settings(BaseSettings):
     )
     api_allowlist: str = (
         "api.apify.com,api.anthropic.com,"
-        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com"
+        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,"
+        "api.company-information.service.gov.uk"
     )
+    # D55: Companies House Public Data API. Blank = skip the register lookup.
+    companies_house_api_key: str = ""
+    # Fake-listing checks per worker cycle (CH + page fetches).
+    verify_per_cycle: int = 20
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
     apify_api_token: str = ""
@@ -115,7 +120,7 @@ class Settings(BaseSettings):
     ai_judge_unit_price: Decimal = Decimal("0.0005")
     # D52: about 6k tokens in (advert and CV) and 1.5k out, ~$0.0014 at the prices above; this is a ceiling.
     ai_report_unit_price: Decimal = Decimal("0.0015")
-    # D55: keyword extract / tailor / ATS revise each reserve this ceiling once.
+    # D60: keyword extract / tailor / ATS revise each reserve this ceiling once.
     ai_tailor_unit_price: Decimal = Decimal("0.003")
     # About 300 tokens in and 100 out on Haiku 5.5 for one title; this is a ceiling.
     ai_related_titles_unit_price: Decimal = Decimal("0.001")
@@ -155,7 +160,7 @@ class Settings(BaseSettings):
     ai_report_daily_token_cap: int = 3000000
     ai_report_cv_chars: int = 12000
 
-    # D55: tailored CV for Apply / Consider jobs. Blank model = provider default.
+    # D60: tailored CV for Apply / Consider jobs. Blank model = provider default.
     ai_tailor_model: str = ""
     ai_tailor_max_output_tokens: int = 8000
     ai_tailor_cv_chars: int = 12000
