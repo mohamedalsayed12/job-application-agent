@@ -6,7 +6,7 @@ Catalog of post-MVP features planned and built on 15–16 November 2026. These s
 |---|---|---|---|
 | Apply fill agent | `integration/apply-agent` | `jaa-apply-agent` | ready for review |
 | Job application auto-apply | — (with `feat/apply-agent`) | — | planned: fill → review → notify user to click Submit |
-| Fake listing agent | `feat/fake-listing` | `jaa-fake-listing` | open on origin |
+| Fake listing agent | `feat/p2-fake-listing` | `jaa-p2-fake-listing` | merged onto the current base |
 | Personalized outreach | `integration/outreach` | `jaa-outreach` | ready for review |
 | Interview intel | `integration/interview-job-pack` | `jaa-interview-intel` | ready for review |
 | CV tailoring | `integration/cv-tailor` | `jaa-cv-tailor` | ready for review |
@@ -74,13 +74,13 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 2. Companies House Public Data API — dissolved / liquidation → fake; no match → soft unknown.
 3. Official domain via DuckDuckGo HTML search + homepage name check (fetch gateway).
 4. Careers-page title match → set `apply_url` to company URL, raise Real confidence to high.
-5. Persist `job_verification`; rematch when outcome or URL changes.
+5. Persist `job_verification` (migration `0022_job_verification`); the worker rematches in the same cycle whenever it checked a job.
 
 **Locked choices**
 - Soft gate: missing careers hit alone does **not** hide a job.
 - No AI spend; page + CH fetches only.
 - Do **not** mark fakes `freshness=closed` (LinkedIn would reopen them).
-- Hide via Real confidence `low` → no match → off listings (and 404 `/jobs/{id}`).
+- Hide via Real confidence `low` → no match → off listings. `/jobs/{id}` and every action under it (tailor, tailored CV downloads, mark applied, interview practice, outreach) answer 404 through one check, `listed_job`, even before the rematch.
 
 **Config.** `COMPANIES_HOUSE_API_KEY` (optional); allowlist `api.company-information.service.gov.uk`.
 
@@ -186,4 +186,4 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 ## Merge note
 
-The connected workflow is stacked in review branches: base cleanup → Indeed → CV tailoring → apply → outreach → interview. Alembic revisions form one chain through `0021_interview_job_pack`. Auto-submit remains out of scope; the person reviews and submits the form.
+The connected workflow is stacked in review branches: base cleanup → Indeed → CV tailoring → apply → outreach → interview. Alembic revisions form one chain through `0022_job_verification`. Auto-submit remains out of scope; the person reviews and submits the form.

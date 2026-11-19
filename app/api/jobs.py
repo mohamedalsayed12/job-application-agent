@@ -27,6 +27,8 @@ from app.models import (
     Job,
     JobFreshness,
     JobReport,
+    JobVerification,
+    ListingVerdict,
     TailoredCv,
     TailoredCvStatus,
     auto_tailored,
@@ -36,6 +38,7 @@ from app.summaries.generate import Shown, summary_for_view
 from app.tailor.render import render_letter_docx, render_letter_pdf
 from app.tailor.run import request_tailored_cv, tailor_allowed, tailors_outside_locations
 from app.tailor.ui import cover_letter_text, listing_tailor
+from app.verify.scam_text import scam_reasons
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -81,6 +84,26 @@ def _tailored_for(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> Ta
     ).first()
 
 
+def listed_job(db: Session, job_id: uuid.UUID) -> Job:
+    """The job behind every /jobs/{id} page and action, or 404.
+
+    D23: only open jobs are shown. D55: a job judged fake stays unreachable.
+    """
+    job = db.get(Job, job_id)
+    if job is None or job.freshness != JobFreshness.open or _is_fake(db, job):
+        raise HTTPException(status_code=404)
+    return job
+
+
+def _is_fake(session: Session, job: Job) -> bool:
+    if (job.quality_results or {}).get("real") == "low":
+        return True
+    row = session.scalar(select(JobVerification).where(JobVerification.job_id == job.id))
+    if row is not None and row.outcome == ListingVerdict.fake:
+        return True
+    return bool(scam_reasons(job.description))
+
+
 @router.get("/{job_id}", response_class=HTMLResponse)
 async def job_page(
     request: Request,
@@ -89,10 +112,7 @@ async def job_page(
     db: Session = Depends(get_db),
     gateway: FetchGateway = Depends(get_gateway),
 ) -> HTMLResponse:
-    job = db.get(Job, job_id)
-    # D23: only open jobs are shown.
-    if job is None or job.freshness != JobFreshness.open:
-        raise HTTPException(status_code=404)
+    job = listed_job(db, job_id)
     settings = get_settings()
     shown = await summary_for_view(db, job, gateway=gateway, settings=settings, persist=db.commit)
     csrf = csrf_field(request)
@@ -129,9 +149,7 @@ def request_tailor(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    job = db.get(Job, job_id)
-    if job is None or job.freshness != JobFreshness.open:
-        raise HTTPException(status_code=404)
+    listed_job(db, job_id)
     if not tailor_allowed(get_settings(), applicant.id):
         raise HTTPException(status_code=403)
     request_tailored_cv(db, applicant.id, job_id)
@@ -176,6 +194,7 @@ def cover_letter_docx(
 
 
 def _download(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID, *, kind: str) -> Response:
+    listed_job(db, job_id)
     row = _tailored_for(db, applicant_id, job_id)
     if row is None or row.status != TailoredCvStatus.ready.value:
         raise HTTPException(status_code=404)

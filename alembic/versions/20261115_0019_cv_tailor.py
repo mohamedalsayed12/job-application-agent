@@ -1,4 +1,4 @@
-"""Company research cache, tailored CV packages, and ai_cv_tailor spend (D55)"""
+"""Company research cache, tailored CV packages, and ai_cv_tailor spend (D60)"""
 from collections.abc import Sequence
 
 import sqlalchemy as sa

@@ -66,6 +66,9 @@ def link_posting(session: Session, posting: JobPosting) -> JobLink:
 
 def mirror_posting(job: Job, posting: JobPosting) -> None:
     """Copy a posting's fields onto its job and record where each value came from."""
+    # D55: keep a company-site apply link the verifier already confirmed.
+    keep_apply = ((job.field_provenance or {}).get("apply_url") or {}).get("source") == "verification"
+    saved_apply = (job.apply_url, (job.field_provenance or {}).get("apply_url")) if keep_apply else None
     provenance = {
         "source": posting.source,
         "posting_id": str(posting.id),
@@ -76,6 +79,9 @@ def mirror_posting(job: Job, posting: JobPosting) -> None:
     job.field_provenance = {
         name: provenance for name in _MIRRORED if getattr(posting, name) is not None
     }
+    if saved_apply is not None:
+        job.apply_url, apply_provenance = saved_apply
+        job.field_provenance = {**job.field_provenance, "apply_url": apply_provenance}
 
 
 def is_primary(job: Job, posting: JobPosting) -> bool:

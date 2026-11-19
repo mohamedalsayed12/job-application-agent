@@ -18,6 +18,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
+from app.api.jobs import listed_job
 from app.applications.prepare import has_applied
 from app.applications.ui import applied_button
 from app.core.config import Settings, get_settings
@@ -27,7 +28,6 @@ from app.models import (
     Applicant,
     ApplicantJobMatch,
     Job,
-    JobFreshness,
     OutreachChannel,
     OutreachContact,
     OutreachDraft,
@@ -83,9 +83,7 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
 
 
 def _open_matched_job(db: Session, applicant: Applicant, job_id: uuid.UUID) -> Job:
-    job = db.get(Job, job_id)
-    if job is None or job.freshness != JobFreshness.open:
-        raise HTTPException(status_code=404)
+    job = listed_job(db, job_id)
     match = db.scalar(
         select(ApplicantJobMatch).where(
             ApplicantJobMatch.applicant_id == applicant.id,

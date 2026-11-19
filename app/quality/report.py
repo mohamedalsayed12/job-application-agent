@@ -22,12 +22,14 @@ from app.models import (
     JobLink,
     JobPosting,
     JobSummary,
+    JobVerification,
     SpendLedger,
 )
 from app.quality.checks import (
     Confidence,
     JobFacts,
     JobQuality,
+    VerificationSignal,
     NotRecent,
     check_job,
     find_same_adverts,
@@ -166,7 +168,18 @@ def check_all(session: Session, now: datetime) -> list[tuple[JobFacts, JobQualit
     """Closed jobs are checked but never counted as duplicates of the jobs still listed."""
     facts = load_job_facts(session)
     same_adverts = find_same_adverts(job for job in facts if job.freshness != JobFreshness.closed)
-    return [(job, check_job(job, now, same_adverts.get(job.job_id))) for job in facts]
+    verifications = {
+        row.job_id: VerificationSignal(
+            outcome=row.outcome,
+            listing_found=row.listing_found,
+            reasons=tuple(row.reasons or ()),
+        )
+        for row in session.scalars(select(JobVerification)).all()
+    }
+    return [
+        (job, check_job(job, now, same_adverts.get(job.job_id), verifications.get(job.job_id)))
+        for job in facts
+    ]
 
 
 def store_results(session: Session, *, now: datetime) -> int:
@@ -188,7 +201,7 @@ def build_report(session: Session, *, now: datetime | None = None) -> QualityRep
         relevance=_relevance_section(session),
         summaries=_summaries_section(session),
         gaps=[
-            "Real: Companies House is not connected, so it is not one of the signals.",
+            "Real: a missing Companies House key or careers-page hit stays inconclusive; only clear fakes drop off the page.",
             "Unique: LinkedIn is the only source, so every duplicate found is within it.",
             "Closed: LinkedIn does not say when a job closes, so a job closes when no search has found it for a while.",
             "Relevance: skills are those an advert names, which includes skills it mentions without requiring.",
