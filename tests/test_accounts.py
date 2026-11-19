@@ -394,3 +394,40 @@ async def test_stale_session_still_gets_the_form(
     _applicant(session).session_version += 1
     session.commit()
     assert (await client.get(path)).status_code == 200
+
+
+async def _admin_login(client: httpx.AsyncClient) -> None:
+    assert (await client.post("/admin/login", data={"admin_key": ADMIN})).status_code == 303
+
+
+async def test_applicant_login_keeps_an_admin_session(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    await client.post("/logout")
+    await _admin_login(client)
+    assert (await client.get("/admin/applicants")).status_code == 200
+    assert (await _login(client)).status_code == 303
+    assert (await client.get("/account")).status_code == 200
+    assert (await client.get("/admin/applicants")).status_code == 200
+
+
+async def test_registering_keeps_an_admin_session(client: httpx.AsyncClient) -> None:
+    await _admin_login(client)
+    assert (await _register(client)).status_code == 303
+    assert (await client.get("/account")).status_code == 200
+    assert (await client.get("/admin/applicants")).status_code == 200
+
+
+async def test_applicant_login_still_replaces_the_applicant_session(client: httpx.AsyncClient) -> None:
+    await _register(client, email="a@example.com")
+    await client.post("/logout")
+    await _register(client, email="b@example.com")
+    await _admin_login(client)
+    await _login(client, email="b@example.com")
+    assert "b@example.com" in (await client.get("/account")).text
+
+
+async def test_a_forged_admin_marker_is_not_made_valid_by_login(client: httpx.AsyncClient) -> None:
+    await _register(client)
+    await client.post("/logout")
+    assert (await _login(client)).status_code == 303
+    assert (await client.get("/admin/applicants")).status_code == 401
