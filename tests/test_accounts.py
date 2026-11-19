@@ -307,3 +307,37 @@ async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: h
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register
     assert register.count('href="/privacy"') == 2
+
+
+async def test_register_with_a_missing_field_shows_the_form_not_json(client: httpx.AsyncClient) -> None:
+    for data in ({"email": EMAIL}, {"password": PASSWORD}, {}):
+        response = await client.post("/register", data=data)
+        assert response.status_code == 400
+        assert response.headers["content-type"].startswith("text/html")
+        assert '<p class="error">' in response.text
+        assert 'action="/register"' in response.text
+
+
+async def test_login_with_a_missing_field_shows_the_form_not_json(client: httpx.AsyncClient) -> None:
+    for data in ({"email": EMAIL}, {"password": PASSWORD}, {}):
+        response = await client.post("/login", data=data)
+        assert response.status_code == 400
+        assert response.headers["content-type"].startswith("text/html")
+        assert "Enter your email and password." in response.text
+
+
+async def test_admin_login_with_no_key_shows_the_form_not_json(client: httpx.AsyncClient) -> None:
+    response = await client.post("/admin/login", data={})
+    assert response.status_code == 401
+    assert response.headers["content-type"].startswith("text/html")
+    assert "That key is wrong." in response.text
+
+
+async def test_set_password_without_a_token_shows_a_page_not_json(client: httpx.AsyncClient) -> None:
+    response = await client.get("/set-password")
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<p class="error">' in response.text
+    post = await client.post("/set-password", data={})
+    assert post.status_code == 400
+    assert post.headers["content-type"].startswith("text/html")
