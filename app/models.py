@@ -184,18 +184,6 @@ class TailoredCvStatus(StrEnum):
     failed = "failed"
 
 
-# Listed jobs with these verdicts are tailored with no click, Apply before Consider.
-TAILOR_VERDICTS = ("Apply", "Consider")
-
-
-def auto_tailored(verdict: str | None, *, location_fit: bool, outside_locations: bool) -> bool:
-    """Whether a listed job gets a tailored CV with no click.
-
-    `location_fit` is the listings' "My locations" rule, so the person's scope setting matches what they see there.
-    """
-    return verdict in TAILOR_VERDICTS and (location_fit or outside_locations)
-
-
 def attempt_failed(status: str, draft: object) -> bool:
     """A ready file whose latest rebuild failed. The previous download stays."""
     return status == TailoredCvStatus.ready.value and isinstance(draft, dict) and bool(draft.get("last_error"))
@@ -714,7 +702,7 @@ class CompanyResearch(_UuidPk, Base):
 
 
 class TailoredCv(_UuidPk, Base):
-    """One tailored CV package per person and job: automatic for listed Apply/Consider jobs, else on request."""
+    """One tailored CV package per person and job: automatic for listed jobs scoring 3.0 or more, else on request."""
 
     __tablename__ = "tailored_cv"
     __table_args__ = (
@@ -735,7 +723,7 @@ class TailoredCv(_UuidPk, Base):
     status: Mapped[str] = mapped_column(Text())
     # Hash of the advert and CV bytes; a change means a new package.
     input_hash: Mapped[str] = mapped_column(Text())
-    # When the person asked for this package; None when only an Apply/Consider verdict wants it.
+    # When the person asked for this package; None when only a listed 3.0+ score wants it.
     requested_at: Mapped[datetime | None] = mapped_column(TZ)
     # Structured draft after grounding, keywords list, ATS coverage table.
     draft: Mapped[dict[str, Any] | None] = mapped_column(JSONB())

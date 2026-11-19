@@ -26,11 +26,11 @@ from app.models import (
     ApplicantJobMatch,
     Job,
     JobFreshness,
-    JobReport,
     TailoredCv,
     TailoredCvStatus,
-    auto_tailored,
 )
+from app.matching.match import AI_SCORE_SQL, listed
+from app.matching.verdicts import auto_tailored
 from app.summaries.generate import Shown, summary_for_view
 from app.tailor.render import render_letter_docx, render_letter_pdf
 from app.tailor.run import request_tailored_cv, tailor_allowed, tailors_outside_locations
@@ -95,17 +95,14 @@ async def job_page(
     shown = await summary_for_view(db, job, gateway=gateway, settings=settings, persist=db.commit)
     csrf = csrf_field(request)
     # Only a listed job in the person's tailoring scope is tailored without a click, so no other job says "queued".
-    listed = db.execute(
-        select(JobReport.verdict, ApplicantJobMatch.location_fit)
-        .join(
-            ApplicantJobMatch,
-            (ApplicantJobMatch.applicant_id == JobReport.applicant_id) & (ApplicantJobMatch.job_id == JobReport.job_id),
-        )
-        .where(JobReport.applicant_id == applicant.id, JobReport.job_id == job_id)
+    on_list = db.execute(
+        listed(everywhere=True)
+        .with_only_columns(AI_SCORE_SQL.label("score"), ApplicantJobMatch.location_fit)
+        .where(ApplicantJobMatch.applicant_id == applicant.id, ApplicantJobMatch.job_id == job_id)
     ).first()
-    auto = listed is not None and auto_tailored(
-        listed.verdict,
-        location_fit=listed.location_fit,
+    auto = on_list is not None and auto_tailored(
+        on_list.score,
+        location_fit=on_list.location_fit,
         outside_locations=tailors_outside_locations(db, applicant.id),
     )
     row = _tailored_for(db, applicant.id, job_id)
