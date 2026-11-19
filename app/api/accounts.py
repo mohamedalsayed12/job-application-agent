@@ -92,8 +92,14 @@ def _credentials_page(
     )
 
 
+_ADMIN_SESSION_KEYS = ("admin", "admin_until")
+
+
 def _start_session(request: Request, applicant: Applicant) -> RedirectResponse:
+    # The cookie is rebuilt from scratch against fixation; the admin marker is carried over on purpose.
+    admin = {key: request.session[key] for key in _ADMIN_SESSION_KEYS if key in request.session}
     request.session.clear()
+    request.session.update(admin)
     request.session["applicant"] = str(applicant.id)
     request.session["version"] = applicant.session_version
     return RedirectResponse("/account", status_code=_SEE_OTHER)
