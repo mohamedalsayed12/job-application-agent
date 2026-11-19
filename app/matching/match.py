@@ -448,7 +448,7 @@ def _can_be_shown(facts: JobFacts, quality: JobQuality) -> bool:
     """D23: open jobs only, so `unknown` jobs stay out until they are confirmed open again."""
     return (
         facts.freshness == JobFreshness.open
-        and quality.recent
+        and quality.not_ended
         and quality.unique
         and quality.confidence != Confidence.low
     )

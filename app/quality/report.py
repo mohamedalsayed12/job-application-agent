@@ -202,8 +202,8 @@ def build_report(session: Session, *, now: datetime | None = None) -> QualityRep
         summaries=_summaries_section(session),
         gaps=[
             "Real: a missing Companies House key or careers-page hit stays inconclusive; only clear fakes drop off the page.",
-            "Unique: LinkedIn is the only source, so every duplicate found is within it.",
-            "Closed: LinkedIn does not say when a job closes, so a job closes when no search has found it for a while.",
+            "Unique: duplicates are found across LinkedIn and Indeed, by company, title, description and shared place.",
+            "Closed: neither LinkedIn nor Indeed says when a job closes, so a job closes when no search has found it for a while.",
             "Relevance: skills are those an advert names, which includes skills it mentions without requiring.",
         ],
     )
@@ -252,7 +252,7 @@ def _jobs_section(session: Session, results: list[tuple[JobFacts, JobQuality]]) 
     )
     live = [(job, quality) for job, quality in results if job.freshness != JobFreshness.closed]
     total = _row("All jobs", results, max(success_by_source.values(), default=None))
-    expired_shown = sum(1 for job, quality in live if job.freshness == JobFreshness.open and not quality.recent)
+    expired_shown = sum(1 for job, quality in live if job.freshness == JobFreshness.open and not quality.not_ended)
     titles = {job.job_id: job for job, _ in results}
     return JobsSection(
         targets=[
