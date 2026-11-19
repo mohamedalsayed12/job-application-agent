@@ -1,4 +1,4 @@
-"""CV tailoring for Apply / Consider jobs (D55)."""
+"""CV tailoring for Apply / Consider jobs (D60)."""
 
 from app.tailor.run import write_tailored_cvs
 

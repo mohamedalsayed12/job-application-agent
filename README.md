@@ -148,6 +148,14 @@ Relevance, meaning how well matches fit each applicant, has its own section, so 
 can be told apart from poor data. LinkedIn listings start at medium confidence for Real,
 because anyone can post there.
 
+Every cycle the worker also runs the fake-listing check (D55) on up to 20 open jobs that are
+new or changed. Scam wording in the advert, or an employer that Companies House lists as
+dissolved or in liquidation, marks a job fake. A fake job leaves the listings in the same
+cycle, and its page and actions under `/jobs/{id}` answer 404. When the job's title is on
+the company's own careers page, its apply link becomes the company's link. Set
+`COMPANIES_HOUSE_API_KEY` (free, from the Companies House developer hub) to use the register;
+without it, only scam wording can mark a job fake. Results are in the `job_verification` table.
+
 ## Matching
 
 After a cycle that collects LinkedIn jobs or closes stale ones, the worker matches stored jobs to every applicant

@@ -70,7 +70,7 @@ def ready_applications(
 
 
 def _tailored_pdf(db: Session, applicant_id: uuid.UUID, application_id: uuid.UUID | None) -> bytes | None:
-    """The job's tailored CV (D55) when one is ready, so the form gets the version written for it."""
+    """The job's tailored CV (D60) when one is ready, so the form gets the version written for it."""
     if application_id is None:
         return None
     row = get_application(db, application_id, applicant_id)
