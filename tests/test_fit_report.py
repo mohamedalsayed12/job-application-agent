@@ -15,11 +15,11 @@ from app.fetch.gateway import FetchGateway
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.matching.report import write_reports
-from app.models import JobReport, SpendLedger
-from tests.jobs import _public_resolve
+from app.models import ApplicantProfile, ExperienceLevel, JobReport, SpendLedger
+from tests.jobs import _public_resolve, _store
 from tests.test_cv_read import _docx
-from tests.test_judge import _jobs, _policy, _settings
-from tests.test_matching import SOON, _applicant, _job, _matches
+from tests.test_judge import ADVERT, _jobs, _policy, _settings
+from tests.test_matching import SOON, _applicant, _job, _matches, _posting
 
 CV_LINES = [
     "Mohammed Example",
@@ -115,6 +115,7 @@ class _Ai:
 async def _run(session: Session, ai: _Ai):
     gateway, settings = ai.gateway(), _settings(ai_report_unit_price=Decimal("0.0015"))
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
     run = await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
     match_all(session, now=SOON)
     return run
@@ -192,4 +193,37 @@ async def test_d52_a_report_is_reused_until_the_cv_changes(session: Session) -> 
 
     assert len(ai.reported) == 2
     assert "Django" in ai.reported[1]
+    assert _job(session, 1).id in _matches(session, applicant)
+
+
+async def test_a_job_the_degree_rule_hides_gets_no_paid_report(session: Session) -> None:
+    _policy(session, Decimal("1"))
+    _store(session, [_posting(1, title="Backend Developer", content=f"{ADVERT} You have a degree in Computer Science.")])
+    applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=applicant, experience_level=ExperienceLevel.entry, degrees=["BSc Business Management"]))
+    store_cv(session, applicant, _docx(CV_LINES))
+    session.flush()
+    ai = _Ai()
+
+    run = await _run(session, ai)
+
+    assert len(ai.judged) == 1
+    assert (ai.reported, run.written) == ([], set())
+    assert session.scalars(select(SpendLedger).where(SpendLedger.kind == "ai_fit_report")).all() == []
+    assert _matches(session, applicant) == {}
+
+
+async def test_a_job_its_own_low_report_hid_is_reported_again_when_the_cv_changes(session: Session) -> None:
+    applicant = await _person_with_a_cv(session)
+    ai = _Ai(report=_report(score=2.6, verdict="Skip"))
+    await _run(session, ai)
+    await _run(session, ai)
+    assert (len(ai.reported), _matches(session, applicant)) == (1, {})
+
+    store_cv(session, applicant, _docx([*CV_LINES, "Built a Django app for a local charity."]))
+    session.flush()
+    ai.report = _report()
+    await _run(session, ai)
+
+    assert len(ai.reported) == 2
     assert _job(session, 1).id in _matches(session, applicant)

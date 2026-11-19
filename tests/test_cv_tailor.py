@@ -170,6 +170,7 @@ async def _prepare(session: Session, ai: _TailorAi):
     gateway = ai.gateway()
     settings = _settings(ai_report_unit_price=Decimal("0.0015"), ai_tailor_unit_price=Decimal("0.003"))
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
     await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
     match_all(session, now=SOON)
     return applicant, gateway, settings
@@ -351,6 +352,7 @@ async def test_budget_wait_leaves_waiting_status(session: Session) -> None:
         ai_tailor_unit_price=Decimal("0.003"),
     )
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
     await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
 
     run = await write_tailored_cvs(
