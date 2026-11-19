@@ -9,9 +9,17 @@ from docx import Document
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate
 
 Kind = Literal["name", "muted", "section", "body", "bullet"]
+
+BULLET = "•"
+# Helvetica writes the bullet as WinAnsi code 0x7F, which pypdf extracts as a DEL
+# character. An embedded TrueType font carries a ToUnicode map, so it extracts as "•".
+_BULLET_FONT = "Vera"
+pdfmetrics.registerFont(TTFont(_BULLET_FONT, "Vera.ttf"))
 
 _ADDITIONAL = (
     ("languages", "Languages"),
@@ -81,14 +89,14 @@ def render_pdf(resume: dict[str, Any]) -> bytes:
     bullets: list = []
     for kind, text in blocks(resume):
         if kind == "bullet":
-            bullets.append(ListItem(Paragraph(_xml(text), body), leftIndent=8, value="bullet"))
+            bullets.append(ListItem(Paragraph(_xml(text), body), leftIndent=8))
             continue
         if bullets:
-            story.append(ListFlowable(bullets, bulletType="bullet", start="bullet"))
+            story.append(_bullet_list(bullets))
             bullets = []
         story.append(Paragraph(_xml(text), styles[kind]))
     if bullets:
-        story.append(ListFlowable(bullets, bulletType="bullet", start="bullet"))
+        story.append(_bullet_list(bullets))
     doc.build(story)
     return buffer.getvalue()
 
@@ -107,6 +115,10 @@ def render_docx(resume: dict[str, Any]) -> bytes:
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+def _bullet_list(items: list) -> ListFlowable:
+    return ListFlowable(items, bulletType="bullet", start=BULLET, bulletFontName=_BULLET_FONT)
 
 
 def _join(parts) -> str:

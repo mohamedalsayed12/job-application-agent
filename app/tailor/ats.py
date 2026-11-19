@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pypdf import PdfReader
 
 from app.tailor.refiner import job_keyword_terms
+from app.tailor.render import BULLET, blocks
 from app.tailor.resume import all_text, term_in_text
 
 Coverage = Literal["covered", "missing (have it)", "missing (gap)"]
@@ -43,6 +44,7 @@ def ats_report(
         "phone_as_text": (not phone) or phone in extracted or bool(_PHONE.search(extracted)),
         "ascii_dates": _FANCY_DASH.search(extracted) is None,
         "no_cid_garbage": "(cid:" not in extracted and "�" not in extracted,
+        "no_stray_text": not stray_lines(extracted, resume),
     }
     coverage = coverage_for(keywords, extracted=" ".join(extracted.split()), master_text=all_text(master))
     covered = sum(row["status"] == "covered" for row in coverage)
@@ -54,6 +56,13 @@ def ats_report(
         "warnings": warnings,
         "passed": all(checks.values()),
     }
+
+
+def stray_lines(extracted: str, resume: dict[str, Any]) -> list[str]:
+    """Extracted lines that are not a run of whole words from the CV, such as a renderer's marker names."""
+    source = f" {' '.join(' '.join(text for _, text in blocks(resume)).split())} "
+    lines = (" ".join(line.removeprefix(BULLET).split()) for line in extracted.splitlines())
+    return [line for line in lines if line and f" {line} " not in source]
 
 
 def coverage_for(keywords: dict[str, Any], *, extracted: str, master_text: str) -> list[dict[str, str]]:
