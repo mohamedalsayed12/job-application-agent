@@ -32,7 +32,7 @@ from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.batches import Ask, Spend, ask_in_batches
-from app.matching.match import showable
+from app.matching.match import level_fit, showable
 from app.matching.verdicts import REPORT_PROMPT_VERSION as PROMPT_VERSION
 from app.matching.verdicts import current_verdicts, digest, job_text, load_profiles
 from app.models import ApplicantPreference, JobReport, SpendKind
@@ -341,10 +341,13 @@ def _todo(session: Session, now: datetime, readers: dict[uuid.UUID, Reader]) -> 
         for job_id, verdict in current_verdicts(session, profiles[applicant_id], digests).items():
             if not verdict.fits or job_id not in facts_by_job:
                 continue
+            facts = facts_by_job[job_id]
+            profile = profiles[applicant_id]
+            if not level_fit(facts.title, facts.description, profile.levels, ai_level=verdict.level)[0]:
+                continue
             wanted = input_hash(reader, texts[job_id])
             if done.get((applicant_id, job_id)) == wanted:
                 continue
-            facts = facts_by_job[job_id]
             work.append((-(verdict.score or Decimal(0)), -facts.first_seen_at.timestamp(), _Work(reader, facts, texts[job_id], wanted)))
     work.sort(key=lambda item: (item[0], item[1]))
     return [item[2] for item in work]
