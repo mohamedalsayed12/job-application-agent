@@ -205,7 +205,7 @@ def base_cv(session: Session, applicant_id: uuid.UUID) -> CvFile | None:
 def request_tailored_cv(
     session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID, *, now: datetime | None = None
 ) -> TailoredCv:
-    """Ask the worker for a package on any job; a failed one is queued again."""
+    """Ask the worker for a package on any job; a failed one is queued again, unless its advert was flagged."""
     now = now or datetime.now(UTC)
     row = session.scalars(
         select(TailoredCv).where(TailoredCv.applicant_id == applicant_id, TailoredCv.job_id == job_id)
@@ -219,7 +219,9 @@ def request_tailored_cv(
             prompt_version=PROMPT_VERSION,
         )
         session.add(row)
-    elif row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft):
+    elif (row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft)) and not (
+        isinstance(row.draft, dict) and row.draft.get("reason") == "posting_flagged"
+    ):
         row.status = TailoredCvStatus.pending.value
         row.input_hash = REQUESTED
     row.requested_at = now
@@ -270,9 +272,12 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     work: list[_Work] = []
     for applicant_id, job_id in pairs:
         job = jobs.get(job_id)
-        if job is None or not job.description:
+        if job is None:
             continue
         current = rows.get((applicant_id, job_id))
+        if not job.description:
+            _skip(session, applicant_id, job_id, current, reason="no_description", now=now)
+            continue
         cv_file = pick_base_cv(cvs.get(applicant_id, []), title=job.title, advert=job.description)
         if cv_file is None:
             _skip(session, applicant_id, job_id, current, reason="no_cv", now=now)

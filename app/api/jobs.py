@@ -21,6 +21,7 @@ from app.applications.ui import apply_step
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
+from app.interview.job_pack import _matched_role
 from app.models import (
     Applicant,
     ApplicantJobMatch,
@@ -31,6 +32,7 @@ from app.models import (
     TailoredCvStatus,
     auto_tailored,
 )
+from app.interview.job_pack import _matched_role
 from app.summaries.generate import Shown, summary_for_view
 from app.tailor.render import render_letter_docx, render_letter_pdf
 from app.tailor.run import request_tailored_cv, tailor_allowed, tailors_outside_locations
@@ -49,7 +51,7 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         await gateway.aclose()
 
 
-def _body(job: Job, shown: Shown, tailored: str, step: str) -> str:
+def _body(job: Job, shown: Shown, tailored: str, step: str, notice: str | None, *, interview: bool) -> str:
     if shown.summary:
         about = (
             f"<p>{html.escape(shown.summary)}</p>"
@@ -59,16 +61,18 @@ def _body(job: Job, shown: Shown, tailored: str, step: str) -> str:
     else:
         about = f'<div style="white-space: pre-line">{html.escape(job.description or "No description was given.")}</div>'
     last_seen = job.last_seen_at.strftime("%d %b %Y %H:%M UTC") if job.last_seen_at else "not recorded"
+    practice = f'<p><a href="/jobs/{job.id}/interview">Interview practice for this job</a></p>' if interview else ""
+    refusal = f'<p class="error">{html.escape(notice)}</p>' if notice else ""
     return f"""
 <p><a href="/listings">← Back to your matches</a></p>
 <div class="card">
-<h1>{html.escape(job.title)}</h1>
+{refusal}<h1>{html.escape(job.title)}</h1>
 <p>{html.escape(job.company_name)}. {html.escape(place_names(job))}.</p>
 {about}
 <p>Last confirmed open: {html.escape(last_seen)}.</p>
 {tailored}
 {step}
-<p><a href="/jobs/{job.id}/interview">Interview practice for this job</a></p>
+{practice}
 </div>
 """
 
@@ -117,7 +121,14 @@ async def job_page(
         allowed=tailor_allowed(settings, applicant.id),
     ) + cover_letter_text(row)
     step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf)
-    return page(job.title, _body(job, shown, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
+    return page(job.title, _body(
+            job,
+            shown,
+            tailored,
+            step,
+            request.query_params.get("notice"),
+            interview=_matched_role(db, applicant.id, job) is not None,
+        ), header=applicant_bar(request, "matches"), narrow=True)
 
 
 @router.post("/{job_id}/tailor", dependencies=[Depends(require_csrf)])

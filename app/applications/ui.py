@@ -15,6 +15,22 @@ def applied_button(csrf: str, job_id: uuid.UUID) -> str:
     )
 
 
+def prepare_button(csrf: str, job_id: uuid.UUID, label: str, *, primary: bool = True) -> str:
+    cls = ' class="primary"' if primary else ""
+    return (
+        f'<form method="post" action="/applications" class="inline">{csrf}'
+        f'<input type="hidden" name="job_id" value="{html.escape(str(job_id))}"/>'
+        f'<button type="submit"{cls}>{html.escape(label)}</button></form> '
+    )
+
+
+def abandon_button(csrf: str, job_id: uuid.UUID) -> str:
+    return (
+        f'<form method="post" action="/jobs/{html.escape(str(job_id))}/abandoned" class="inline">'
+        f'{csrf}<button type="submit">I&#39;m not applying</button></form>'
+    )
+
+
 def _usable(url: str | None) -> bool:
     """Only web links: an apply URL comes from outside data."""
     return bool(url) and url.lower().startswith(("https://", "http://"))
@@ -33,18 +49,32 @@ def apply_step(job: Job, application: Application | None, csrf: str) -> str:
     )
     if application is None:
         prepare = (
-            f'<form method="post" action="/applications" class="inline">{csrf}'
-            f'<input type="hidden" name="job_id" value="{html.escape(str(job.id))}"/>'
-            '<button type="submit" class="primary">Prepare apply</button></form> '
+            prepare_button(csrf, job.id, "Prepare apply")
             if _usable(job.apply_url)
             else "<span>No usable apply link was given.</span> "
         )
         return f"<p>{prepare}{posting}{applied_button(csrf, job.id)}</p>"
     detail = f'<a href="/applications/{html.escape(str(application.id))}">Your application</a>'
-    if application.status == ApplicationStatus.filled_awaiting_review.value:
+    status = application.status
+    retry = ""
+    if status == ApplicationStatus.filled_awaiting_review.value:
         note = "The form is filled in your browser. Check the answers, press Submit on the employer's page yourself, then tell us here."
-    elif application.status == ApplicationStatus.needs_input.value and application.missing_fields:
-        note = "Answer these before the form can be filled: " + "; ".join(application.missing_fields)
+    elif status == ApplicationStatus.needs_input.value:
+        note = (
+            "Answer these before the form can be filled: "
+            + "; ".join(application.missing_fields or ["more answers"])
+            + ". Add them on your apply answers page, then check again."
+        )
+        retry = prepare_button(csrf, job.id, "Check again")
+    elif status == ApplicationStatus.failed.value:
+        note = f"Preparing this application failed: {application.error or 'the form could not be read'}."
+        retry = prepare_button(csrf, job.id, "Try again")
+    elif status == ApplicationStatus.abandoned.value:
+        note = "You marked this as not applying."
+        retry = prepare_button(csrf, job.id, "Prepare apply")
+    elif status == ApplicationStatus.ready_to_fill.value:
+        note = "This application is ready to fill."
     else:
-        note = "This application is in progress."
-    return f"<p>{html.escape(note)} {detail}</p><p>{posting}{applied_button(csrf, job.id)}</p>"
+        note = "This application is being prepared."
+    abandon = "" if status == ApplicationStatus.abandoned.value else abandon_button(csrf, job.id)
+    return f"<p>{html.escape(note)} {detail}</p><p>{retry}{posting}{applied_button(csrf, job.id)} {abandon}</p>"

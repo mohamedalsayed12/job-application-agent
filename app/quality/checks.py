@@ -15,6 +15,7 @@ from app.models import JobFreshness
 
 FLAG_OLDER_THAN = timedelta(days=60)
 REPOST_WINDOW = timedelta(days=30)
+RECENT_WITHIN = timedelta(hours=48)
 # Search snippets run to about 300 characters. The shortest real advert stored so far has 605.
 MIN_FULL_DESCRIPTION = 300
 
@@ -51,6 +52,7 @@ _RANK = {Confidence.low: 0, Confidence.medium: 1, Confidence.high: 2}
 class NotRecent(StrEnum):
     closed = "closed"
     past_closing_date = "past_closing_date"
+    not_seen_in_48_hours = "not_seen_in_48_hours"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +101,11 @@ class JobQuality:
         return self.not_recent is None
 
     @property
+    def not_ended(self) -> bool:
+        """Not closed and before its closing date. Matching uses this, not the 48-hour report rule: a job a daily search no longer returns is still open until it closes (D54)."""
+        return self.not_recent in (None, NotRecent.not_seen_in_48_hours)
+
+    @property
     def complete(self) -> bool:
         return not self.missing
 
@@ -126,6 +133,8 @@ def check_recent(job: JobFacts, now: datetime) -> NotRecent | None:
         return NotRecent.closed
     if job.closes_at is not None and job.closes_at <= now:
         return NotRecent.past_closing_date
+    if job.last_seen_at < now - RECENT_WITHIN:
+        return NotRecent.not_seen_in_48_hours
     return None
 
 

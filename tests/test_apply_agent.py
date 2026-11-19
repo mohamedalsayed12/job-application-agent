@@ -41,6 +41,7 @@ from app.models import (
     CvFileType,
     ExtensionDevice,
     Job,
+    JobFreshness,
     TailoredCv,
     TailoredCvStatus,
 )
@@ -81,6 +82,17 @@ async def _register(client: httpx.AsyncClient) -> None:
 
 def _applicant(session: Session) -> Applicant:
     return session.scalar(select(Applicant).where(Applicant.email == EMAIL))
+
+
+def _job_titled(session: Session, title: str) -> Job:
+    _store(
+        session,
+        [
+            _li(9001, title="Platform Engineer", **{"applyUrl": "https://boards.greenhouse.io/acme/jobs/12345"}),
+            _li(9002, title=title, **{"applyUrl": "https://boards.greenhouse.io/acme/jobs/67890"}),
+        ],
+    )
+    return session.scalar(select(Job).where(Job.title == title))
 
 
 def _job(session: Session) -> Job:
@@ -437,9 +449,109 @@ async def test_a_job_applied_for_elsewhere_can_be_marked_applied(
 
     again = await client.post("/applications", data={"job_id": str(job.id)})
     assert again.status_code == 303
-    assert "apply_error" in again.headers["location"]
+    assert again.headers["location"].startswith(f"/jobs/{job.id}?notice=")
+    assert "already%20applied" in again.headers["location"]
     session.refresh(row)
     assert row.status == ApplicationStatus.submitted.value
+
+
+async def test_a_refused_prepare_shows_its_message_on_the_job_page(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    job = _job(session)
+    job.apply_url = "mailto:hr@example.com"
+    session.flush()
+
+    refused = await client.post("/applications", data={"job_id": str(job.id)})
+    page = await client.get(refused.headers["location"])
+
+    assert page.status_code == 200
+    assert "no usable apply link" in page.text
+
+
+async def test_a_closed_job_cannot_be_prepared_but_an_existing_application_can_be_marked_applied(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    applicant = _applicant(session)
+    other = _job_titled(session, "Closed Analyst")
+    job = session.scalar(select(Job).where(Job.title == "Platform Engineer"))
+    row = _ready_application(session, applicant, job)
+    job.freshness = JobFreshness.closed
+    other.freshness = JobFreshness.closed
+    session.commit()
+    refused = await client.post("/applications", data={"job_id": str(other.id)})
+    assert refused.headers["location"].startswith("/applications?notice=")
+    assert "closed" in (await client.get(refused.headers["location"])).text
+    assert (await client.post(f"/jobs/{other.id}/applied")).status_code == 404
+
+    assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
+    session.refresh(row)
+    assert row.status == ApplicationStatus.submitted.value
+
+
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [
+        (ApplicationStatus.needs_input, "Check again"),
+        (ApplicationStatus.failed, "Try again"),
+        (ApplicationStatus.abandoned, "Prepare apply"),
+    ],
+)
+async def test_a_stuck_application_can_be_prepared_again(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch, status: ApplicationStatus, label: str
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    job = _job(session)
+    row = _ready_application(session, _applicant(session), job)
+    row.status = status.value
+    row.error = "Could not read the application form."
+    session.flush()
+
+    job_page = (await client.get(f"/jobs/{job.id}")).text
+    card = (await client.get(f"/applications/{row.id}")).text
+    assert label in job_page
+    assert label in card
+    assert "in progress" not in job_page
+    if status is ApplicationStatus.failed:
+        assert "Could not read the application form" in job_page
+
+
+async def test_the_person_can_say_they_are_not_applying(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    job = _job(session)
+    row = _ready_application(session, _applicant(session), job)
+    assert "not applying" in (await client.get(f"/jobs/{job.id}")).text
+    assert "not applying" in (await client.get(f"/applications/{row.id}")).text
+
+    assert (await client.post(f"/jobs/{job.id}/abandoned")).status_code == 303
+    session.refresh(row)
+    assert row.status == ApplicationStatus.abandoned.value
+    assert "You marked this as not applying" in (await client.get(f"/jobs/{job.id}")).text
+
+    row.status = ApplicationStatus.submitted.value
+    session.flush()
+    assert (await client.post(f"/jobs/{job.id}/abandoned")).status_code == 404
+    session.refresh(row)
+    assert row.status == ApplicationStatus.submitted.value
+
+
+async def test_abandon_needs_a_csrf_token(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    job = _job(session)
+    _ready_application(session, _applicant(session), job)
+    app.dependency_overrides.pop(require_csrf)
+    try:
+        assert (await client.post(f"/jobs/{job.id}/abandoned")).status_code == 403
+    finally:
+        app.dependency_overrides[require_csrf] = lambda: None
 
 
 async def test_the_extension_cannot_mark_an_application_submitted(client: httpx.AsyncClient, session: Session) -> None:

@@ -63,14 +63,15 @@ def _posting(job_id: int, *, title: str = "Backend Developer", city: str = "Manc
 @pytest.mark.parametrize(
     ("changes", "expected"),
     [
-        ({"last_seen_at": NOW - timedelta(days=10)}, None),
+        ({"last_seen_at": NOW - timedelta(hours=47)}, None),
+        ({"last_seen_at": NOW - timedelta(hours=49)}, NotRecent.not_seen_in_48_hours),
         ({"closes_at": NOW + timedelta(days=1)}, None),
         ({"closes_at": NOW - timedelta(minutes=1)}, NotRecent.past_closing_date),
         ({"freshness": JobFreshness.closed}, NotRecent.closed),
         ({"freshness": JobFreshness.unknown}, None),
     ],
 )
-def test_recent_means_still_open_and_before_closing(changes: dict, expected: NotRecent | None) -> None:
+def test_recent_means_seen_in_the_last_48_hours_and_before_closing(changes: dict, expected: NotRecent | None) -> None:
     assert check_recent(_facts(**changes), NOW) == expected
 
 
@@ -217,7 +218,7 @@ def test_a_closed_job_is_not_shown_or_counted_as_a_duplicate(session: Session) -
 def test_results_are_stored_on_each_job_and_can_be_run_again(session: Session) -> None:
     _store(session, [_posting(1, city="Leeds, UK; York, UK"), _posting(2, city="York, UK")])
     assert store_results(session, now=DAY_1) == 2
-    assert store_results(session, now=DAY_1 + timedelta(days=3)) == 2
+    assert store_results(session, now=DAY_1 + timedelta(hours=30)) == 2
     first, second = _job(session, 1), _job(session, 2)
     assert first.quality_results["real"] == "medium"
     assert first.quality_results["complete"] is True

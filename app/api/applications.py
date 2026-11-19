@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import uuid
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -22,13 +23,15 @@ from app.applicants.apply_answers import (
 from app.applications.extension_device import issue_token
 from app.applications.prepare import (
     PrepareRefused,
+    application_for_job,
     get_application,
     list_applications,
+    mark_abandoned,
     mark_submitted,
     prepare_application,
     store_fill_outcome,
 )
-from app.applications.ui import applied_button
+from app.applications.ui import abandon_button, applied_button, prepare_button
 from app.core.db import get_db
 from app.models import Applicant, Application, ApplicationStatus, Job, JobFreshness
 
@@ -42,6 +45,13 @@ _STATUS_LABEL = {
     ApplicationStatus.needs_input.value: "Needs your answers",
     ApplicationStatus.failed.value: "Failed",
     ApplicationStatus.abandoned.value: "Abandoned",
+}
+
+
+_RETRY_LABEL = {
+    ApplicationStatus.needs_input.value: "Check again",
+    ApplicationStatus.failed.value: "Try again",
+    ApplicationStatus.abandoned.value: "Prepare apply",
 }
 
 
@@ -78,8 +88,14 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
         )
     if app_row.status == ApplicationStatus.filled_awaiting_review.value:
         actions.append('<span class="tag good">Ready for your review — submit yourself</span>')
+    csrf = csrf_field(request)
+    retry_label = _RETRY_LABEL.get(app_row.status)
+    if retry_label:
+        actions.append(prepare_button(csrf, app_row.job_id, retry_label))
     if app_row.status != ApplicationStatus.submitted.value:
-        actions.append(applied_button(csrf_field(request), app_row.job_id))
+        actions.append(applied_button(csrf, app_row.job_id))
+    if app_row.status not in (ApplicationStatus.submitted.value, ApplicationStatus.abandoned.value):
+        actions.append(abandon_button(csrf, app_row.job_id))
     return f"""
 <article class="card">
   <h2>{_e(title)}</h2>
@@ -88,6 +104,11 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
   <div class="job-foot">{"".join(actions)}</div>
 </article>
 """
+
+
+def _back_to(job: Job | None) -> str:
+    """The job page exists only while the job is open; a closed job's application lives on the list."""
+    return f"/jobs/{job.id}" if job is not None and job.freshness == JobFreshness.open else "/applications"
 
 
 @router.get("/applications", response_class=HTMLResponse)
@@ -101,7 +122,8 @@ def applications_page(
     body = "".join(cards) or '<p class="muted">No applications prepared yet. Use Prepare apply on a listing.</p>'
     awaiting = sum(1 for r in rows if r.status == ApplicationStatus.filled_awaiting_review.value)
     questions = [name for r in rows if r.status == ApplicationStatus.needs_input.value for name in r.missing_fields]
-    banner = ""
+    notice = request.query_params.get("notice")
+    banner = f'<p class="error">{_e(notice)}</p>' if notice else ""
     if questions:
         banner += "<p class=\"notice\">Answer these questions, then fill again: " + ", ".join(_e(name) for name in questions) + "</p>"
     if awaiting:
@@ -135,7 +157,9 @@ def prepare(
         db.commit()
     except PrepareRefused as exc:
         db.rollback()
-        return RedirectResponse(f"/listings?apply_error={exc.message}", status_code=_SEE_OTHER)
+        job = db.get(Job, job_id)
+        where = f"/jobs/{job_id}" if job is not None and job.freshness == JobFreshness.open else "/applications"
+        return RedirectResponse(f"{where}?notice={quote(exc.message)}", status_code=_SEE_OTHER)
     return RedirectResponse(f"/applications/{row.id}", status_code=_SEE_OTHER)
 
 
@@ -202,11 +226,26 @@ def applied(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     job = db.get(Job, job_id)
-    if job is None or job.freshness != JobFreshness.open:
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if job.freshness != JobFreshness.open and application_for_job(db, applicant.id, job_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     mark_submitted(db, applicant.id, job)
     db.commit()
-    return RedirectResponse(f"/jobs/{job_id}", status_code=_SEE_OTHER)
+    return RedirectResponse(_back_to(job), status_code=_SEE_OTHER)
+
+
+@router.post("/jobs/{job_id}/abandoned", dependencies=_CSRF)
+def abandoned(
+    job_id: uuid.UUID,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    row = mark_abandoned(db, applicant.id, job_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    db.commit()
+    return RedirectResponse(_back_to(db.get(Job, job_id)), status_code=_SEE_OTHER)
 
 
 @router.post("/account/extension-token", dependencies=_CSRF)

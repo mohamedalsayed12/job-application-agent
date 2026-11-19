@@ -8,9 +8,10 @@ import uuid
 from app.models import TailoredCv, TailoredCvStatus, attempt_failed
 
 _REASONS = {
-    "posting_flagged": "The posting looked unsafe, so no CV was written.",
+    "posting_flagged": "This advert was flagged as unsafe to tailor, so no CV was written.",
     "cv_not_parsed": "The CV could not be read into sections.",
     "too_large": "The file was too large.",
+    "no_description": "This job has no description to tailor against.",
     "no_cv": "No CV is uploaded.",
     "unreadable": "The CV could not be read.",
     "crashed": "Something went wrong while building it.",
@@ -58,7 +59,9 @@ def listing_tailor(
     if row is None and not allowed:
         return ""
     block = tailored_block(job_id, row, auto=auto)
-    retry = row is not None and (
+    # A flagged advert fails the same way every time, so it gets no retry.
+    flagged = row is not None and isinstance(row.draft, dict) and row.draft.get("reason") == "posting_flagged"
+    retry = row is not None and not flagged and (
         row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft)
     )
     if allowed and retry:
