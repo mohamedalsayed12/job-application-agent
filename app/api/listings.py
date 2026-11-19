@@ -30,6 +30,8 @@ from app.core.db import get_db
 from app.matching import semantic
 from app.matching.semantic import Embedder, closeness, vectors_for
 from app.models import (
+    Application,
+    ApplicationStatus,
     Applicant,
     ApplicantJobMatch,
     ApplicantPreference,
@@ -56,6 +58,15 @@ Show = Literal["roles", "skills", "all"]
 _SKILLS_KIND = "skills"
 _AI_KIND = "ai"
 _AI_AREAS = (("cv_match", "your profile"), ("role_alignment", "your target roles"), ("comp", "pay"), ("culture", "culture"))
+_APPLICATION_LABELS = {
+    ApplicationStatus.preparing: ("Preparing", "blue"),
+    ApplicationStatus.needs_input: ("Needs your input", "bad"),
+    ApplicationStatus.ready_to_fill: ("Ready to fill", "blue"),
+    ApplicationStatus.filled_awaiting_review: ("Filled — review before submit", "blue"),
+    ApplicationStatus.submitted: ("Applied", "good"),
+    ApplicationStatus.abandoned: ("Not applying", ""),
+    ApplicationStatus.failed: ("Failed", "bad"),
+}
 
 _STYLE = """<style>
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.75rem; align-items: end; margin-bottom: 1.25rem; }
@@ -110,6 +121,7 @@ class Listing:
     source: str
     apply_url: str
     tailored: TailoredCv | None = None
+    application_status: str | None = None
 
 
 def salary_text(job: Job) -> str:
@@ -221,6 +233,14 @@ def load_listings(
             )
         )
     } if jobs else {}
+    application_statuses = dict(
+        session.execute(
+            select(Application.job_id, Application.status).where(
+                Application.applicant_id == applicant_id,
+                Application.job_id.in_([job.id for job in jobs]),
+            )
+        ).all()
+    ) if jobs else {}
     listings = [
         Listing(
             job_id=job.id,
@@ -239,6 +259,7 @@ def load_listings(
             source=sources[job.id],
             apply_url=job.apply_url,
             tailored=tailored.get(job.id),
+            application_status=application_statuses.get(job.id),
         )
         for match, job in rows
     ]
@@ -420,6 +441,7 @@ def render_listing(item: Listing, csrf: str = "") -> str:
       {_SKILLS_TAG if item.reasons.get("role", {}).get("kind") == _SKILLS_KIND else ""}
       {_AI_TAG if item.reasons.get("role", {}).get("kind") == _AI_KIND else ""}
       {_verdict_tag(item)}
+      {_application_tag(item.application_status)}
       <span class="tag good">Open · confirmed {_e(seen)}</span>
       <span class="tag">{_e(_SOURCE_LABEL.get(item.source, item.source))}</span>
     </div>
@@ -439,6 +461,13 @@ def render_listing(item: Listing, csrf: str = "") -> str:
 </div>
 </article>
 """
+
+
+def _application_tag(status: str | None) -> str:
+    if status is None:
+        return ""
+    label, style = _APPLICATION_LABELS[ApplicationStatus(status)]
+    return f'<span class="tag {style}">{_e(label)}</span>'
 
 
 def _query(**params: object) -> str:
