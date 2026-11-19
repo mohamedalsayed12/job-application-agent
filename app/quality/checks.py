@@ -101,6 +101,11 @@ class JobQuality:
         return self.not_recent is None
 
     @property
+    def not_ended(self) -> bool:
+        """Not closed and before its closing date. Matching uses this, not the 48-hour report rule: a job a daily search no longer returns is still open until it closes (D54)."""
+        return self.not_recent in (None, NotRecent.not_seen_in_48_hours)
+
+    @property
     def complete(self) -> bool:
         return not self.missing
 

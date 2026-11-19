@@ -239,7 +239,7 @@ def _jobs_section(session: Session, results: list[tuple[JobFacts, JobQuality]]) 
     )
     live = [(job, quality) for job, quality in results if job.freshness != JobFreshness.closed]
     total = _row("All jobs", results, max(success_by_source.values(), default=None))
-    expired_shown = sum(1 for job, quality in live if job.freshness == JobFreshness.open and not quality.recent)
+    expired_shown = sum(1 for job, quality in live if job.freshness == JobFreshness.open and not quality.not_ended)
     titles = {job.job_id: job for job, _ in results}
     return JobsSection(
         targets=[
