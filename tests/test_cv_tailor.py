@@ -20,6 +20,9 @@ from app.matching.match import match_all
 from app.matching.report import write_reports
 from app.models import (
     Applicant,
+    ApplicantProfile,
+    BudgetPolicy,
+    ExperienceLevel,
     Job,
     JobReport,
     SpendKind,
@@ -352,6 +355,7 @@ async def test_budget_wait_leaves_waiting_status(session: Session) -> None:
     )
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
     await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
 
     run = await write_tailored_cvs(
         session, gateway=gateway, settings=settings, persist=session.flush, now=SOON
@@ -360,6 +364,104 @@ async def test_budget_wait_leaves_waiting_status(session: Session) -> None:
     assert run.stopped_by == "budget"
     row = session.scalars(select(TailoredCv)).one()
     assert row.status == TailoredCvStatus.waiting_budget.value
+
+    session.scalars(select(BudgetPolicy)).one().money_cap = Decimal(1)
+    for _ in range(2):
+        await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert session.scalars(select(TailoredCv)).one().status == TailoredCvStatus.ready.value
+    assert ai.tailor_calls.count("parse") == 1
+
+
+class _ScoredAi(_TailorAi):
+    """Writes each job's fit report with the score set for its title."""
+
+    def __init__(self, scores: dict[str, float]) -> None:
+        super().__init__()
+        self.scores = scores
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][0]["content"]
+        title = next((title for title in self.scores if json.dumps(f"Title: {title}\n")[1:-1] in content), None)
+        if title is not None:
+            self.report = _report(score=self.scores[title], verdict="Research first")
+        return super().__call__(request)
+
+
+async def _listed_jobs(
+    session: Session, ai: _TailorAi, *titles: str, adverts: dict[str, str] | None = None, degrees: list[str] | None = None
+):
+    from tests.jobs import _store
+    from tests.test_matching import ADVERT, _applicant, _posting
+
+    _policy(session, Decimal(1))
+    adverts = adverts or {}
+    _store(session, [_posting(n, title=title, content=adverts.get(title, ADVERT)) for n, title in enumerate(titles, start=1)])
+    applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    if degrees:
+        session.add(ApplicantProfile(applicant_id=applicant, experience_level=ExperienceLevel.entry, degrees=degrees))
+    store_cv(session, applicant, _docx(CV_LINES))
+    session.flush()
+    gateway = ai.gateway()
+    settings = _settings(ai_report_unit_price=Decimal("0.0015"), ai_tailor_unit_price=Decimal("0.003"))
+    await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
+    return applicant, gateway, settings
+
+
+def _tailored_titles(session: Session) -> dict[str, str]:
+    return dict(
+        session.execute(select(Job.title, TailoredCv.status).join(TailoredCv, TailoredCv.job_id == Job.id)).all()
+    )
+
+
+async def test_a_listed_job_scoring_3_or_more_is_tailored_whatever_its_verdict(session: Session) -> None:
+    ai = _ScoredAi({"Backend Developer": 3.0})
+    applicant, gateway, settings = await _listed_jobs(session, ai, "Backend Developer")
+    listings, _ = load_listings(session, applicant, everywhere=False, page_number=1)
+    assert [item.title for item in listings] == ["Backend Developer"]
+    assert listings[0].reasons["report"]["verdict"] == "Research first"
+    assert "Tailored CV pending" in render_listing(listings[0])
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert _tailored_titles(session) == {"Backend Developer": TailoredCvStatus.ready.value}
+    listings, _ = load_listings(session, applicant, everywhere=False, page_number=1)
+    assert "Tailored CV ready" in render_listing(listings[0])
+
+
+async def test_jobs_hidden_from_listings_or_scored_under_3_are_never_tailored(session: Session) -> None:
+    from tests.test_matching import ADVERT
+
+    ai = _ScoredAi({"Data Engineer": 2.5, "Platform Developer": 4.5})
+    applicant, gateway, settings = await _listed_jobs(
+        session,
+        ai,
+        "Data Engineer",
+        "Platform Developer",
+        adverts={"Platform Developer": f"{ADVERT} You have a degree in Computer Science or STEM."},
+        degrees=["BSc Business Management"],
+    )
+    assert load_listings(session, applicant, everywhere=True, page_number=1) == ([], 0)
+
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+
+    assert run.outcomes == {}
+    assert _tailored_titles(session) == {}
+    assert ai.tailor_calls == []
+
+
+async def test_the_best_scoring_listed_job_is_tailored_first(session: Session) -> None:
+    ai = _ScoredAi({"Backend Developer": 3.2, "Python Developer": 4.6, "API Developer": 3.9})
+    await _listed_jobs(session, ai, "Backend Developer", "Python Developer", "API Developer")
+
+    gateway, settings = ai.gateway(), _settings(ai_tailor_unit_price=Decimal("0.003"), ai_tailor_per_cycle=1)
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert _tailored_titles(session) == {"Python Developer": TailoredCvStatus.ready.value}
+
+    await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    assert set(_tailored_titles(session)) == {"Python Developer", "API Developer"}
 
 
 @pytest.fixture

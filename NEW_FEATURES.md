@@ -135,10 +135,10 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 ## 6. CV tailoring pipeline
 
-**Goal.** For jobs with fit verdict **Apply** or **Consider**, automatically produce a grounded tailored CV (PDF + DOCX) plus an ATS keyword coverage report.
+**Goal.** For every job on a person's listings with an AI score of 3.0 or more (out of 5), automatically produce a grounded tailored CV (PDF + DOCX) plus an ATS keyword coverage report.
 
 **Pipeline order** (Resume-Matcher's tailorer, MVP.md D60)
-1. Gate (verdict or request + master CV + budget; hash reuse).
+1. Gate (listed with AI score 3.0+, or requested + master CV + budget; hash reuse).
 2. Parse the master CV into structured sections; keep only what the CV text shows.
 3. Extract the posting's required skills, preferred skills and keywords.
 4. Claude proposes path-based edits that quote what they replace; only quoted edits on allowed paths land.
@@ -148,12 +148,12 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 8. Render single-column ATS-friendly PDF + DOCX; ATS text-layer checks + keyword coverage.
 
 **Locked choices**
-- Trigger: automatic after Apply/Consider fit reports.
+- Trigger: automatic for every job that lands on a person's listings (in their locations) with an AI score of 3.0 or more, whatever the verdict label; the "Tailor my CV" button covers any other job. Jobs matching hides (training roles, degree rules, unsafe jobs) are never tailored automatically. When the budget or the per-cycle cap is short, requested packages go first, then best score, then newest.
 - CV only (no cover letter); no LaTeX.
 - Never invent employers, dates, metrics, or skills.
 - Master CV on profile stays the source of truth; tailored files are per-job copies.
 
-**Out of scope.** Cover letters; fetching URLs embedded in advert HTML; tailoring Skip/Research-first jobs by default; fabricating skills to “pass ATS”.
+**Out of scope.** Cover letters; fetching URLs embedded in advert HTML; tailoring jobs that are off the listings or score under 3.0 without a request; fabricating skills to “pass ATS”.
 
 ---
 

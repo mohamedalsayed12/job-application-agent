@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     ai_report_daily_token_cap: int = 3000000
     ai_report_cv_chars: int = 12000
 
-    # D55: tailored CV for Apply / Consider jobs. Blank model = provider default.
+    # D55: tailored CV for listed jobs scoring 3.0 or more. Blank model = provider default.
     ai_tailor_model: str = ""
     ai_tailor_max_output_tokens: int = 8000
     ai_tailor_cv_chars: int = 12000

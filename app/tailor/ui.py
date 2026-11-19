@@ -29,11 +29,9 @@ def tailor_section(job_id: uuid.UUID, row: TailoredCv | None, csrf: str, *, allo
     return status
 
 
-def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | None = None) -> str:
+def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, queued: bool = False) -> str:
     if row is None:
-        if verdict in ("Apply", "Consider"):
-            return '<p class="muted">Tailored CV pending.</p>'
-        return ""
+        return '<p class="muted">Tailored CV pending.</p>' if queued else ""
     if row.status == TailoredCvStatus.waiting_budget.value:
         return '<p class="muted">Tailored CV waiting on the monthly budget.</p>'
     if row.status == TailoredCvStatus.skipped.value:

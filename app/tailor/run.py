@@ -28,12 +28,12 @@ from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.matching.verdicts import job_text
+from app.matching.match import AI_SCORE_SQL, listed
+from app.matching.verdicts import ADD_LINE, job_text
 from app.models import (
     CvFile,
     CvFileType,
     Job,
-    JobReport,
     SpendKind,
     TailoredCv,
     TailoredCvStatus,
@@ -52,7 +52,6 @@ from app.tailor.render import render_docx, render_pdf
 from app.tailor.resume import all_text
 
 PROMPT_VERSION = "resume-matcher-959e458"
-TAILOR_VERDICTS = frozenset({"Apply", "Consider"})
 REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
 
@@ -100,7 +99,7 @@ async def write_tailored_cvs(
     persist: Callable[[], None],
     now: datetime | None = None,
 ) -> TailorRun:
-    """Tailor up to a cycle's worth of Apply/Consider packages; budget waits leave work pending."""
+    """Tailor up to a cycle's worth of listed or requested packages; budget waits leave work pending."""
     now = now or datetime.now(UTC)
     run = TailorRun()
     api_key = settings.anthropic_api_key.strip()
@@ -136,7 +135,8 @@ async def write_tailored_cvs(
             # Keep a previous ready package downloadable; only mark waiting when nothing is ready yet.
             if row.status != TailoredCvStatus.ready.value:
                 row.status = TailoredCvStatus.waiting_budget.value
-                row.input_hash = item.input_hash
+                if row.input_hash != REQUESTED:
+                    row.input_hash = item.input_hash
                 row.prompt_version = PROMPT_VERSION
                 row.updated_at = now
                 session.flush()
@@ -180,19 +180,21 @@ def request_tailored_cv(
 
 def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     allowed = settings.ai_applicants()
-    reports = {
-        (row.applicant_id, row.job_id): row
-        for row in session.scalars(
-            select(JobReport).where(JobReport.verdict.in_(tuple(TAILOR_VERDICTS)))
+    # Every job on someone's listings is tailored automatically; `listed` holds what they may see.
+    scores = {
+        (match.applicant_id, match.job_id): float(score)
+        for match, _, score in session.execute(
+            listed().add_columns(AI_SCORE_SQL).where(AI_SCORE_SQL >= ADD_LINE)
         )
     }
-    # A package row is itself demand: a person asked for it, or a report made one before.
     existing = {
         (row.applicant_id, row.job_id): row for row in session.scalars(select(TailoredCv))
     }
+    # A button press is demand of its own, for any job the person opened.
+    requested = {pair for pair, row in existing.items() if row.input_hash == REQUESTED}
     pairs = [
         pair
-        for pair in reports.keys() | existing.keys()
+        for pair in scores.keys() | requested
         if allowed is None or pair[0] in allowed
     ]
     if not pairs:
@@ -208,9 +210,8 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
         for row in session.scalars(select(Job).where(Job.id.in_({job_id for _, job_id in pairs})))
     }
 
-    work: list[tuple[int, float, _Work]] = []
+    work: list[tuple[tuple[int, float, float], _Work]] = []
     for applicant_id, job_id in pairs:
-        report = reports.get((applicant_id, job_id))
         current = existing.get((applicant_id, job_id))
         job = jobs.get(job_id)
         if job is None or not job.description:
@@ -248,14 +249,15 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
             TailoredCvStatus.failed.value,
         }:
             continue
-        verdict = report.verdict if report is not None else None
-        requested = current is not None and current.input_hash == REQUESTED
-        # Someone pressed the button and is waiting, so they go first.
-        prefer = 0 if requested else 1 if verdict == "Apply" else 2 if verdict == "Consider" else 3
+        # Someone pressed the button and is waiting, so they go first; then best score, then newest.
+        rank = (
+            0 if (applicant_id, job_id) in requested else 1,
+            -scores.get((applicant_id, job_id), 0.0),
+            -job.first_seen_at.timestamp(),
+        )
         work.append(
             (
-                prefer,
-                -float(report.score) if report is not None else 0.0,
+                rank,
                 _Work(
                     applicant_id=applicant_id,
                     job_id=job_id,
@@ -265,8 +267,8 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
                 ),
             )
         )
-    work.sort(key=lambda item: (item[0], item[1]))
-    return [item[2] for item in work]
+    work.sort(key=lambda item: item[0])
+    return [item[1] for item in work]
 
 
 def _ensure_skipped(

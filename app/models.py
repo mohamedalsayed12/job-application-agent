@@ -685,7 +685,7 @@ class CompanyResearch(_UuidPk, Base):
 
 
 class TailoredCv(_UuidPk, Base):
-    """D55: one tailored CV package per person and Apply/Consider job."""
+    """D55: one tailored CV package per person and listed (AI score 3.0+) or requested job."""
 
     __tablename__ = "tailored_cv"
     __table_args__ = (

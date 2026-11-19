@@ -192,6 +192,7 @@ def _listing(source: str, **job: object) -> Listing:
         last_seen_at=datetime(2026, 11, 9, tzinfo=UTC),
         source=source,
         apply_url=str(job.get("apply_url", "https://example.com/apply")),
+        location_fit=True,
     )
 
 
