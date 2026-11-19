@@ -11,7 +11,7 @@ from docx import Document
 from pypdf import PdfReader
 
 from app.tailor.refiner import job_keyword_terms
-from app.tailor.render import blocks
+from app.tailor.render import BULLET, blocks
 from app.tailor.resume import all_text, term_in_text
 
 Coverage = Literal["covered", "missing (have it)", "missing (gap)"]
@@ -66,6 +66,7 @@ def ats_report(
         "no_images": no_images,
         "one_column": one_column,
         "standard_headings": _headings_present(resume, pdf, docx),
+        "no_stray_text": not stray_lines(pdf, resume),
     }
     pdf_flat = " ".join(pdf.split())
     docx_flat = " ".join(docx.split())
@@ -79,6 +80,13 @@ def ats_report(
         "warnings": warnings,
         "passed": all(checks.values()),
     }
+
+
+def stray_lines(extracted: str, resume: dict[str, Any]) -> list[str]:
+    """Extracted lines that are not a run of whole words from the CV, such as a renderer's marker names."""
+    source = f" {' '.join(' '.join(text for _, text in blocks(resume)).split())} "
+    lines = (" ".join(line.removeprefix(BULLET).split()) for line in extracted.splitlines())
+    return [line for line in lines if line and f" {line} " not in source]
 
 
 def coverage_for(
