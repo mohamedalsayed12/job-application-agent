@@ -172,7 +172,8 @@ The rules are in `MVP.md` decision D42.
 
 ## Job summaries
 
-The first time a logged-in person opens a job at `/jobs/{id}`, the app asks Claude for a short
+Job pages at `/jobs/{id}` open only for jobs in the person's listings; any other job shows a
+"not available" page. The first time someone opens a job page, the app asks Claude for a short
 summary of the posting. Code rejects it if it contains a number, date or name the posting doesn't,
 and saves one per job for everyone. Summaries spend from the AI budget, so nothing is called until
 a monthly `money_cap` is set in `budget_policy` and `ANTHROPIC_API_KEY` is in `.env`. Until then,

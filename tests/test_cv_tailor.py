@@ -34,6 +34,7 @@ from app.tailor.refiner import remove_ai_phrases
 from app.tailor.render import render_docx, render_pdf
 from app.tailor.resume import ground_parsed
 from app.tailor.run import write_tailored_cvs
+from tests.jobs import show_to
 from tests.test_cv_read import _docx
 from tests.test_fit_report import CV_LINES, _Ai, _person_with_a_cv, _report
 from tests.test_judge import _policy, _settings
@@ -402,6 +403,7 @@ async def _person_on_a_job_without_a_report(session: Session, client: httpx.Asyn
     store_cv(session, applicant.id, _docx(CV_LINES))
     await _jobs(session, ("Data Analyst", "Leeds, UK"))
     job = session.scalar(select(Job).where(Job.title == "Data Analyst"))
+    show_to(session, applicant.id, job.id)
     assert session.scalar(select(JobReport).where(JobReport.job_id == job.id)) is None
     return applicant, job
 

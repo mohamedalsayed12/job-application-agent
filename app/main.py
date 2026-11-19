@@ -17,6 +17,7 @@ from app.api.health import router as health_router
 from app.api.interview_intel import router as interview_intel_router
 from app.api.interview_job import router as interview_job_router
 from app.api.jobs import router as jobs_router
+from app.api.listings import JobUnavailable, job_unavailable_page
 from app.api.listings import router as listings_router
 from app.api.outreach import router as outreach_router
 from app.api.privacy import router as privacy_router
@@ -48,6 +49,7 @@ app.add_middleware(
     https_only=settings.session_cookie_secure,
 )
 app.add_exception_handler(FormRefused, form_refused_page)
+app.add_exception_handler(JobUnavailable, job_unavailable_page)
 app.include_router(health_router)
 app.include_router(privacy_router)
 app.include_router(accounts_router)

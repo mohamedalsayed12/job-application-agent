@@ -44,7 +44,7 @@ from app.models import (
     TailoredCv,
     TailoredCvStatus,
 )
-from tests.jobs import _li, _public_resolve, _store
+from tests.jobs import _li, _public_resolve, _store, show_to
 
 EMAIL = "apply-agent@example.com"
 PASSWORD = "correct horse battery"
@@ -191,6 +191,7 @@ async def test_prepare_uses_greenhouse_questions(
         ),
     )
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     session.add(
         CvFile(
             applicant_id=applicant.id,
@@ -472,6 +473,7 @@ async def test_after_review_the_person_marks_the_application_submitted(
     await _register(client)
     applicant = _applicant(session)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     row = _ready_application(session, applicant, job)
     row.status = ApplicationStatus.filled_awaiting_review.value
     session.flush()
@@ -489,6 +491,7 @@ async def test_a_job_applied_for_elsewhere_can_be_marked_applied(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     await _register(client)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     assert "Prepare apply" in (await client.get(f"/jobs/{job.id}")).text
 
     assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
