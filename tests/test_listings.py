@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -15,13 +16,16 @@ from sqlalchemy.orm import Session
 
 from app.accounts import throttle
 from app.api.forms import require_csrf
-from app.api.listings import Listing, render_listing, salary_text
+from app.api.listings import _APPLICATION_LABELS, Listing, render_listing, salary_text
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
 from app.matching.semantic import embed_matches, vectors_for
 from app.models import (
+    Applicant,
     ApplicantJobMatch,
+    Application,
+    ApplicationStatus,
     Job,
     JobEmbedding,
     JobFreshness,
@@ -31,7 +35,7 @@ from app.models import (
 from app.skills.taxonomy import load_taxonomy, map_job_skills
 from tests.conftest import WordEmbedder
 from tests.jobs import _job, _store
-from tests.test_matching import _posting
+from tests.test_matching import _applicant, _posting
 
 PASSWORD = "correct horse battery"
 ADVERT = "Build payment services in Python and PostgreSQL for our platform team. " * 6
@@ -199,6 +203,61 @@ def test_an_apply_link_that_is_not_a_web_link_is_not_rendered() -> None:
     page = render_listing(_listing("linkedin", apply_url="javascript:alert(1)"))
     assert "javascript:" not in page
     assert "No usable apply link" in page
+
+
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [
+        (ApplicationStatus.needs_input, "Needs your input"),
+        (ApplicationStatus.ready_to_fill, "Ready to fill"),
+        (ApplicationStatus.filled_awaiting_review, "Filled — review before submit"),
+        (ApplicationStatus.submitted, "Applied"),
+        (ApplicationStatus.abandoned, "Not applying"),
+        (ApplicationStatus.failed, "Failed"),
+    ],
+)
+def test_listing_shows_its_application_state(status: ApplicationStatus, label: str) -> None:
+    assert f'>{label}</span>' in render_listing(replace(_listing("linkedin"), application_status=status.value))
+
+
+def test_every_application_status_has_a_label() -> None:
+    assert set(_APPLICATION_LABELS) == set(ApplicationStatus)
+
+
+async def test_listings_show_only_this_persons_application_labels(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    owner = session.scalar(select(Applicant).where(Applicant.email == "l@example.com"))
+    other = _applicant(session, roles=["Junior Backend Developer"], locations=["Manchester"])
+    first, second = _job(session, 1), _job(session, 2)
+    session.add_all(
+        [
+            Application(
+                applicant_id=owner.id, job_id=first.id, apply_url=first.apply_url,
+                status=ApplicationStatus.submitted.value,
+            ),
+            Application(
+                applicant_id=other, job_id=second.id, apply_url=second.apply_url,
+                status=ApplicationStatus.needs_input.value,
+            ),
+        ]
+    )
+    session.commit()
+
+    page = (await client.get("/listings")).text
+    assert page.count('>Applied</span>') == 1
+    assert 'Needs your input</span>' not in page
+
+    session.add(
+        Application(
+            applicant_id=owner.id, job_id=second.id, apply_url=second.apply_url,
+            status=ApplicationStatus.failed.value,
+        )
+    )
+    session.commit()
+    page = (await client.get("/listings")).text
+    assert page.count('>Applied</span>') == 1
+    assert page.count('>Failed</span>') == 1
 
 
 @pytest.mark.parametrize(
