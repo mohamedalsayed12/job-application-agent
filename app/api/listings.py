@@ -43,12 +43,15 @@ from app.models import (
     JobLink,
     JobPosting,
     JobSummary,
+    JobVerification,
+    ListingVerdict,
     SummaryStatus,
     TailoredCv,
     auto_tailored,
 )
 from app.tailor.run import tailor_allowed, tailors_outside_locations
 from app.tailor.ui import listing_tailor
+from app.verify.scam_text import scam_reasons
 from app.outreach.ui import JobOutreach, load_outreach, outreach_block
 
 router = APIRouter(prefix="/listings", tags=["listings"])
@@ -198,6 +201,47 @@ def _sources(session: Session, jobs: list[Job]) -> dict[uuid.UUID, str]:
     return sources
 
 
+def _visible_to(applicant_id: uuid.UUID) -> tuple:
+    """What listings show a person: open jobs matched to them. A job the rules or the quality checks
+    (scam signs, low Real confidence) keep off listings has no match row."""
+    return (ApplicantJobMatch.applicant_id == applicant_id, Job.freshness == JobFreshness.open)
+
+
+class JobUnavailable(Exception):
+    """A job this person can't see in listings, so its page and actions are closed too."""
+
+
+def visible_job(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> Job:
+    """The job behind every /jobs/{id} page and action: on this person's listings and not judged fake (D55)."""
+    job = session.scalar(
+        select(Job).join(ApplicantJobMatch, ApplicantJobMatch.job_id == Job.id).where(Job.id == job_id, *_visible_to(applicant_id))
+    )
+    if job is None or _is_fake(session, job):
+        raise JobUnavailable
+    return job
+
+
+def _is_fake(session: Session, job: Job) -> bool:
+    """A verdict can land after matching, before the match row is dropped."""
+    if (job.quality_results or {}).get("real") == "low":
+        return True
+    row = session.scalar(select(JobVerification).where(JobVerification.job_id == job.id))
+    if row is not None and row.outcome == ListingVerdict.fake:
+        return True
+    return bool(scam_reasons(job.description))
+
+
+def job_unavailable_page(request: Request, _: JobUnavailable) -> HTMLResponse:
+    return page(
+        "Job not available",
+        "<h1>This job isn't available</h1><p>It has closed, or it no longer matches your profile.</p>"
+        '<p><a href="/listings">Back to your matches</a></p>',
+        status_code=404,
+        header=applicant_bar(request, "matches"),
+        narrow=True,
+    )
+
+
 def load_listings(
     session: Session,
     applicant_id: uuid.UUID,
@@ -217,7 +261,7 @@ def load_listings(
     query = (
         select(ApplicantJobMatch, Job)
         .join(Job, Job.id == ApplicantJobMatch.job_id)
-        .where(ApplicantJobMatch.applicant_id == applicant_id, Job.freshness == JobFreshness.open)
+        .where(*_visible_to(applicant_id))
     )
     if not everywhere:
         query = query.where(ApplicantJobMatch.location_fit.is_(True))
@@ -307,11 +351,7 @@ def count_skill_matches(session: Session, applicant_id: uuid.UUID, *, everywhere
         select(func.count())
         .select_from(ApplicantJobMatch)
         .join(Job, Job.id == ApplicantJobMatch.job_id)
-        .where(
-            ApplicantJobMatch.applicant_id == applicant_id,
-            Job.freshness == JobFreshness.open,
-            ApplicantJobMatch.reasons["role"]["kind"].astext == _SKILLS_KIND,
-        )
+        .where(*_visible_to(applicant_id), ApplicantJobMatch.reasons["role"]["kind"].astext == _SKILLS_KIND)
     )
     if not everywhere:
         query = query.where(ApplicantJobMatch.location_fit.is_(True))

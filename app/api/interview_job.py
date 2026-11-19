@@ -16,7 +16,8 @@ from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
 from app.api.interview_intel import _materials, _plan, _section, _themes
-from app.api.jobs import get_gateway, listed_job
+from app.api.jobs import get_gateway
+from app.api.listings import visible_job
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/jobs", tags=["interview-intel"])
 
 
 def _job(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> tuple[Job, str]:
-    job = listed_job(db, job_id)
+    job = visible_job(db, applicant_id, job_id)
     role = _matched_role(db, applicant_id, job)
     if role is None:
         raise HTTPException(status_code=404)

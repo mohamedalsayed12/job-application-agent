@@ -13,7 +13,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.api.jobs import listed_job
+from app.api.listings import visible_job
 from app.applicants.apply_answers import (
     MAX_SAVED,
     AnswersRefused,
@@ -31,7 +31,7 @@ from app.applications.prepare import (
 )
 from app.applications.ui import applied_button
 from app.core.db import get_db
-from app.models import Applicant, Application, ApplicationStatus, Job, JobFreshness
+from app.models import Applicant, Application, ApplicationStatus, Job
 
 router = APIRouter(tags=["applications"])
 _CSRF = [Depends(require_csrf)]
@@ -131,6 +131,7 @@ def prepare(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
+    visible_job(db, applicant.id, job_id)
     try:
         row = prepare_application(db, applicant_id=applicant.id, job_id=job_id)
         db.commit()
@@ -202,7 +203,7 @@ def applied(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    job = listed_job(db, job_id)
+    job = visible_job(db, applicant.id, job_id)
     mark_submitted(db, applicant.id, job)
     db.commit()
     return RedirectResponse(f"/jobs/{job_id}", status_code=_SEE_OTHER)

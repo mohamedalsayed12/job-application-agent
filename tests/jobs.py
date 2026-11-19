@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -13,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.fetch.gateway import FetchGateway
 from app.linkedin import store_items
-from app.models import Job, JobLink, JobPosting
+from app.models import ApplicantJobMatch, Job, JobLink, JobPosting, SalaryStatus
 
 DAY_1 = datetime(2026, 11, 9, 9, 0, tzinfo=UTC)
 
@@ -121,3 +123,19 @@ def _job(session: Session, source_job_id: int | str) -> Job:
         .join(JobPosting, JobPosting.id == JobLink.job_posting_id)
         .where(JobPosting.source_job_id == str(source_job_id))
     )
+
+
+def show_to(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> None:
+    """Puts the job in this person's listings, so its page and actions open for them."""
+    session.add(
+        ApplicantJobMatch(
+            applicant_id=applicant_id,
+            job_id=job_id,
+            score=Decimal("1.0"),
+            reasons={},
+            role_match=True,
+            location_fit=True,
+            salary_status=SalaryStatus.unknown,
+        )
+    )
+    session.flush()

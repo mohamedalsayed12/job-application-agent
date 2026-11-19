@@ -18,7 +18,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.api.jobs import listed_job
+from app.api.listings import visible_job
 from app.applications.prepare import has_applied
 from app.applications.ui import applied_button
 from app.core.config import Settings, get_settings
@@ -26,7 +26,6 @@ from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.models import (
     Applicant,
-    ApplicantJobMatch,
     Job,
     OutreachChannel,
     OutreachContact,
@@ -80,19 +79,6 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         yield gateway
     finally:
         await gateway.aclose()
-
-
-def _open_matched_job(db: Session, applicant: Applicant, job_id: uuid.UUID) -> Job:
-    job = listed_job(db, job_id)
-    match = db.scalar(
-        select(ApplicantJobMatch).where(
-            ApplicantJobMatch.applicant_id == applicant.id,
-            ApplicantJobMatch.job_id == job.id,
-        )
-    )
-    if match is None:
-        raise HTTPException(status_code=404)
-    return job
 
 
 def _own_contact(db: Session, applicant: Applicant, contact_id: uuid.UUID) -> OutreachContact:
@@ -164,7 +150,7 @@ def outreach_list(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contacts = list(
         db.scalars(
             select(OutreachContact)
@@ -190,7 +176,7 @@ async def outreach_find(
     gateway: FetchGateway = Depends(get_gateway),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     if not has_applied(db, applicant.id, job.id):
         return _apply_first(job)
     report = await find_contacts(
@@ -214,7 +200,7 @@ async def outreach_draft_create(
     gateway: FetchGateway = Depends(get_gateway),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     if contact.job_id != job.id:
         raise HTTPException(status_code=404)
@@ -264,7 +250,7 @@ def outreach_contact_page(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     if contact.job_id != job.id:
         raise HTTPException(status_code=404)
@@ -401,7 +387,7 @@ def outreach_save(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
@@ -428,7 +414,7 @@ async def outreach_send(
     gateway: FetchGateway = Depends(get_gateway),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
@@ -464,7 +450,7 @@ def outreach_copy(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
