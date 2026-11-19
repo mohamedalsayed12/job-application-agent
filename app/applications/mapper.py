@@ -123,6 +123,8 @@ _PATTERNS: list[tuple[str, tuple[str, ...]]] = [
 
 def match_answer_key(label: str, name: str = "") -> str | None:
     hay = re.sub(r"\s+", " ", f"{label} {name}".lower())
+    if "pronounc" in hay:
+        return None  # no saved answer says how to pronounce a name
     for key, needles in _PATTERNS:
         if any(re.search(needle, hay) for needle in needles):
             return key

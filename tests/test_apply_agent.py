@@ -102,6 +102,7 @@ def test_mapper_recognises_common_labels() -> None:
     assert match_answer_key("Have you had free school meals?") == "free_school_meals"
     assert match_answer_key("Upload your resume / CV") == "cv"
     assert match_answer_key("Right to work in the UK") == "right_to_work_uk"
+    assert match_answer_key("How is your name pronounced?") is None
 
 
 def test_mapper_does_not_false_match_common_traps() -> None:
