@@ -120,7 +120,7 @@ async def test_d44_the_listings_point_to_jobs_the_skills_fit(client: httpx.Async
     roles = (await client.get("/listings")).text
     assert _titles(roles) == ["Junior Backend Developer"]
     assert "1 more job fits your skills</b>" in roles
-    assert 'href="/listings?show=skills"' in roles
+    assert 'href="/listings?sort=newest&amp;show=skills"' in roles
     by_score = (await client.get("/listings", params={"sort": "score"})).text
     assert 'href="/listings?sort=score&amp;show=skills"' in by_score
 
