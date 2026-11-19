@@ -518,3 +518,75 @@ async def test_the_extension_cannot_mark_an_application_submitted(client: httpx.
     assert response.status_code == 400
     session.refresh(row)
     assert row.status == ApplicationStatus.ready_to_fill.value
+
+
+@pytest.mark.parametrize("current", ["submitted", "preparing", "needs_input", "failed", "abandoned"])
+@pytest.mark.parametrize("reported", ["filled_awaiting_review", "needs_input", "failed", "abandoned"])
+async def test_the_extension_reports_only_on_applications_it_can_fill(
+    client: httpx.AsyncClient, session: Session, current: str, reported: str
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    row = _ready_application(session, applicant, _job(session))
+    row.status = current
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.post(
+        f"/extension/applications/{row.id}/status",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"status": reported, "error": "Fill failed"},
+    )
+    assert response.status_code == 409
+    session.refresh(row)
+    assert row.status == current
+
+
+@pytest.mark.parametrize("current", ["ready_to_fill", "filled_awaiting_review"])
+async def test_the_extension_reports_a_failed_fill(client: httpx.AsyncClient, session: Session, current: str) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    row = _ready_application(session, applicant, _job(session))
+    row.status = current
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.post(
+        f"/extension/applications/{row.id}/status",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"status": "failed", "error": "Could not download CV"},
+    )
+    assert response.status_code == 200
+    session.refresh(row)
+    assert (row.status, row.error) == ("failed", "Could not download CV")
+
+
+async def test_the_extension_cv_for_an_unknown_application_is_not_found(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    _master_cv(session, applicant)
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.get(f"/extension/cv?application_id={uuid.uuid4()}", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 404
+    assert response.content != PDF
+
+
+async def test_the_extension_cv_for_another_persons_application_is_not_found(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    _master_cv(session, applicant)
+    token = issue_token(session, applicant.id)
+    other = Applicant(email="someone-else@example.com")
+    session.add(other)
+    session.flush()
+    theirs = _ready_application(session, other, _job(session))
+
+    response = await client.get(f"/extension/cv?application_id={theirs.id}", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 404
+    assert response.content != PDF
