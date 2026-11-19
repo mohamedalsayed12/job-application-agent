@@ -21,11 +21,17 @@ from app.core.db import get_db
 from app.main import app
 from app.matching.semantic import embed_matches, vectors_for
 from app.models import (
+    Applicant,
     ApplicantJobMatch,
+    Application,
+    ApplicationStatus,
     Job,
     JobEmbedding,
     JobFreshness,
     JobSummary,
+    OutreachChannel,
+    OutreachContact,
+    OutreachDraft,
     SummaryStatus,
 )
 from app.skills.taxonomy import load_taxonomy, map_job_skills
@@ -288,3 +294,93 @@ async def test_the_listings_show_the_newest_jobs_first_by_default(client: httpx.
     newest = (await client.get("/listings", params={"sort": "newest"})).text
     assert _titles(page) == _titles(newest)
 
+
+def _mark_applied(session: Session, job_id) -> Applicant:
+    applicant = session.scalars(select(Applicant)).one()
+    session.add(
+        Application(
+            applicant_id=applicant.id,
+            job_id=job_id,
+            apply_url="https://acme.example/apply",
+            status=ApplicationStatus.submitted.value,
+            missing_fields=[],
+        )
+    )
+    session.commit()
+    return applicant
+
+
+async def test_each_listing_offers_outreach_only_after_the_person_has_applied(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    before = (await client.get("/listings")).text
+    assert before.count("mark this job as applied to reach out") == 2
+
+    job = _job(session, 1)
+    _mark_applied(session, job.id)
+    after = (await client.get("/listings")).text
+    assert after.count("mark this job as applied to reach out") == 1
+    assert f'action="/jobs/{job.id}/outreach/find"' in after
+
+
+async def test_a_listing_shows_the_drafted_messages_for_each_contact(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    job = _job(session, 1)
+    applicant = _mark_applied(session, job.id)
+    contact = OutreachContact(
+        applicant_id=applicant.id,
+        job_id=job.id,
+        full_name="Sam Lead",
+        title="Engineering Manager",
+        role_kind="hiring_manager",
+        source_actor="test",
+    )
+    quiet = OutreachContact(
+        applicant_id=applicant.id, job_id=job.id, full_name="Pat Quiet", role_kind="unknown", source_actor="test"
+    )
+    session.add_all([contact, quiet])
+    session.flush()
+    for channel, subject, body in (
+        (OutreachChannel.gmail.value, "Backend role", "Hello Sam, I applied."),
+        (OutreachChannel.linkedin_note.value, None, "Hi Sam, short note."),
+    ):
+        session.add(
+            OutreachDraft(
+                applicant_id=applicant.id,
+                job_id=job.id,
+                contact_id=contact.id,
+                channel=channel,
+                subject=subject,
+                body=body,
+                evidence_digest=channel,
+                status="draft",
+            )
+        )
+    session.commit()
+
+    page = (await client.get("/listings")).text
+    assert "Sam Lead" in page and "Engineering Manager" in page
+    assert "Hello Sam, I applied." in page and "Hi Sam, short note." in page
+    assert f'action="/jobs/{job.id}/outreach/{contact.id}/copy"' in page
+    assert "Pat Quiet" in page and f'action="/jobs/{job.id}/outreach/{quiet.id}/draft"' in page
+
+
+
+async def test_the_job_page_shows_outreach_too(client: httpx.AsyncClient, session: Session) -> None:
+    from app.api.jobs import get_gateway
+
+    async def _gateway():
+        yield None
+
+    app.dependency_overrides[get_gateway] = _gateway
+    await _jobs(session)
+    await _register_with_profile(client)
+    job = _job(session, 1)
+    assert "mark this job as applied to reach out" in (await client.get(f"/jobs/{job.id}")).text
+
+    _mark_applied(session, job.id)
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert f'action="/jobs/{job.id}/outreach/find"' in page

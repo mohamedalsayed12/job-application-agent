@@ -46,6 +46,7 @@ from app.models import (
 )
 from app.tailor.run import tailor_allowed, tailors_outside_locations
 from app.tailor.ui import listing_tailor
+from app.outreach.ui import JobOutreach, load_outreach, outreach_block
 
 router = APIRouter(prefix="/listings", tags=["listings"])
 
@@ -115,6 +116,7 @@ class Listing:
     tailored: TailoredCv | None = None
     # Tailored with no click: an Apply or Consider verdict in the person's tailoring scope.
     auto_tailor: bool = False
+    outreach: JobOutreach = JobOutreach()
 
 
 def salary_text(job: Job) -> str:
@@ -227,6 +229,7 @@ def load_listings(
         )
     } if jobs else {}
     outside = tailors_outside_locations(session, applicant_id)
+    outreach = load_outreach(session, applicant_id, [job.id for job in jobs])
     listings = [
         Listing(
             job_id=job.id,
@@ -250,6 +253,7 @@ def load_listings(
                 location_fit=match.location_fit,
                 outside_locations=outside,
             ),
+            outreach=outreach[job.id],
         )
         for match, job in rows
     ]
@@ -444,6 +448,7 @@ def render_listing(item: Listing, csrf: str = "", *, tailor_ok: bool = True) -> 
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 {_fit_report(item)}
 {listing_tailor(item.job_id, item.tailored, csrf, auto=item.auto_tailor, allowed=tailor_ok)}
+{outreach_block(item.job_id, item.outreach, csrf)}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url, item.job_id, csrf)}
