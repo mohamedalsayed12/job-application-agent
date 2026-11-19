@@ -38,6 +38,7 @@ from app.outreach.patterns import intent_for, load_patterns
 PROMPT_VERSION = "outreach-draft-v1"
 LINKEDIN_MAX = 300
 GMAIL_WORD_SOFT = 120
+MAX_PATTERN_IDS = 6
 
 SYSTEM = """You write a short, human outreach message for a job seeker.
 Use only PROFILE_DATA, CV_DATA, JOB_POSTING_DATA, CONTACT_DATA and PATTERN_DATA.
@@ -57,7 +58,7 @@ SCHEMA = {
     "properties": {
         "subject": {"type": "string"},
         "body": {"type": "string"},
-        "pattern_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+        "pattern_ids": {"type": "array", "items": {"type": "string"}},
     },
 }
 
@@ -145,7 +146,8 @@ async def draft_for_contact(
 
     subject = str(call.payload.get("subject") or "").strip() or None
     body = str(call.payload.get("body") or "").strip()
-    pattern_ids = [str(p) for p in call.payload.get("pattern_ids") or [] if str(p) in {x.id for x in patterns}]
+    known = {x.id for x in patterns}
+    pattern_ids = [str(p) for p in call.payload.get("pattern_ids") or [] if str(p) in known][:MAX_PATTERN_IDS]
     if not pattern_ids:
         pattern_ids = [p.id for p in patterns[:3]]
     if channel == OutreachChannel.linkedin_note:

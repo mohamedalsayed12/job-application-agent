@@ -596,3 +596,81 @@ async def test_a_different_chosen_cv_does_not_reuse_the_previous_draft(
         assert len(calls) == 2
     finally:
         await gateway.aclose()
+
+
+async def test_a_rejected_draft_call_shows_a_readable_notice_and_a_retry_button(session: Session, monkeypatch) -> None:
+    from urllib.parse import unquote
+
+    from app.accounts import throttle
+    from app.api.forms import require_csrf
+    from app.api.outreach import get_gateway
+    from app.core.config import get_settings
+    from app.core.db import get_db
+    from app.fetch.gateway import FetchGateway
+    from app.main import app
+    from app.models import Applicant
+
+    monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    get_settings.cache_clear()
+    throttle.reset()
+    _policy(session)
+    apify = _Apify([{"about": "Builds payment systems.", "posts": []}])
+    anthropic_calls: list[httpx.Request] = []
+
+    def _transport(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.anthropic.com":
+            anthropic_calls.append(request)
+            return httpx.Response(400, json={"type": "error", "error": {"type": "invalid_request_error"}})
+        return apify(request)
+
+    async def _gateway():
+        gateway = FetchGateway(
+            user_agent="JobApplicationAgent-Test/0.1",
+            allowlist=frozenset({"api.apify.com", "api.anthropic.com"}),
+            resolve=_public_resolve,
+            transport=httpx.MockTransport(_transport),
+        )
+        try:
+            yield gateway
+        finally:
+            await gateway.aclose()
+
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[require_csrf] = lambda: None
+    app.dependency_overrides[get_gateway] = _gateway
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as client:
+            await client.post("/register", data={"email": "drafter@example.com", "password": "correct horse battery"})
+            applicant = session.scalar(select(Applicant).where(Applicant.email == "drafter@example.com"))
+            job = _matched_job(session, applicant.id)
+            assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
+            contact = OutreachContact(
+                applicant_id=applicant.id,
+                job_id=job.id,
+                full_name="Casey Hire",
+                role_kind="hiring_manager",
+                linkedin_url="https://www.linkedin.com/in/casey",
+                evidence={},
+                source_actor="test",
+            )
+            session.add(contact)
+            session.flush()
+
+            drafted = await client.post(f"/jobs/{job.id}/outreach/{contact.id}/draft")
+            assert anthropic_calls, "the draft reached the Anthropic API"
+            assert drafted.status_code == 303
+            notice = unquote(drafted.headers["location"])
+            assert "anthropic_http" not in notice
+            assert "Press Research and draft to try again." in notice
+            listing = (await client.get(drafted.headers["location"])).text
+            assert "We couldn&#x27;t write a message just now." in listing
+
+            contact_page = (await client.get(f"/jobs/{job.id}/outreach/{contact.id}")).text
+            assert f'action="/jobs/{job.id}/outreach/{contact.id}/draft"' in contact_page
+            assert "Research and draft</button>" in contact_page
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        throttle.reset()
