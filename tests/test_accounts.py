@@ -307,3 +307,15 @@ async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: h
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register
     assert register.count('href="/privacy"') == 2
+
+
+@pytest.mark.parametrize("email", ["name@nodot", "name@.com", "name@example.", "name@a..com", "name@"])
+async def test_register_rejects_email_without_dotted_domain(client: httpx.AsyncClient, email: str) -> None:
+    response = await _register(client, email=email)
+    assert response.status_code == 400
+    assert "Enter a valid email address." in response.text
+
+
+async def test_register_accepts_dotted_domain_case_and_whitespace(client: httpx.AsyncClient) -> None:
+    response = await _register(client, email="  Name@Mail.Example.COM ")
+    assert response.status_code == 303
