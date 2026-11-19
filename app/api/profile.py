@@ -105,7 +105,7 @@ _DRAFT_SCALARS = (
     "skills",
     "degrees",
 )
-_DRAFT_LISTS = ("experience_levels", "cert_name", "cert_issuer", "cert_kind", "cert_expiry")
+_DRAFT_LISTS = ("experience_levels", "cert_name", "cert_issuer", "cert_kind", "cert_expiry", "cv_roles", "cv_offer")
 # Browsers drop Set-Cookie over 4096 bytes; measure like Starlette's SessionMiddleware.
 _MAX_SET_COOKIE_BYTES = 4096
 _SET_COOKIE_FLAGS = "; path=/; Max-Age=1209600; httponly; samesite=lax; Secure"
@@ -130,6 +130,7 @@ class ProfileFields:
         cert_expiry: list[str] = Form(default=[]),
         degrees: str = Form(""),
         cv_roles: list[str] = Form(default=[]),
+        cv_offer: list[str] = Form(default=[]),
         tailor_scope: str = Form(_MY_LOCATIONS),
         cv_id: list[str] = Form(default=[]),
         cv_label: list[str] = Form(default=[]),
@@ -146,6 +147,8 @@ class ProfileFields:
         self.degrees = degrees
         # Job titles the CV suggested and the person ticked, added to their target roles on save.
         self.cv_roles = cv_roles
+        # Every title the CV offered, ticked or not, so an unticked one survives a reload.
+        self.cv_offer = cv_offer
         self.tailor_scope = tailor_scope
         self.certifications = [
             tuple(row) for row in zip_longest(cert_name, cert_issuer, cert_kind, cert_expiry, fillvalue="")
@@ -162,6 +165,8 @@ class ProfileFields:
             "cert_issuer": [row[1] for row in self.certifications],
             "cert_kind": [row[2] for row in self.certifications],
             "cert_expiry": [row[3] for row in self.certifications],
+            "cv_roles": list(self.cv_roles),
+            "cv_offer": list(self.cv_offer),
         }
 
     @classmethod
@@ -202,6 +207,7 @@ def _saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
         cert_expiry=[str(item.expires_on or "") for item in certifications],
         degrees="\n".join(profile.degrees) if profile else "",
         cv_roles=[],
+        cv_offer=[],
         tailor_scope=_EVERYWHERE if profile and profile.tailor_outside_locations else _MY_LOCATIONS,
     )
 
@@ -384,7 +390,6 @@ def _profile_page(
     error: str | None = None,
     cv_error: str | None = None,
     notice: str | None = None,
-    cv_offer: list[str] | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
     message = f'<p class="error">{html.escape(error)}</p>' if error else ""
@@ -392,7 +397,8 @@ def _profile_page(
     offer = "".join(
         f'<label class="check"><input type="checkbox" name="cv_roles" value="{html.escape(role)}"'
         f'{" checked" if role in fields.cv_roles else ""}/> {html.escape(role)}</label>'
-        for role in (fields.cv_roles if cv_offer is None else cv_offer)
+        f'<input type="hidden" name="cv_offer" value="{html.escape(role)}"/>'
+        for role in dict.fromkeys([*fields.cv_offer, *fields.cv_roles])
     )
     offer = f'<fieldset class="checks"><legend>From your CV <span class="hint">tick any to add</span></legend>{offer}</fieldset>' if offer else ""
     related = [title for title in with_related(db, typed) if title.casefold() not in {role.casefold() for role in typed}]
@@ -616,8 +622,8 @@ def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFi
     """
     filled = []
     locations, levels = fields.locations, fields.experience_levels
-    typed = {role.casefold() for role in _lines(fields.target_roles)}
-    offer = [role for role in found.target_roles if role.casefold() not in typed]
+    seen = {role.casefold() for role in [*_lines(fields.target_roles), *fields.cv_offer]}
+    offer = [role for role in found.target_roles if role.casefold() not in seen]
     if not locations.strip() and found.locations:
         locations = "\n".join(found.locations)
         filled.append("locations")
@@ -659,6 +665,7 @@ def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFi
         cert_expiry=[row[3] for row in rows],
         degrees="\n".join([*degrees, *new_degrees]),
         cv_roles=fields.cv_roles,
+        cv_offer=list(dict.fromkeys([*fields.cv_offer, *offer])),
         tailor_scope=fields.tailor_scope,
     )
     return merged, filled, offer
@@ -683,7 +690,7 @@ def _after_read(request: Request, db: Session, applicant: Applicant, cv: CvFile,
     if not _stash_draft(request, fields, notice, cv.id):
         _clear_draft(request)
         notice += " If you reload this page before saving, the suggestions will be gone."
-    return _profile_page(request, db, applicant, fields, notice=notice, cv_offer=offer)
+    return _profile_page(request, db, applicant, fields, notice=notice)
 
 
 _IDEA_PROBLEMS = {
@@ -740,6 +747,9 @@ def add_ideas(fields: ProfileFields, ideas: SearchIdeas, settings: Settings) -> 
         cert_kind=[row[2] for row in fields.certifications],
         cert_expiry=[row[3] for row in fields.certifications],
         degrees=fields.degrees,
+        cv_roles=fields.cv_roles,
+        cv_offer=fields.cv_offer,
+        tailor_scope=fields.tailor_scope,
     )
     said = []
     if new_roles:
