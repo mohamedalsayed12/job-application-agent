@@ -218,7 +218,7 @@ async def suggest_search(
     )
     if isinstance(call, AiCallFailure):
         logger.warning("Search ideas failed for %s: %s", applicant_id, call.reason)
-        gate.settle(reservation, consumed=False)
+        gate.settle(reservation, consumed=call.billed)
         session.commit()
         return ReadOutcome.provider_failed
     gate.settle(reservation, actual_cost=cost, units=Decimal(1))

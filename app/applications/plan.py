@@ -139,7 +139,7 @@ async def model_matches(
         fallback_model=model,
     )
     if isinstance(call, AiCallFailure):
-        gate.settle(reservation, consumed=False)
+        gate.settle(reservation, consumed=call.billed)
         logger.warning("apply map failed for %s: %s", application_id, call.reason)
         return {}
     gate.settle(reservation, actual_cost=settings.ai_apply_map_unit_price, units=Decimal(1))

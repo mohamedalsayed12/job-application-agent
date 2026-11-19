@@ -149,7 +149,7 @@ async def expand_titles(
         call = await send_anthropic_request(gateway, body, api_key=api_key, fallback_model=model)
         if isinstance(call, AiCallFailure):
             logger.warning("Related titles for %r failed: %s", key, call.reason)
-            gate.settle(reservation, consumed=False)
+            gate.settle(reservation, consumed=call.billed)
             persist()
             continue
         gate.settle(reservation, actual_cost=cost, units=Decimal(1))
