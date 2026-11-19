@@ -89,13 +89,14 @@ def set_application_status(
     status: ApplicationStatus,
     error: str | None = None,
 ) -> Application:
+    """The extension's report on a form it was handed. It never touches any other application."""
     if status is ApplicationStatus.filled_awaiting_review and application.missing_fields:
         raise PrepareRefused("Answer the missing questions first.")
-    if status is ApplicationStatus.filled_awaiting_review and application.status not in (
+    if application.status not in (
         ApplicationStatus.ready_to_fill.value,
         ApplicationStatus.filled_awaiting_review.value,
     ):
-        raise PrepareRefused("This application is not ready to mark as filled.")
+        raise PrepareRefused("This application is not waiting to be filled.")
     application.status = status.value
     if error is not None:
         application.error = error
