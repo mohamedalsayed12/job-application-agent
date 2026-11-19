@@ -314,3 +314,24 @@ async def test_best_match_breaks_an_equal_score_by_the_fit_verdict(client: httpx
     page = (await client.get("/listings", params={"sort": "score"})).text
     assert _titles(page)[:2] == ["Graduate Backend Developer", "Junior Backend Developer"]
 
+
+
+async def test_one_persons_sort_choice_does_not_reach_another(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    await client.get("/listings", params={"sort": "score"})
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as other:
+        assert (await other.post("/register", data={"email": "o@example.com", "password": PASSWORD})).status_code == 303
+        profile = {"target_roles": "Junior Backend Developer", "locations": "Manchester", "experience_level": "entry", "skills": "Python"}
+        assert (await other.post("/profile", data=profile)).status_code == 303
+        assert "Sorted by newest." in (await other.get("/listings")).text
+    assert "Sorted by best match." in (await client.get("/listings")).text
+
+
+def test_the_pager_keeps_the_sort_choice() -> None:
+    from app.api.listings import _nav
+
+    nav = _nav(2, 80, everywhere=False, role="", sort="score", show="roles", search="")
+    assert nav.count("sort=score") == 2
+    assert "sort=newest" in _nav(2, 80, everywhere=False, role="", sort="newest", show="roles", search="")
