@@ -116,7 +116,9 @@ def require_login(applicant: Applicant | None = Depends(current_applicant)) -> A
 
 
 @router.get("/register", response_class=HTMLResponse)
-def register_form(request: Request) -> HTMLResponse:
+def register_form(request: Request, applicant: Applicant | None = Depends(current_applicant)) -> Response:
+    if applicant is not None:
+        return RedirectResponse("/account", status_code=_SEE_OTHER)
     return _credentials_page(request, "Register", "/register", new_password=True)
 
 
@@ -140,7 +142,9 @@ def register_submit(
 
 
 @router.get("/login", response_class=HTMLResponse)
-def login_form(request: Request) -> HTMLResponse:
+def login_form(request: Request, applicant: Applicant | None = Depends(current_applicant)) -> Response:
+    if applicant is not None:
+        return RedirectResponse("/account", status_code=_SEE_OTHER)
     return _credentials_page(request, "Log in", "/login", new_password=False)
 
 

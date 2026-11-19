@@ -307,3 +307,28 @@ async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: h
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register
     assert register.count('href="/privacy"') == 2
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_logged_in_applicant_is_redirected_from_login_and_register(
+    client: httpx.AsyncClient, path: str
+) -> None:
+    await _register(client)
+    response = await client.get(path)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/account"
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_logged_out_visitor_still_gets_the_form(client: httpx.AsyncClient, path: str) -> None:
+    assert (await client.get(path)).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_stale_session_still_gets_the_form(
+    client: httpx.AsyncClient, session: Session, path: str
+) -> None:
+    await _register(client)
+    _applicant(session).session_version += 1
+    session.commit()
+    assert (await client.get(path)).status_code == 200
