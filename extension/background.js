@@ -30,6 +30,27 @@ async function reportStatus(id, status, error) {
   });
 }
 
+// Fetched here, not in the content script: a page-origin fetch with a token header
+// needs a CORS preflight the app does not answer, while host_permissions exempt this one.
+async function fetchCv(applicationId) {
+  const { apiBase, token } = await settings();
+  const response = await fetch(`${apiBase}/extension/cv?application_id=${encodeURIComponent(applicationId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error("Could not download CV");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  const docx = (response.headers.get("Content-Disposition") || "").includes(".docx");
+  return {
+    name: docx ? "cv.docx" : "cv.pdf",
+    type: response.headers.get("Content-Type") || "application/pdf",
+    base64: btoa(binary),
+  };
+}
+
 function urlsMatch(a, b) {
   try {
     const left = new URL(a);
@@ -41,7 +62,7 @@ function urlsMatch(a, b) {
 }
 
 async function fillActiveTab() {
-  const { apiBase, token } = await settings();
+  const { token } = await settings();
   if (!token) return { ok: false, error: "Set an extension token in the popup." };
   const ready = await fetchReady();
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -60,13 +81,16 @@ async function fillActiveTab() {
   } catch (_) {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
   }
-  const result = await chrome.tabs.sendMessage(tab.id, {
-    type: "jaa-fill",
-    plan,
-    applicationId: match.id,
-    apiBase,
-    token,
-  });
+  let cv = null;
+  if ((plan.steps || []).some((step) => step.action === "upload_cv")) {
+    try {
+      cv = await fetchCv(match.id);
+    } catch (err) {
+      await reportStatus(match.id, "failed", String(err));
+      return { ok: false, error: String(err) };
+    }
+  }
+  const result = await chrome.tabs.sendMessage(tab.id, { type: "jaa-fill", plan, cv });
   if (result?.ok) {
     await reportStatus(match.id, "filled_awaiting_review");
     await chrome.action.setBadgeText({ text: "!" });

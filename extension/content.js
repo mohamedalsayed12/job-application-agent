@@ -81,29 +81,25 @@ function setValue(el, value) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function uploadCv(el, apiBase, token, applicationId) {
+function uploadCv(el, cv) {
   if (isSubmitControl(el) || el.type !== "file") return;
-  const query = applicationId ? `?application_id=${encodeURIComponent(applicationId)}` : "";
-  const response = await fetch(`${apiBase.replace(/\/$/, "")}/extension/cv${query}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok) throw new Error("Could not download CV");
-  const blob = await response.blob();
-  const name = (response.headers.get("Content-Disposition") || "").includes(".docx") ? "cv.docx" : "cv.pdf";
-  const file = new File([blob], name, { type: blob.type || "application/pdf" });
+  if (!cv) throw new Error("CV missing from fill plan");
+  const binary = atob(cv.base64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const file = new File([bytes], cv.name, { type: cv.type });
   const transfer = new DataTransfer();
   transfer.items.add(file);
   el.files = transfer.files;
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function applyPlan(plan, apiBase, token, applicationId) {
+async function applyPlan(plan, cv) {
   for (const step of plan.steps || []) {
     if (!ALLOWED_ACTIONS.has(step.action)) continue;
     const el = findField(step);
     if (!el || isSubmitControl(el)) continue;
     if (step.action === "upload_cv") {
-      await uploadCv(el, apiBase, token, applicationId);
+      uploadCv(el, cv);
     } else {
       setValue(el, String(step.value || ""));
     }
@@ -124,7 +120,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "jaa-fill") return;
   (async () => {
     try {
-      await applyPlan(message.plan, message.apiBase, message.token, message.applicationId);
+      await applyPlan(message.plan, message.cv);
       sendResponse({ ok: true });
     } catch (err) {
       sendResponse({ ok: false, error: String(err) });

@@ -325,16 +325,16 @@ async def test_deleting_account_removes_apply_data(client: httpx.AsyncClient, se
     )
     issue_token(session, applicant_id)
     session.flush()
-    assert session.scalar(select(func.count()).select_from(ApplicationAnswers)) == 1
-    assert session.scalar(select(func.count()).select_from(ExtensionDevice)) == 1
+    assert session.scalar(select(func.count()).select_from(ApplicationAnswers).where(ApplicationAnswers.applicant_id == applicant_id)) == 1
+    assert session.scalar(select(func.count()).select_from(ExtensionDevice).where(ExtensionDevice.applicant_id == applicant_id)) == 1
 
     response = await client.post("/account/delete", data={"password": PASSWORD})
     assert response.status_code == 200
     session.expire_all()
     assert session.get(Applicant, applicant_id) is None
-    assert session.scalar(select(func.count()).select_from(ApplicationAnswers)) == 0
-    assert session.scalar(select(func.count()).select_from(Application)) == 0
-    assert session.scalar(select(func.count()).select_from(ExtensionDevice)) == 0
+    assert session.scalar(select(func.count()).select_from(ApplicationAnswers).where(ApplicationAnswers.applicant_id == applicant_id)) == 0
+    assert session.scalar(select(func.count()).select_from(Application).where(Application.applicant_id == applicant_id)) == 0
+    assert session.scalar(select(func.count()).select_from(ExtensionDevice).where(ExtensionDevice.applicant_id == applicant_id)) == 0
 
 
 async def test_apify_form_extract_respects_budget(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -75,7 +75,7 @@ def _tailored_pdf(db: Session, applicant_id: uuid.UUID, application_id: uuid.UUI
         return None
     row = get_application(db, application_id, applicant_id)
     if row is None:
-        return None
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
     tailored = db.scalar(
         select(TailoredCv).where(
             TailoredCv.applicant_id == applicant_id,
