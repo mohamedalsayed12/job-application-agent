@@ -54,6 +54,7 @@ from app.tailor.resume import all_text
 PROMPT_VERSION = "resume-matcher-959e458"
 TAILOR_VERDICTS = frozenset({"Apply", "Consider"})
 REQUESTED = "requested"
+POSTING_FLAGGED = "posting_flagged"
 MAX_PDF_BYTES = 5 * 1024 * 1024
 
 
@@ -170,7 +171,7 @@ def request_tailored_cv(
             updated_at=now,
         )
         session.add(row)
-    elif row.status == TailoredCvStatus.failed.value:
+    elif row.status == TailoredCvStatus.failed.value and row.input_hash != POSTING_FLAGGED:
         row.status = TailoredCvStatus.pending.value
         row.input_hash = REQUESTED
         row.updated_at = now
@@ -213,7 +214,11 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
         report = reports.get((applicant_id, job_id))
         current = existing.get((applicant_id, job_id))
         job = jobs.get(job_id)
-        if job is None or not job.description:
+        if job is None:
+            continue
+        if not job.description:
+            if current is not None and current.status == TailoredCvStatus.pending.value:
+                _ensure_skipped(session, applicant_id, job_id, reason="no_description", now=now)
             continue
         cv_file = cvs.get(applicant_id)
         if cv_file is None:
@@ -236,8 +241,8 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
         if looks_like_injection(posting):
             if current is not None and current.status == TailoredCvStatus.pending.value:
                 current.status = TailoredCvStatus.failed.value
-                current.input_hash = "posting_flagged"
-                current.draft = {"reason": "posting_flagged"}
+                current.input_hash = POSTING_FLAGGED
+                current.draft = {"reason": POSTING_FLAGGED}
                 current.updated_at = now
                 session.flush()
             continue

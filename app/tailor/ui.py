@@ -7,6 +7,16 @@ import uuid
 
 from app.models import TailoredCv, TailoredCvStatus
 
+_FLAGGED = "posting_flagged"
+_SKIPPED_TEXT = {
+    "no_description": "Tailored CV skipped — this job has no description to tailor against.",
+}
+_SKIPPED_DEFAULT = "Tailored CV skipped — upload a readable CV on your profile."
+
+
+def _reason(row: TailoredCv) -> str | None:
+    return row.draft.get("reason") if isinstance(row.draft, dict) else None
+
 
 def tailor_button(csrf: str, job_id: uuid.UUID, *, label: str = "Tailor my CV for this job") -> str:
     return (
@@ -22,7 +32,7 @@ def tailor_section(job_id: uuid.UUID, row: TailoredCv | None, csrf: str, *, allo
         return status
     if row is None:
         return f"<p>{tailor_button(csrf, job_id)}</p>"
-    if row.status == TailoredCvStatus.failed.value:
+    if row.status == TailoredCvStatus.failed.value and _reason(row) != _FLAGGED:
         return f"{status}<p>{tailor_button(csrf, job_id, label='Try again')}</p>"
     if row.status == TailoredCvStatus.pending.value:
         return '<p class="muted">Tailoring your CV for this job. Refresh in a few minutes.</p>'
@@ -37,8 +47,10 @@ def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | 
     if row.status == TailoredCvStatus.waiting_budget.value:
         return '<p class="muted">Tailored CV waiting on the monthly budget.</p>'
     if row.status == TailoredCvStatus.skipped.value:
-        return '<p class="muted">Tailored CV skipped — upload a readable CV on your profile.</p>'
+        return f'<p class="muted">{_SKIPPED_TEXT.get(_reason(row), _SKIPPED_DEFAULT)}</p>'
     if row.status == TailoredCvStatus.failed.value:
+        if _reason(row) == _FLAGGED:
+            return '<p class="muted">Tailored CV not built: this advert was flagged as unsafe to tailor.</p>'
         return '<p class="muted">Tailored CV could not be built for this posting.</p>'
     if row.status != TailoredCvStatus.ready.value:
         return '<p class="muted">Tailored CV pending.</p>'
