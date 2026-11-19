@@ -460,7 +460,7 @@ async def _process_one(
             persist()
             result = await call()
             if isinstance(result, AiCallFailure):
-                gate.settle(reservation, consumed=False)
+                gate.settle(reservation, consumed=result.billed)
                 persist()
                 return result
             output, response = result

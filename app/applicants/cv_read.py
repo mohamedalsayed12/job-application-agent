@@ -270,7 +270,7 @@ async def read_cv(
     call = await send_anthropic_request(gateway, body, api_key=api_key, fallback_model=model)
     if isinstance(call, AiCallFailure):
         logger.warning("CV read failed for %s: %s", applicant_id, call.reason)
-        gate.settle(reservation, consumed=False)
+        gate.settle(reservation, consumed=call.billed)
         session.commit()
         return CvRead(ReadOutcome.provider_failed)
     gate.settle(reservation, actual_cost=cost, units=Decimal(1))
