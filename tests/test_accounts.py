@@ -369,3 +369,28 @@ async def test_set_password_without_a_token_shows_a_page_not_json(client: httpx.
     post = await client.post("/set-password", data={})
     assert post.status_code == 400
     assert post.headers["content-type"].startswith("text/html")
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_logged_in_applicant_is_redirected_from_login_and_register(
+    client: httpx.AsyncClient, path: str
+) -> None:
+    await _register(client)
+    response = await client.get(path)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/account"
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_logged_out_visitor_still_gets_the_form(client: httpx.AsyncClient, path: str) -> None:
+    assert (await client.get(path)).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_stale_session_still_gets_the_form(
+    client: httpx.AsyncClient, session: Session, path: str
+) -> None:
+    await _register(client)
+    _applicant(session).session_version += 1
+    session.commit()
+    assert (await client.get(path)).status_code == 200

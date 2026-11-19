@@ -110,10 +110,12 @@ async def test_logging_in_replaces_the_token(client: httpx.AsyncClient) -> None:
 
 
 async def test_every_form_on_every_page_carries_a_token(client: httpx.AsyncClient) -> None:
+    # A logged-in applicant is redirected off /register and /login, so read those logged out.
+    logged_out = {path: (await client.get(path)).text for path in ("/register", "/login")}
     await _log_in_as_applicant_and_admin(client)
     pages = ("/account", "/profile", "/register", "/login", "/admin/login", *ADMIN_FORM_PAGES)
     for path in pages:
-        text = (await client.get(path)).text
+        text = logged_out[path] if path in logged_out else (await client.get(path)).text
         forms = re.findall(r"<form\b.*?</form>", text, flags=re.S)
         assert forms, path
         assert all('name="csrf_token"' in form for form in forms), path
