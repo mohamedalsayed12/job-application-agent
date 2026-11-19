@@ -41,7 +41,7 @@ async def _collect(session: Session, apify: _Apify, *, at=DAY_1, **settings: obj
         return await collect_linkedin(
             session,
             gateway=gateway,
-            settings=Settings(**{"apify_api_token": "test-token", **settings}),  # type: ignore[arg-type]
+            settings=Settings(**{"apify_api_token": "test-token", "anthropic_api_key": "", **settings}),  # type: ignore[arg-type]
             persist=session.flush,
             now=lambda: at,
             sleep=lambda seconds: None,
@@ -54,12 +54,12 @@ def test_each_role_is_searched_in_each_location_once_however_many_people_want_it
     first = _applicant(session, roles=["Backend Developer", "Python Developer"], locations=["Manchester"])
     _applicant(session, roles=["backend developer"], locations=["manchester", "Leeds"])
 
-    assert searches(session, None) == [
+    assert searches(session, None, per_person=10) == [
         Search("backend developer", "Leeds", _ANY),
         Search("Backend Developer", "Manchester", _ANY),
         Search("Python Developer", "Manchester", _ANY),
     ]
-    assert searches(session, {first}) == [
+    assert searches(session, {first}, per_person=10) == [
         Search("Backend Developer", "Manchester", _ANY),
         Search("Python Developer", "Manchester", _ANY),
     ]
@@ -79,7 +79,7 @@ def test_d63_a_search_asks_for_the_levels_the_person_chose(session: Session, lev
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     session.add(ApplicantProfile(applicant_id=applicant, experience_levels=levels))
     session.flush()
-    [search] = searches(session, None)
+    [search] = searches(session, None, per_person=10)
     assert parse_qs(urlsplit(search.url(posted_within_days=3)).query)["f_E"] == [codes]
 
 
@@ -88,7 +88,7 @@ def test_d63_people_share_a_search_only_when_linkedin_would_be_asked_the_same(se
         applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
         session.add(ApplicantProfile(applicant_id=applicant, experience_levels=levels))
     session.flush()
-    assert searches(session, None) == [
+    assert searches(session, None, per_person=10) == [
         Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.entry})),
         Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.mid})),
         Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.mid, ExperienceLevel.senior})),

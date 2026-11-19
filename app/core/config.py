@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     linkedin_posted_within_days: int = 3
     linkedin_stale_days: int = 14
     linkedin_wait_minutes: int = 15
+    # The typed titles and then their related titles, searched in each location.
+    linkedin_titles_per_person: int = 10
     # The scraper charges $0.00027 a job and $0.0005 a run, and Apify adds compute; these ceilings cover all three.
     linkedin_unit_price: Decimal = Decimal("0.001")
     linkedin_run_price: Decimal = Decimal("0.02")
@@ -115,6 +117,8 @@ class Settings(BaseSettings):
     ai_report_unit_price: Decimal = Decimal("0.0015")
     # D55: keyword extract / tailor / ATS revise each reserve this ceiling once.
     ai_tailor_unit_price: Decimal = Decimal("0.003")
+    # About 300 tokens in and 100 out on Haiku 5.5 for one title; this is a ceiling.
+    ai_related_titles_unit_price: Decimal = Decimal("0.001")
     # D64: about 0.5k tokens in and 0.4k out on Haiku 5.5, well under £0.001; this is a ceiling.
     ai_ideas_unit_price: Decimal = Decimal("0.002")
 
@@ -128,6 +132,7 @@ class Settings(BaseSettings):
     ai_cv_model: str = ""
     ai_cv_max_output_tokens: int = 1500
     ai_cv_max_chars: int = 24000
+    ai_related_titles_max_output_tokens: int = 300
     # D64: suggesting roles and places to search uses the CV model.
     ai_ideas_max_output_tokens: int = 800
 
@@ -173,6 +178,7 @@ class Settings(BaseSettings):
         "ai_judge_unit_price",
         "ai_report_unit_price",
         "ai_tailor_unit_price",
+        "ai_related_titles_unit_price",
         "outreach_people_unit_price",
         "outreach_profile_unit_price",
         "outreach_ai_unit_price",

@@ -25,7 +25,9 @@ from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.batches import Ask, Spend, ask_in_batches
-from app.matching.match import location_fit, showable, wanted_locations, worth_judging
+from app.matching import semantic
+from app.matching.match import TitleMeaning, location_fit, showable, wanted_locations, worth_judging
+from app.matching.related_titles import with_related
 from app.matching.verdicts import (
     ADD_LINE,
     PROMPT_VERSION,
@@ -153,10 +155,12 @@ def tokens_used_today(session: Session, now: datetime) -> int:
 def _todo(session: Session, now: datetime, applicant_ids: set[uuid.UUID] | None = None) -> list[_Work]:
     """Jobs each person has no current verdict for: their own locations first, then newest first.
 
-    Only jobs whose title shares a word with one of the person's target roles: the rest would cost
-    money for a near-certain "no".
+    Only jobs whose title shares a word with one of the person's titles, or is close to one in meaning:
+    the rest would cost money for a near-certain "no".
     """
     profiles = load_profiles(session, applicant_ids)
+    titles = {applicant_id: with_related(session, profile.roles) for applicant_id, profile in profiles.items()}
+    meaning = TitleMeaning(semantic.local_embedder)
     wanted = {row.applicant_id: wanted_locations(row.locations) for row in session.scalars(select(ApplicantPreference))}
     done = {
         (row.applicant_id, row.job_id): (row.job_hash, row.profile_hash)
@@ -167,7 +171,7 @@ def _todo(session: Session, now: datetime, applicant_ids: set[uuid.UUID] | None 
     for facts, text in jobs:
         job_digest = digest(text)
         for profile in profiles.values():
-            if not worth_judging(facts.title, list(profile.roles), profile.levels):
+            if not worth_judging(facts.title, titles[profile.applicant_id], profile.levels, meaning):
                 continue
             if facts.sector != profile.sector or done.get((profile.applicant_id, facts.job_id)) == (job_digest, profile.digest):
                 continue
