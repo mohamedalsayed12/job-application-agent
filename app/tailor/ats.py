@@ -12,7 +12,7 @@ from pypdf import PdfReader
 
 from app.tailor.refiner import job_keyword_terms
 from app.tailor.render import blocks
-from app.tailor.resume import all_text, keyword_in_text
+from app.tailor.resume import all_text, term_in_text
 
 Coverage = Literal["covered", "missing (have it)", "missing (gap)"]
 
@@ -115,9 +115,9 @@ def _sources(keywords: dict[str, Any]) -> dict[str, str]:
 
 
 def _status(term: str, pdf_text: str, docx_text: str, master_text: str) -> Coverage:
-    if keyword_in_text(term, pdf_text) and keyword_in_text(term, docx_text):
+    if term_in_text(term, pdf_text) and term_in_text(term, docx_text):
         return "covered"
-    if keyword_in_text(term, master_text):
+    if term_in_text(term, master_text):
         return "missing (have it)"
     return "missing (gap)"
 

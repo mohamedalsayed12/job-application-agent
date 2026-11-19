@@ -71,6 +71,34 @@ def keyword_in_text(keyword: str, text: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", text.lower()) is not None
 
 
+_FILLER = frozenset(
+    ["knowledge", "of", "experience", "experienced", "with", "in", "and", "or", "good", "strong", "excellent", "solid", "proven", "working", "understanding", "proficiency", "proficient", "ability", "to", "skills", "skill", "mindset", "databases", "database", "a", "an", "the", "basic", "years"]
+)
+_SUFFIXES = ("ing", "ions", "ion", "ed", "es", "s")
+
+
+def term_in_text(term: str, text: str) -> bool:
+    """A posting term is in the text: whole, or every skill word in it once filler words are set aside.
+
+    "Knowledge of SQL databases" is met by a CV that says "SQL"; "Knowledge of JavaScript/TypeScript"
+    is not met by one that says only "JavaScript".
+    """
+    if keyword_in_text(term, text):
+        return True
+    words = [word for word in re.split(r"[\s/,&]+", term.lower()) if word and word not in _FILLER]
+    return bool(words) and all(keyword_in_text(word, text) for word in words)
+
+
+def stem_in_text(term: str, text: str) -> bool:
+    """Looser than ``keyword_in_text``: "monitoring" is also found as "monitor" or "monitors"."""
+    needle = term.strip().lower()
+    if " " not in needle:
+        for suffix in _SUFFIXES:
+            if needle.endswith(suffix) and len(needle) - len(suffix) >= 4:
+                return re.search(rf"(?<!\w){re.escape(needle[: -len(suffix)])}", text.lower()) is not None
+    return keyword_in_text(term, text)
+
+
 _FANCY_DASH = re.compile(r"\s*[–—]\s*")
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
