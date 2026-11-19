@@ -83,7 +83,7 @@ async def _save_profile(client: httpx.AsyncClient) -> None:
     profile = {
         "target_roles": "Junior Backend Developer, Graduate Backend Developer",
         "locations": "Manchester",
-        "experience_level": "entry",
+        "experience_levels": "entry",
         "skills": "Python",
     }
     assert (await client.post("/profile", data=profile)).status_code == 303
