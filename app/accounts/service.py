@@ -41,6 +41,8 @@ def _clean_email(email: str) -> str:
 
 
 def _check_password(password: str) -> None:
+    if not password.strip():
+        raise AccountError("Password can't be blank or only spaces.")
     if len(password) < MIN_PASSWORD_LENGTH:
         raise AccountError(f"Use a password of at least {MIN_PASSWORD_LENGTH} characters.")
     if len(password) > MAX_PASSWORD_LENGTH:

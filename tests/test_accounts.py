@@ -148,6 +148,14 @@ async def test_a_password_of_the_wrong_length_is_refused(client: httpx.AsyncClie
     assert _applicant(session) is None
 
 
+@pytest.mark.parametrize("password", [" " * 12, "\t" * 12, " \n " * 6])
+async def test_a_blank_password_is_refused(client: httpx.AsyncClient, session: Session, password: str) -> None:
+    response = await _register(client, password=password)
+    assert response.status_code == 400
+    assert "blank or only spaces" in response.text
+    assert _applicant(session) is None
+
+
 @pytest.mark.parametrize("email", ["no-at-sign", "@example.com", "two words@example.com", "a@" + "b" * 260])
 async def test_a_bad_email_is_refused(client: httpx.AsyncClient, session: Session, email: str) -> None:
     assert (await _register(client, email=email)).status_code == 400
@@ -195,6 +203,14 @@ async def test_a_set_password_link_works_once(client: httpx.AsyncClient, session
 async def test_a_short_password_does_not_use_up_the_link(client: httpx.AsyncClient, session: Session) -> None:
     token = set_password_token(_admin_created(session))
     assert (await client.post("/set-password", data={"token": token, "password": "short"})).status_code == 400
+    assert (await client.post("/set-password", data={"token": token, "password": PASSWORD})).status_code == 303
+
+
+async def test_a_blank_password_does_not_use_up_the_link(client: httpx.AsyncClient, session: Session) -> None:
+    token = set_password_token(_admin_created(session))
+    response = await client.post("/set-password", data={"token": token, "password": " " * 12})
+    assert response.status_code == 400
+    assert "blank or only spaces" in response.text
     assert (await client.post("/set-password", data={"token": token, "password": PASSWORD})).status_code == 303
 
 
