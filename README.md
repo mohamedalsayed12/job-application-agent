@@ -187,7 +187,7 @@ Running it again is safe. Afterwards the table holds only the current matches.
 
 ## Listings
 
-Logged-in people see their matched jobs at `/listings`, best match first, with the reasons for each
+Logged-in people see their matched jobs at `/listings`, newest first by default (or best match, which the person can pick and which is remembered), with the reasons for each
 score, LinkedIn as the source, and the apply link. Saving a profile matches that person straight away.
 The rules are in `MVP.md` decision D42.
 
