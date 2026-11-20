@@ -58,7 +58,7 @@ def end_admin_session(request: Request) -> None:
     request.session.pop("admin_until", None)
 
 
-def _has_admin_session(request: Request) -> bool:
+def has_admin_session(request: Request) -> bool:
     mark = request.session.get("admin")
     return (
         bool(get_settings().admin_key)
@@ -68,11 +68,20 @@ def _has_admin_session(request: Request) -> bool:
     )
 
 
+def hide_admin_login_from_applicants(request: Request) -> None:
+    """A person signed in to their own account never sees the admin login: it is Not Found to them.
+
+    An admin who also has an applicant account logs out of it first.
+    """
+    if request.session.get("applicant") and not has_admin_session(request):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
+
 def require_admin(request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
     """Anyone who isn't an admin, signed in or not, gets the same Not Found as a page that doesn't exist.
 
     So an applicant can't tell the admin pages are there, and nothing points them at the admin login.
     """
-    allowed = admin_key_header_ok(request, x_admin_key) if x_admin_key is not None else _has_admin_session(request)
+    allowed = admin_key_header_ok(request, x_admin_key) if x_admin_key is not None else has_admin_session(request)
     if not allowed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")

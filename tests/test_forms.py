@@ -64,8 +64,10 @@ async def _post_from(client: httpx.AsyncClient, form_page: str, path: str, data:
 
 
 async def _log_in_as_applicant_and_admin(client: httpx.AsyncClient) -> None:
-    assert (await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})).status_code == 303
+    # Admin first: a signed-in applicant is never shown the admin login.
     assert (await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})).status_code == 303
+    assert (await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})).status_code == 303
+    assert (await client.get("/admin/quality")).status_code == 200
 
 
 def test_no_route_changes_data_without_being_a_post() -> None:
@@ -229,3 +231,14 @@ async def test_admin_pages_look_like_missing_pages_to_an_applicant(client: httpx
         assert (response.status_code, response.text) == (missing.status_code, missing.text)
     for path in ("/account", "/profile", "/listings", "/workflow", "/applications"):
         assert "/admin" not in (await client.get(path)).text
+
+
+async def test_a_signed_in_applicant_cannot_see_the_admin_login(client: httpx.AsyncClient) -> None:
+    assert (await client.get("/admin/login")).status_code == 200  # an admin, signed out, can still log in
+    await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})
+    missing = await client.get("/no-such-page")
+    response = await client.get("/admin/login")
+    assert (response.status_code, response.text) == (missing.status_code, missing.text)
+    tried = await client.post("/admin/login", data={"admin_key": ADMIN})
+    assert tried.status_code == 404
+    assert (await client.get("/admin/quality")).status_code == 404

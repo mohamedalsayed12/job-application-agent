@@ -421,6 +421,7 @@ async def test_applicant_login_still_replaces_the_applicant_session(client: http
     await _register(client, email="a@example.com")
     await client.post("/logout")
     await _register(client, email="b@example.com")
+    await client.post("/logout")  # an admin logs out of their own account before the admin login
     await _admin_login(client)
     await _login(client, email="b@example.com")
     assert "b@example.com" in (await client.get("/account")).text

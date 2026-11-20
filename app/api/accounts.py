@@ -25,6 +25,7 @@ from app.accounts.service import (
 from app.api.admin_auth import (
     admin_key_matches,
     end_admin_session,
+    hide_admin_login_from_applicants,
     require_admin,
     start_admin_session,
 )
@@ -327,12 +328,14 @@ def _admin_login_page(request: Request, *, error: str | None = None, status_code
     )
 
 
-@admin_session_router.get("/login", response_class=HTMLResponse)
+@admin_session_router.get("/login", response_class=HTMLResponse, dependencies=[Depends(hide_admin_login_from_applicants)])
 def admin_login_form(request: Request) -> HTMLResponse:
     return _admin_login_page(request)
 
 
-@admin_session_router.post("/login", response_class=HTMLResponse, dependencies=_CSRF)
+@admin_session_router.post(
+    "/login", response_class=HTMLResponse, dependencies=[Depends(hide_admin_login_from_applicants), *_CSRF]
+)
 def admin_login(request: Request, admin_key: str = Form("")) -> Response:
     if not throttle.take_admin_login_attempt(throttle.client_ip(request)):
         return _admin_login_page(request, error=_TOO_MANY, status_code=429)
