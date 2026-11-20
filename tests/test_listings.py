@@ -484,7 +484,9 @@ async def test_the_job_page_shows_outreach_too(client: httpx.AsyncClient, sessio
     await _jobs(session)
     await _register_with_profile(client)
     job = _job(session, 1)
-    assert "mark this job as applied to reach out" in (await client.get(f"/jobs/{job.id}")).text
+    before = (await client.get(f"/jobs/{job.id}")).text
+    assert "mark this job as applied to reach out" in before
+    assert before.count(f'action="/jobs/{job.id}/applied"') == 1
 
     _mark_applied(session, job.id)
     page = (await client.get(f"/jobs/{job.id}")).text

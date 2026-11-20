@@ -115,7 +115,7 @@ async def job_page(
         allowed=tailor_allowed(settings, applicant.id),
     ) + cover_letter_text(row)
     step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf)
-    outreach = outreach_block(job_id, load_outreach(db, applicant.id, [job_id])[job_id], csrf)
+    outreach = outreach_block(job_id, load_outreach(db, applicant.id, [job_id])[job_id], csrf, applied_button_shown=False)
     body = _body(
         job,
         shown,

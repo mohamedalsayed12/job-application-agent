@@ -108,12 +108,14 @@ def _contact(job_id: uuid.UUID, item: ContactMessages, csrf: str) -> str:
     return f'<div class="outreach-contact">{"".join(parts)}</div>'
 
 
-def outreach_block(job_id: uuid.UUID, outreach: JobOutreach, csrf: str) -> str:
+def outreach_block(job_id: uuid.UUID, outreach: JobOutreach, csrf: str, *, applied_button_shown: bool = True) -> str:
+    """The job page shows its own applied button in the apply step, so it turns ours off."""
     jid = html.escape(str(job_id))
     if not outreach.applied:
+        button = f"<p>{applied_button(csrf, job_id)}</p>" if applied_button_shown else ""
         return (
             '<div class="outreach"><p class="muted">Outreach: mark this job as applied to reach out to people '
-            f"at the company.</p><p>{applied_button(csrf, job_id)}</p></div>"
+            f"at the company.</p>{button}</div>"
         )
     if not outreach.contacts:
         return (
