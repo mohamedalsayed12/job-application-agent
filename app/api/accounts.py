@@ -211,7 +211,7 @@ and keep this site's origin in the extension settings.</p>
 </div>
 <div class="card" id="delete">
 <h2>Delete your account</h2>
-<p>This permanently removes your profile, CV, preferences, apply answers, applications, job matches, outreach contacts and drafts, and Gmail connection, and can't be undone.</p>
+<p>This permanently removes your profile, CV, preferences, apply answers, applications, job matches, tailored CVs and cover letters, interview prep, outreach contacts and drafts, Gmail connection, and browser extension token, and can't be undone.</p>
 {_error(error)}
 <form method="post" action="/account/delete">
   {csrf_field(request)}

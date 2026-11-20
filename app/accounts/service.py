@@ -81,7 +81,9 @@ def end_all_sessions(applicant: Applicant) -> None:
 
 
 def delete_account(session: Session, applicant: Applicant) -> None:
-    """The database removes the profile, CV, preferences and matches with this row, and keeps search history."""
+    """The database removes everything tied to this applicant with the row: profile, CV, preferences, apply answers,
+    applications, matches, tailored CVs and cover letters, interview prep, outreach, Gmail connection and extension
+    token. Shared job data and search history stay."""
     session.delete(applicant)
     session.flush()
 
