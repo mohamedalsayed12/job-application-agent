@@ -295,6 +295,15 @@ def test_stock_ai_wording_goes_unless_the_candidate_wrote_it() -> None:
     assert kept["summary"] == "Led a robust API with team members."
 
 
+def test_em_dash_becomes_a_comma_without_stray_spaces() -> None:
+    data = {"summary": "Built the society API \u2014 the same stack.\nLed the team \u2014", "line": "Ran it \u2014\nnext"}
+
+    cleaned, _ = remove_ai_phrases(data, "", protected_text="")
+
+    assert cleaned["summary"] == "Built the society API, the same stack.\nLed the team,"
+    assert cleaned["line"] == "Ran it, \nnext"
+
+
 def test_rendered_cv_has_an_ats_readable_text_layer() -> None:
     pdf = render_pdf(MASTER)
 

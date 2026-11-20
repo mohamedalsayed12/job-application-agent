@@ -64,10 +64,9 @@ def remove_ai_phrases(data: Any, job_description: str, protected_text: str) -> t
                 continue
             removed.add(phrase)
             text = pattern.sub(lambda match, phrase=phrase: _substitute(match, phrase), text)
-            if not AI_PHRASE_REPLACEMENTS[phrase]:
-                text = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", text)
-                text = re.sub(r"(?<![ \t])[ \t]+([.,;:!?])", r"\1", text)
-                text = text.strip(" \t")
+            text = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", text)
+            text = re.sub(r"(?<![ \t])[ \t]+([.,;:!?])", r"\1", text)
+            text = text.strip(" \t")
         return text
 
     def walk(value: Any) -> Any:
