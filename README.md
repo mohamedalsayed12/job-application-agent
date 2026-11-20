@@ -39,8 +39,9 @@ cp .env.example .env
 Job listings come from LinkedIn and Indeed, scraped once a day through Apify. Set `APIFY_API_TOKEN`
 in `.env` to the API token from
 [Apify integrations](https://console.apify.com/settings/integrations). Without that token the
-worker does not search. Each search is a paid Apify run, so it also needs a monthly money cap
-in `budget_policy`. Until that cap is set, paid calls stay blocked. The scrapers and the search
+worker does not search. Each search is a paid Apify run, so it also needs a monthly money cap,
+set on the admin Budget page (`/admin/budget`). Until that cap is set, paid calls stay blocked,
+and the admin Quality page says so. The scrapers and the search
 limits have defaults; see `.env.example`.
 
 ### 3. Install dependencies
@@ -132,8 +133,8 @@ stopped.
 
 Set `APIFY_API_TOKEN` first. Each run is reserved against the monthly money cap before it
 starts, and the recorded cost is what Apify reports. A LinkedIn run reserves up to £0.07, so
-10 titles a day for one person in one place come to about £21 a month. Raise
-`budget_policy.money_cap` to suit.
+10 titles a day for one person in one place come to about £21 a month. Raise the cap on
+`/admin/budget` to suit.
 
 ```bash
 uv run python -m app.worker          # runs until stopped
@@ -208,7 +209,7 @@ Job pages at `/jobs/{id}` open only for jobs in the person's listings; any other
 "not available" page. The first time someone opens a job page, the app asks Claude for a short
 summary of the posting. Code rejects it if it contains a number, date or name the posting doesn't,
 and saves one per job for everyone. Summaries spend from the AI budget, so nothing is called until
-a monthly `money_cap` is set in `budget_policy` and `ANTHROPIC_API_KEY` is in `.env`. Until then,
+a monthly cap is set on `/admin/budget` and `ANTHROPIC_API_KEY` is in `.env`. Until then,
 and whenever a summary is rejected, the page shows the description. The rules are in `MVP.md`
 decision D41.
 

@@ -15,6 +15,7 @@ _APPLICANT_LINKS = (
 )
 _ADMIN_LINKS = (
     ("quality", "Quality", "/admin/quality"),
+    ("budget", "Budget", "/admin/budget"),
     ("applicants", "Applicants", "/admin/applicants"),
 )
 

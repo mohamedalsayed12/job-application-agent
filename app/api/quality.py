@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import html
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.api.admin_auth import require_admin
 from app.api.admin_html import page
+from app.api.budget import no_cap_banner
 from app.api.chrome import admin_bar
 from app.core.db import get_db
 from app.quality.report import Example, JobRow, QualityReport, Target, build_report
@@ -162,4 +163,5 @@ def quality_report(
     _admin: None = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return page("Quality report", _render(build_report(db)), header=admin_bar(request, "quality"))
+    banner = no_cap_banner(db, datetime.now(UTC))
+    return page("Quality report", banner + _render(build_report(db)), header=admin_bar(request, "quality"))

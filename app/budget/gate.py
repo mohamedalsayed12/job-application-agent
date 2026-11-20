@@ -134,6 +134,12 @@ class BudgetGate:
         requires_money = cost > 0
 
         if requires_money and (money_cap is None or money_cap <= 0):
+            if money_cap is None:
+                logger.warning(
+                    "paid %s call for %s is waiting: no monthly budget cap is set (set one at /admin/budget)",
+                    estimate.kind,
+                    estimate.provider,
+                )
             raise BudgetWait("monthly")
 
         if requires_money and money_cap is not None:

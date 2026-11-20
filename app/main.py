@@ -23,6 +23,7 @@ from app.api.listings import router as listings_router
 from app.api.outreach import router as outreach_router
 from app.api.privacy import router as privacy_router
 from app.api.profile import router as profile_router
+from app.api.budget import router as budget_router
 from app.api.quality import router as quality_router
 from app.api.workflow import router as workflow_router
 from app.core.config import get_settings
@@ -69,6 +70,7 @@ app.include_router(admin_session_router)
 app.include_router(admin_accounts_router)
 app.include_router(applicants_router)
 app.include_router(quality_router)
+app.include_router(budget_router)
 
 
 @app.get("/", include_in_schema=False)
