@@ -448,7 +448,7 @@ class SpendLedger(_UuidPk, Base):
 
 class FetchRun(_UuidPk, Base):
     __tablename__ = "fetch_run"
-    __table_args__ = (_text_in("outcome", FetchOutcome),)
+    __table_args__ = (_text_in("outcome", FetchOutcome), Index("ix_fetch_run_source_started", "source", "started_at"))
 
     source: Mapped[str] = mapped_column(Text())
     outcome: Mapped[str] = mapped_column(Text())
@@ -457,6 +457,8 @@ class FetchRun(_UuidPk, Base):
     request_count: Mapped[int] = mapped_column(Integer())
     started_at: Mapped[datetime] = mapped_column(TZ)
     finished_at: Mapped[datetime] = mapped_column(TZ)
+    # Which search the run was for; null on runs from before it was recorded.
+    search_key: Mapped[str | None] = mapped_column(Text())
 
 
 class RawPayload(_UuidPk, Base):

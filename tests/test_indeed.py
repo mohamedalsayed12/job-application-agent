@@ -12,7 +12,15 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.indeed import collect_indeed, indeed_searches, level_searches
 from app.linkedin import Search
-from app.models import ApplicantProfile, BudgetPolicy, ExperienceLevel, FetchOutcome, FetchRun, SpendLedger
+from app.models import (
+    ApplicantProfile,
+    BudgetPolicy,
+    ExperienceLevel,
+    FetchOutcome,
+    FetchRun,
+    JobFreshness,
+    SpendLedger,
+)
 from tests.jobs import DAY_1, _Apify, _indeed, _job
 from tests.test_matching import _applicant
 
@@ -216,3 +224,16 @@ async def test_job_id_falls_back_to_jk_query_when_key_is_missing(session: Sessio
     report = await _collect(session, _Apify([item]), applicant_id=applicant_id)
     assert report.postings_new == 1
     assert _job(session, "abc123").title == "Backend Developer"
+
+
+async def test_d8_jobs_do_not_close_when_every_search_failed(session: Session) -> None:
+    _policy(session)
+    applicant_id = _entry_applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    await _collect(session, _Apify([_indeed(1)]), applicant_id=applicant_id)
+
+    report = await _collect(
+        session, _Apify([], status="FAILED"), at=DAY_1 + timedelta(days=15), applicant_id=applicant_id
+    )
+
+    assert (report.searches, report.closed) == (3, 0)
+    assert _job(session, 1).freshness == JobFreshness.open

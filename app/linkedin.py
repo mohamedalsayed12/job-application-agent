@@ -21,10 +21,15 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.applicants.levels import Levels, chosen_or_inferred, linkedin_levels, saved_levels
+from app.applicants.levels import (
+    Levels,
+    chosen_or_inferred,
+    linkedin_levels,
+    saved_levels,
+)
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
@@ -57,6 +62,9 @@ class Search:
             "sortBy": "DD",
         }
         return f"https://www.linkedin.com/jobs/search/?{urlencode(query, quote_via=quote)}"
+
+    def key(self) -> str:
+        return f"{self.role.strip().lower()}|{self.location.strip().lower()}|{linkedin_levels(self.levels)}"
 
 
 @dataclass(slots=True)
@@ -95,9 +103,26 @@ def searches(session: Session, applicant_ids: set[uuid.UUID] | None, *, per_pers
     return [found[key] for key in sorted(found)]
 
 
-def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
-    last = session.scalar(select(func.max(FetchRun.started_at)).where(FetchRun.source == SOURCE))
-    return last is None or now - last >= timedelta(hours=settings.linkedin_every_hours)
+def done_since(session: Session, *, source: str, since: datetime) -> set[str] | None:
+    """Keys of the searches this source ran since `since`, failed ones included (they retry next cycle).
+
+    None when a run from before keys were recorded falls in that time: it stands for the whole cycle.
+    """
+    keys = session.scalars(select(FetchRun.search_key).where(FetchRun.source == source, FetchRun.started_at > since)).all()
+    if any(key is None for key in keys):
+        return None
+    return set(keys)
+
+
+def still_due(planned: list[Search], done: set[str] | None) -> list[Search]:
+    """The planned searches not yet run this cycle, in their planned order.
+
+    A cycle the budget cut short resumes with the searches it did not reach, the same day,
+    once there is budget again.
+    """
+    if done is None:
+        return []
+    return [search for search in planned if search.key() not in done]
 
 
 async def collect_linkedin(
@@ -114,16 +139,19 @@ async def collect_linkedin(
     if not token:
         report.stopped_by = "not_configured"
         return report
-    if not is_due(session, now=now(), settings=settings):
-        return report
+    since = now() - timedelta(hours=settings.linkedin_every_hours)
+    done = done_since(session, source=SOURCE, since=since)
     people = settings.ai_applicants()
+    if not still_due(searches(session, people, per_person=settings.linkedin_titles_per_person), done):
+        return report
     roles = select(ApplicantPreference.target_roles)
     if people is not None:
         roles = roles.where(ApplicantPreference.applicant_id.in_(people))
     wanted = [role for row in session.scalars(roles) for role in row]
     await expand_titles(session, wanted, gateway=gateway, settings=settings, persist=persist, now=now())
     gate = BudgetGate(session, clock=now)
-    for search in searches(session, people, per_person=settings.linkedin_titles_per_person):
+    planned = searches(session, people, per_person=settings.linkedin_titles_per_person)
+    for search in still_due(planned, done):
         estimate = settings.linkedin_max_results * settings.linkedin_unit_price + settings.linkedin_run_price
         try:
             reservation = gate.reserve(
@@ -163,17 +191,42 @@ async def collect_linkedin(
         report.searches += 1
         if items is None:
             report.failed.append(f"{search.role} in {search.location}: {problem}")
-        stored = store_items(session, items or [], started_at=started, finished_at=now(), ok=items is not None)
+        stored = store_items(
+            session, items or [], started_at=started, finished_at=now(), ok=items is not None, search_key=search.key()
+        )
         report.jobs += len(items or [])
         report.postings_new += stored
         persist()
-    report.closed = close_stale(session, source=SOURCE, now=now(), after=timedelta(days=settings.linkedin_stale_days))
-    persist()
+    if report.stopped_by is None and cycle_clean(session, source=SOURCE, since=since, planned=planned):
+        report.closed = close_stale(session, source=SOURCE, now=now(), after=timedelta(days=settings.linkedin_stale_days))
+        persist()
     return report
 
 
+def cycle_clean(session: Session, *, source: str, since: datetime, planned: list[Search]) -> bool:
+    """Whether every planned search ran since `since` without failing (D8, T4).
+
+    Only then may jobs close: a job missing from failed, unrun or budget-stopped searches says
+    nothing about whether it closed.
+    """
+    succeeded = set(
+        session.scalars(
+            select(FetchRun.search_key).where(
+                FetchRun.source == source, FetchRun.started_at > since, FetchRun.outcome != FetchOutcome.failed
+            )
+        )
+    )
+    return bool(planned) and all(search.key() in succeeded for search in planned)
+
+
 def store_items(
-    session: Session, items: list[dict[str, Any]], *, started_at: datetime, finished_at: datetime, ok: bool = True
+    session: Session,
+    items: list[dict[str, Any]],
+    *,
+    started_at: datetime,
+    finished_at: datetime,
+    ok: bool = True,
+    search_key: str | None = None,
 ) -> int:
     """Keep one search's raw results and clean them into jobs. Returns how many postings were new."""
     rows = [item for item in items if isinstance(item, dict) and _job_id(item)]
@@ -185,6 +238,7 @@ def store_items(
         request_count=1,
         started_at=started_at,
         finished_at=finished_at,
+        search_key=search_key,
     )
     session.add(run)
     session.flush()

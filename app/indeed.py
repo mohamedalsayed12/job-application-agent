@@ -20,7 +20,6 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.applicants.levels import LEVELS, in_order
@@ -28,7 +27,7 @@ from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservat
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest
-from app.linkedin import Search, searches
+from app.linkedin import Search, cycle_clean, done_since, searches, still_due
 from app.matching.titles import LEADING_ENTRY_LEVEL, LEADING_OTHER_LEVEL
 from app.models import ExperienceLevel, FetchOutcome, FetchRun, RawPayload, SpendKind
 
@@ -48,11 +47,6 @@ class IndeedReport:
     closed: int = 0
     failed: list[str] = field(default_factory=list)
     stopped_by: str | None = None
-
-
-def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
-    last = session.scalar(select(func.max(FetchRun.started_at)).where(FetchRun.source == SOURCE))
-    return last is None or now - last >= timedelta(hours=settings.indeed_every_hours)
 
 
 def _core_role(role: str) -> str:
@@ -113,10 +107,13 @@ async def collect_indeed(
     if not token:
         report.stopped_by = "not_configured"
         return report
-    if not is_due(session, now=now(), settings=settings):
+    since = now() - timedelta(hours=settings.indeed_every_hours)
+    planned = indeed_searches(session, settings.ai_applicants())
+    todo = still_due(planned, done_since(session, source=SOURCE, since=since))
+    if not todo:
         return report
     gate = BudgetGate(session, clock=now)
-    for search in indeed_searches(session, settings.ai_applicants()):
+    for search in todo:
         estimate = settings.indeed_max_results * settings.indeed_unit_price + settings.indeed_run_price
         try:
             reservation = gate.reserve(
@@ -139,12 +136,15 @@ async def collect_indeed(
         report.searches += 1
         if items is None:
             report.failed.append(f"{search.role} in {search.location}: {run.problem}")
-        stored = store_items(session, items or [], started_at=started, finished_at=now(), ok=items is not None)
+        stored = store_items(
+            session, items or [], started_at=started, finished_at=now(), ok=items is not None, search_key=search.key()
+        )
         report.jobs += len(items or [])
         report.postings_new += stored
         persist()
-    report.closed = close_stale(session, source=SOURCE, now=now(), after=timedelta(days=settings.indeed_stale_days))
-    persist()
+    if report.stopped_by is None and cycle_clean(session, source=SOURCE, since=since, planned=planned):
+        report.closed = close_stale(session, source=SOURCE, now=now(), after=timedelta(days=settings.indeed_stale_days))
+        persist()
     return report
 
 
@@ -155,7 +155,13 @@ def _actual(reservation: SpendReservation, cost_usd: Decimal | None, settings: S
 
 
 def store_items(
-    session: Session, items: list[dict[str, Any]], *, started_at: datetime, finished_at: datetime, ok: bool = True
+    session: Session,
+    items: list[dict[str, Any]],
+    *,
+    started_at: datetime,
+    finished_at: datetime,
+    ok: bool = True,
+    search_key: str | None = None,
 ) -> int:
     """Keep one search's raw results and clean them into jobs. Returns how many postings were new."""
     rows = [item for item in items if isinstance(item, dict) and _job_id(item)]
@@ -167,6 +173,7 @@ def store_items(
         request_count=1,
         started_at=started_at,
         finished_at=finished_at,
+        search_key=search_key,
     )
     session.add(run)
     session.flush()

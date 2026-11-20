@@ -18,9 +18,10 @@ from app.models import (
     ExperienceLevel,
     FetchOutcome,
     FetchRun,
+    JobFreshness,
     SpendLedger,
 )
-from tests.jobs import DAY_1, _Apify, _job, _li
+from tests.jobs import DAY_1, _Apify, _job, _li, _store
 from tests.test_matching import _applicant
 
 _ANY = frozenset({ExperienceLevel.entry, ExperienceLevel.mid, ExperienceLevel.senior})
@@ -178,3 +179,54 @@ async def test_a_run_that_does_not_finish_in_time_is_stopped(session: Session) -
 
     assert report.failed == ["Backend Developer in Manchester: did not finish in time"]
     assert apify.requests[-1].url.path.endswith("/abort")
+
+
+async def test_d8_jobs_do_not_close_when_every_search_failed(session: Session) -> None:
+    _policy(session)
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _store(session, [_li(1)], at=DAY_1)
+    later = DAY_1 + timedelta(days=15)
+
+    report = await _collect(session, _Apify([], status="FAILED"), at=later)
+
+    assert (report.searches, report.closed) == (1, 0)
+    assert _job(session, 1).freshness == JobFreshness.open
+
+    report = await _collect(session, _Apify([_li(2, title="Python Developer")]), at=later + timedelta(days=1))
+    assert report.closed == 1
+    session.expire_all()
+    assert _job(session, 1).freshness == JobFreshness.closed
+
+
+async def test_t4_jobs_do_not_close_when_the_budget_stopped_the_searches(session: Session) -> None:
+    _policy(session, money_cap="0.01")
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _store(session, [_li(1)], at=DAY_1)
+
+    report = await _collect(session, _Apify([_li(2)]), at=DAY_1 + timedelta(days=15))
+
+    assert (report.stopped_by, report.searches, report.closed) == ("budget", 0, 0)
+    assert _job(session, 1).freshness == JobFreshness.open
+
+
+async def test_a_cycle_the_budget_cut_short_resumes_the_same_day_with_the_searches_it_missed(session: Session) -> None:
+    settings = Settings(apify_api_token="test-token", anthropic_api_key="")
+    one_search = settings.linkedin_max_results * settings.linkedin_unit_price + settings.linkedin_run_price
+    _policy(session, money_cap=str(one_search * Decimal("1.5")))
+    _applicant(session, roles=["Backend Developer"], locations=["Leeds", "Manchester"])
+
+    first = _Apify([_li(1)], cost_usd=float(one_search))  # spends the cap's first search
+    report = await _collect(session, first)
+    assert (report.searches, report.stopped_by) == (1, "budget")
+    assert "Leeds" in first.bodies()[0]["startUrls"][0]["url"]
+
+    session.scalars(select(BudgetPolicy)).one().money_cap = Decimal("5")
+    session.flush()
+    resumed = _Apify([_li(2)])
+    report = await _collect(session, resumed, at=DAY_1 + timedelta(hours=2))
+    assert (report.searches, report.stopped_by) == (1, None)
+    assert "Manchester" in resumed.bodies()[0]["startUrls"][0]["url"]
+
+    done = _Apify([_li(3)])
+    report = await _collect(session, done, at=DAY_1 + timedelta(hours=3))
+    assert (report.searches, done.requests) == (0, [])
