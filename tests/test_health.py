@@ -32,6 +32,13 @@ async def test_health_ok_when_db_reachable(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("migrated_engine")
+async def test_health_head_returns_200(client: httpx.AsyncClient) -> None:
+    response = await client.head("/health")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_health_unhealthy_when_db_unreachable(client: httpx.AsyncClient) -> None:
     mock_conn_cm = MagicMock()
     mock_conn_cm.__enter__.side_effect = OperationalError(
@@ -49,6 +56,8 @@ async def test_health_unhealthy_when_db_unreachable(client: httpx.AsyncClient) -
     body = response.json()
     assert body["status"] == "unhealthy"
     assert body["database"] == "unreachable"
+    assert "detail" not in body
+    assert "connection refused" not in response.text
 
 
 @pytest.mark.asyncio
