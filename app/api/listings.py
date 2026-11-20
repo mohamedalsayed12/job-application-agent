@@ -210,13 +210,13 @@ def visible_job(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) ->
     job = session.scalar(
         select(Job).join(ApplicantJobMatch, ApplicantJobMatch.job_id == Job.id).where(Job.id == job_id, *_visible_to(applicant_id))
     )
-    if job is None or _is_fake(session, job):
+    if job is None or is_fake_job(session, job):
         raise JobUnavailable
     return job
 
 
-def _is_fake(session: Session, job: Job) -> bool:
-    """A verdict can land after matching, before the match row is dropped."""
+def is_fake_job(session: Session, job: Job) -> bool:
+    """Judged fake (D55). A verdict can land after matching, before the match row is dropped."""
     if (job.quality_results or {}).get("real") == "low":
         return True
     row = session.scalar(select(JobVerification).where(JobVerification.job_id == job.id))

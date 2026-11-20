@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.accounts import throttle
+from app.api.applications import FLAGGED
 from app.api.forms import require_csrf
 from app.applicants.apply_answers import AnswersInput, save_answers
 from app.applications.extension_device import issue_token
@@ -774,3 +775,86 @@ async def test_the_extension_cv_for_another_persons_application_is_not_found(
     response = await client.get(f"/extension/cv?application_id={theirs.id}", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 404
     assert response.content != PDF
+
+
+def _judge_fake(session: Session, job: Job) -> None:
+    job.quality_results = {**(job.quality_results or {}), "real": "low"}
+    session.flush()
+
+
+async def test_d55_an_application_made_before_the_job_was_judged_fake_is_stopped(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    show_to(session, applicant.id, job.id)
+    row = _ready_application(session, applicant, job)
+    token = issue_token(session, applicant.id)
+    session.flush()
+    headers = {"Authorization": f"Bearer {token}"}
+    _judge_fake(session, job)
+
+    opened = await client.post(f"/applications/{row.id}/open-fill")
+    assert opened.headers["location"] == f"/applications/{row.id}"
+    assert (await client.get("/extension/applications/ready", headers=headers)).json() == []
+    session.refresh(row)
+    assert row.status == ApplicationStatus.failed.value
+    card = (await client.get(f"/applications/{row.id}")).text
+    assert "flagged as a likely fake listing" in card
+    assert job.apply_url not in card
+    assert "Try again" not in card
+    planned = await client.post(
+        f"/extension/applications/{row.id}/plan", headers=headers, json=_plan_fields(("q1", "Email", "email"))
+    )
+    assert planned.status_code == 409
+    assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 404
+    assert (await client.post(f"/jobs/{job.id}/abandoned")).status_code == 404
+    session.refresh(row)
+    assert row.status == ApplicationStatus.failed.value
+
+
+async def test_answers_saved_after_the_job_closed_do_not_put_it_back_in_the_fill_queue(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    show_to(session, applicant.id, job.id)
+    row = _ready_application(session, applicant, job)
+    row.status = ApplicationStatus.needs_input.value
+    row.missing_fields = ["Why do you want to work here?"]
+    job.freshness = JobFreshness.closed
+    session.flush()
+
+    card = (await client.get(f"/applications/{row.id}")).text
+    assert "Check again" not in card
+    saved = await client.post(
+        f"/applications/{row.id}/answers",
+        data={"question_0": "Why do you want to work here?", "answer_0": "The team builds things I use."},
+    )
+
+    assert saved.status_code == 303
+    session.refresh(row)
+    assert row.status == ApplicationStatus.needs_input.value
+    token = issue_token(session, applicant.id)
+    session.flush()
+    ready = await client.get("/extension/applications/ready", headers={"Authorization": f"Bearer {token}"})
+    assert ready.json() == []
+
+
+async def test_d55_the_extension_is_not_handed_an_application_for_a_job_judged_fake(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    row = _ready_application(session, applicant, job)
+    token = issue_token(session, applicant.id)
+    _judge_fake(session, job)
+
+    ready = await client.get("/extension/applications/ready", headers={"Authorization": f"Bearer {token}"})
+
+    assert ready.json() == []
+    session.refresh(row)
+    assert (row.status, row.error) == (ApplicationStatus.failed.value, FLAGGED)

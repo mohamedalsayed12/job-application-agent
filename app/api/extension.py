@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.applications import FLAGGED, retire_if_flagged
 from app.applications.cv_choice import choose_cv
 from app.applications.extension_device import applicant_for_token
 from app.applications.mapper import FormField
@@ -52,8 +53,9 @@ def ready_applications(
     rows = [
         row
         for row in list_applications(db, applicant_id)
-        if row.status == ApplicationStatus.ready_to_fill.value
+        if row.status == ApplicationStatus.ready_to_fill.value and not retire_if_flagged(db, row)
     ]
+    db.commit()
     return [{"id": str(row.id), "apply_url": row.apply_url} for row in rows]
 
 
@@ -72,6 +74,9 @@ async def plan_application(
     applicant = db.get(Applicant, applicant_id)
     if row is None or applicant is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
+    if retire_if_flagged(db, row):
+        db.commit()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=FLAGGED)
     if row.status in (ApplicationStatus.submitted.value, ApplicationStatus.filled_awaiting_review.value):
         raise HTTPException(status.HTTP_409_CONFLICT, detail="This application is no longer being filled.")
     plan = await build_application_plan(db, applicant, row, body.fields)

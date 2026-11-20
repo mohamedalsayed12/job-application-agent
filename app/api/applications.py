@@ -14,7 +14,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.api.listings import visible_job
+from app.api.listings import is_fake_job, visible_job
 from app.applicants.apply_answers import (
     MAX_SAVED,
     AnswersRefused,
@@ -56,16 +56,55 @@ _RETRY_LABEL = {
 }
 
 
+FLAGGED = "This advert was flagged as a likely fake listing, so it won't be filled. Don't apply through it."
+_ACTIVE = frozenset(
+    {
+        ApplicationStatus.ready_to_fill.value,
+        ApplicationStatus.needs_input.value,
+        ApplicationStatus.filled_awaiting_review.value,
+    }
+)
+
+
 def _e(value: object) -> str:
     return html.escape(str(value))
 
 
-def _card(request: Request, app_row: Application, job: Job | None) -> str:
+def retire_if_flagged(db: Session, row: Application) -> bool:
+    """Whether the application's job was judged fake (D55); if so, an open application is stopped.
+
+    The person may have prepared it before the verdict landed. It must not stay in the fill queue
+    or send them to the advert's apply link.
+    """
+    job = db.get(Job, row.job_id)
+    if job is None or not is_fake_job(db, job):
+        return False
+    if row.status in _ACTIVE:
+        row.status = ApplicationStatus.failed.value
+        row.error = FLAGGED
+        row.fill_plan_json = None
+    return True
+
+
+def _job_open(job: Job | None) -> bool:
+    return job is not None and job.freshness == JobFreshness.open
+
+
+def _card(request: Request, app_row: Application, job: Job | None, *, flagged: bool = False) -> str:
     title = job.title if job else "Job"
     company = job.company_name if job else ""
     status_label = _STATUS_LABEL.get(app_row.status, app_row.status)
+    if flagged:
+        return f"""
+<article class="card">
+  <h2>{_e(title)}</h2>
+  <p class="muted">{_e(company)} · Flagged</p>
+  <p class="error">{_e(FLAGGED)}</p>
+</article>
+"""
+    job_open = _job_open(job)
     missing = ""
-    if app_row.status == ApplicationStatus.needs_input.value and app_row.missing_fields:
+    if app_row.status == ApplicationStatus.needs_input.value and app_row.missing_fields and job_open:
         fields = []
         for index, question in enumerate(app_row.missing_fields):
             fields.append(
@@ -82,7 +121,7 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
     actions = [
         f'<a class="button" href="{_e(app_row.apply_url)}" rel="noopener noreferrer" target="_blank">Open apply page</a>'
     ]
-    if app_row.status == ApplicationStatus.ready_to_fill.value:
+    if app_row.status == ApplicationStatus.ready_to_fill.value and job_open:
         actions.append(
             f'<form method="post" action="/applications/{app_row.id}/open-fill" class="inline">'
             f'{csrf_field(request)}<button type="submit" class="primary">Open &amp; fill</button></form>'
@@ -91,7 +130,8 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
         actions.append('<span class="tag good">Ready for your review — submit yourself</span>')
     csrf = csrf_field(request)
     retry_label = _RETRY_LABEL.get(app_row.status)
-    if retry_label:
+    if retry_label and job_open:
+        # A closed job cannot be prepared again (NEW_FEATURES §2); it can still be marked applied.
         actions.append(prepare_button(csrf, app_row.job_id, retry_label))
     if app_row.status != ApplicationStatus.submitted.value:
         actions.append(applied_button(csrf, app_row.job_id))
@@ -119,7 +159,9 @@ def applications_page(
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     rows = list_applications(db, applicant.id)
-    cards = [_card(request, row, db.get(Job, row.job_id)) for row in rows]
+    flagged = {row.id for row in rows if retire_if_flagged(db, row)}
+    db.commit()
+    cards = [_card(request, row, db.get(Job, row.job_id), flagged=row.id in flagged) for row in rows]
     body = "".join(cards) or '<p class="muted">No applications prepared yet. Use Prepare apply on a listing.</p>'
     awaiting = sum(1 for r in rows if r.status == ApplicationStatus.filled_awaiting_review.value)
     questions = [name for r in rows if r.status == ApplicationStatus.needs_input.value for name in r.missing_fields]
@@ -175,9 +217,12 @@ def application_detail(
     row = get_application(db, application_id, applicant.id)
     if row is None:
         return page("Not found", "<h1>Not found</h1>", status_code=404, header=applicant_bar(request, "applications"))
+    flagged = retire_if_flagged(db, row)
+    db.commit()
+    card = _card(request, row, db.get(Job, row.job_id), flagged=flagged)
     return page(
         "Application",
-        f'<p><a href="/applications">All applications</a></p>{_card(request, row, db.get(Job, row.job_id))}',
+        f'<p><a href="/applications">All applications</a></p>{card}',
         header=applicant_bar(request, "applications"),
         narrow=True,
     )
@@ -193,6 +238,9 @@ async def save_missing_answers(
     row = get_application(db, application_id, applicant.id)
     if row is None or row.status != ApplicationStatus.needs_input.value:
         return RedirectResponse("/applications", status_code=_SEE_OTHER)
+    if retire_if_flagged(db, row):
+        db.commit()
+        return RedirectResponse(f"/applications/{application_id}", status_code=_SEE_OTHER)
     form = await request.form()
     pairs: list[SavedQuestion] = []
     index = 0
@@ -204,7 +252,9 @@ async def save_missing_answers(
     except AnswersRefused as exc:
         db.rollback()
         return RedirectResponse(f"/applications/{application_id}?answer_error={exc.message}", status_code=_SEE_OTHER)
-    store_fill_outcome(row, None, reopen=True)
+    if _job_open(db.get(Job, row.job_id)):
+        # The answers are kept either way; only an open job goes back in the fill queue.
+        store_fill_outcome(row, None, reopen=True)
     db.commit()
     return RedirectResponse(f"/applications/{application_id}", status_code=_SEE_OTHER)
 
@@ -218,6 +268,9 @@ def open_fill(
     row = get_application(db, application_id, applicant.id)
     if row is None or row.status != ApplicationStatus.ready_to_fill.value:
         return RedirectResponse("/applications", status_code=_SEE_OTHER)
+    if retire_if_flagged(db, row):
+        db.commit()
+        return RedirectResponse(f"/applications/{application_id}", status_code=_SEE_OTHER)
     return RedirectResponse(row.apply_url, status_code=_SEE_OTHER)
 
 
@@ -227,10 +280,10 @@ def applied(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    if application_for_job(db, applicant.id, job_id) is not None:
-        # An application already made can be marked applied even after the job closes.
-        job = db.get(Job, job_id)
-    else:
+    job = db.get(Job, job_id)
+    if job is None or application_for_job(db, applicant.id, job_id) is None or is_fake_job(db, job):
+        # An application already made can be marked applied even after the job closes,
+        # but a job judged fake answers 404 like every other action under it (D55).
         job = visible_job(db, applicant.id, job_id)
     mark_submitted(db, applicant.id, job)
     db.commit()
@@ -243,6 +296,9 @@ def abandoned(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
+    job = db.get(Job, job_id)
+    if job is not None and is_fake_job(db, job):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     row = mark_abandoned(db, applicant.id, job_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
