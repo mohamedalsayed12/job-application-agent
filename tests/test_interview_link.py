@@ -100,3 +100,15 @@ async def test_a_matched_job_links_to_practice_and_shows_a_queued_request(
     session.flush()
 
     assert "Role interview research is queued" in (await client.get(f"/jobs/{job.id}/interview")).text
+
+
+async def test_building_a_pack_for_a_role_no_longer_targeted_shows_not_available(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    applicant, job = await _signed_in_with_a_job(client, session)
+    _match(session, applicant, job)  # the match names a role that is not one of the current target roles
+
+    response = await client.post(f"/jobs/{job.id}/interview")
+
+    assert response.status_code == 404
+    assert "available for this job" in response.text

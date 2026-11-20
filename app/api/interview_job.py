@@ -131,7 +131,10 @@ async def interview_job_create(
         db, applicant_id=applicant.id, job=job, gateway=gateway, settings=get_settings()
     )
     if result.stopped_by == "role_pack_missing":
-        enqueue(db, applicant_id=applicant.id, role=role)
+        try:
+            enqueue(db, applicant_id=applicant.id, role=role)
+        except ValueError:
+            return _not_available(request)
         db.commit()
         message = "Role interview research is queued. Return after the worker finishes, then build this job's pack."
     elif result.pack is not None:
