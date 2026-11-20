@@ -217,12 +217,16 @@ def visible_job(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) ->
 
 def is_fake_job(session: Session, job: Job) -> bool:
     """Judged fake (D55). A verdict can land after matching, before the match row is dropped."""
-    if (job.quality_results or {}).get("real") == "low":
-        return True
     row = session.scalar(select(JobVerification).where(JobVerification.job_id == job.id))
-    if row is not None and row.outcome == ListingVerdict.fake:
-        return True
-    return bool(scam_reasons(job.description))
+    if row is not None:
+        # The check's verdict already weighed the scam wording, and the company's careers page can
+        # clear it, so the wording is not checked again here.
+        if row.outcome == ListingVerdict.fake:
+            return True
+        if row.outcome == ListingVerdict.real:
+            return False
+        return (job.quality_results or {}).get("real") == "low"
+    return (job.quality_results or {}).get("real") == "low" or bool(scam_reasons(job.description))
 
 
 def job_unavailable_page(request: Request, _: JobUnavailable) -> HTMLResponse:

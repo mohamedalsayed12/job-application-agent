@@ -17,7 +17,7 @@ from app.models import Job, JobFreshness, JobVerification, ListingVerdict
 from app.verify.companies_house import lookup_company
 from app.verify.domain_search import find_official_domain
 from app.verify.listing import find_listing_on_site
-from app.verify.scam_text import scam_reasons
+from app.verify.scam_text import SCAM_RULES_VERSION, scam_reasons
 
 PROVENANCE_SOURCE = "verification"
 
@@ -97,11 +97,17 @@ def _backlog(session: Session, *, limit: int) -> list[Job]:
     due = []
     for job in open_jobs:
         row = existing.get(job.id)
-        if row is None or row.source_hash != content_hash(job):
+        if row is None or row.source_hash != content_hash(job) or _flagged_by_old_rules(row):
             due.append(job)
         if len(due) >= limit:
             break
     return due
+
+
+def _flagged_by_old_rules(row: JobVerification) -> bool:
+    """A job the scam wording flagged under an older rule set is checked again once."""
+    evidence = row.evidence or {}
+    return bool(evidence.get("scam_text")) and evidence.get("scam_rules") != SCAM_RULES_VERSION
 
 
 def _existing_outcome(session: Session, job_id) -> str | None:
@@ -126,24 +132,13 @@ async def _verify_one(
     listing_found = False
     company_apply_url = None
 
+    # Scam wording is a strong hint, not the verdict: the advert still goes through the checks
+    # below, and only the company's own careers page listing it clears the job.
     text_hits = list(scam_reasons(job.description))
+    evidence["scam_rules"] = SCAM_RULES_VERSION
     if text_hits:
         reasons.extend(text_hits)
         evidence["scam_text"] = text_hits
-        outcome = ListingVerdict.fake
-        return _save(
-            session,
-            job,
-            checked_at=checked_at,
-            outcome=outcome,
-            reasons=reasons,
-            evidence=evidence,
-            company_number=None,
-            company_status=None,
-            official_domain=None,
-            listing_found=False,
-            company_apply_url=None,
-        )
 
     ch = await lookup_company(gateway, job.company_name, api_key=settings.companies_house_api_key)
     evidence["companies_house"] = {"reason": ch.reason, **ch.evidence}
@@ -186,7 +181,7 @@ async def _verify_one(
             session,
             job,
             checked_at=checked_at,
-            outcome=ListingVerdict.inconclusive,
+            outcome=ListingVerdict.fake if text_hits else ListingVerdict.inconclusive,
             reasons=reasons or ["inconclusive"],
             evidence=evidence,
             company_number=company_number,
@@ -204,7 +199,11 @@ async def _verify_one(
     if listing.found and listing.apply_url:
         listing_found = True
         company_apply_url = listing.apply_url
-        reasons.append("confirmed on company site")
+        if text_hits:
+            reasons.clear()
+            reasons.append("confirmed on company site despite scam-like wording")
+        else:
+            reasons.append("confirmed on company site")
         if ch.reason == "company_active":
             reasons.append("company active on Companies House")
         outcome = ListingVerdict.real
@@ -213,7 +212,8 @@ async def _verify_one(
         if ch.reason == "company_active":
             reasons.append("company active on Companies House")
         # Soft: not found on site alone stays inconclusive so check_real keeps medium.
-        outcome = ListingVerdict.inconclusive
+        # Scam wording with no company-site listing to clear it is a fake.
+        outcome = ListingVerdict.fake if text_hits else ListingVerdict.inconclusive
 
     return _save(
         session,

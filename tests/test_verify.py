@@ -11,13 +11,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.api.listings import is_fake_job
 from app.fetch.gateway import FetchGateway
 from app.matching.match import showable
 from app.models import JobVerification, ListingVerdict
 from app.quality.checks import Confidence, VerificationSignal, check_real
 from app.quality.report import check_all, store_results
 from app.verify.domain_search import parse_ddg_result_urls
-from app.verify.run import verify_jobs
+from app.verify.run import content_hash, verify_jobs
 from app.verify.scam_text import scam_reasons
 from tests.jobs import _job, _li, _store
 from tests.test_quality import ADVERT, _facts
@@ -270,22 +271,106 @@ async def test_missing_companies_house_key_does_not_crash(session: Session) -> N
     assert row is not None and row.outcome == ListingVerdict.inconclusive
 
 
+def _acme_site(request: httpx.Request) -> httpx.Response:
+    """Companies House, DuckDuckGo and a careers page that lists the Backend Developer job."""
+    host, path = request.url.host, request.url.path
+    if path == "/robots.txt":
+        return httpx.Response(404)
+    if "company-information.service.gov.uk" in host:
+        return _ch_items({"company_number": "00445790", "title": "ACME LIMITED", "company_status": "active"})
+    if "duckduckgo.com" in host:
+        return _html('<a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Facme.example%2F">Acme</a>')
+    if host == "acme.example":
+        if path in ("/", ""):
+            return _html("<html><body>Welcome to Acme Limited. <a href='/careers'>Careers</a></body></html>")
+        if "career" in path or "job" in path:
+            return _html("<html><body><a href='/careers/backend-developer'>Backend Developer</a> Join Acme Limited.</body></html>")
+    return httpx.Response(404)
+
+
 @pytest.mark.asyncio
-async def test_scam_text_marks_fake_without_network(session: Session) -> None:
+async def test_scam_text_with_nothing_to_clear_it_is_fake(session: Session) -> None:
     _store(session, [_li(5, company="Scam Co", content="Get rich quick! " + ADVERT)])
     job = _job(session, 5)
-    seen: list[str] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
-        return httpx.Response(500)
-
-    gateway = _gateway(handler)
-    report = await verify_jobs(
-        session, gateway=gateway, settings=_settings(), persist=session.flush, now=NOW
-    )
+    gateway = _gateway(lambda request: httpx.Response(500))
+    report = await verify_jobs(session, gateway=gateway, settings=_settings(), persist=session.flush, now=NOW)
     await gateway.aclose()
     assert report.fake == 1
-    assert seen == []
     row = session.scalar(select(JobVerification).where(JobVerification.job_id == job.id))
     assert row is not None and row.outcome == ListingVerdict.fake
+    assert row.reasons[0] == "promises quick wealth"
+    assert is_fake_job(session, job)
+
+
+@pytest.mark.asyncio
+async def test_the_company_careers_page_clears_scam_like_wording(session: Session) -> None:
+    advert = "Contact us only on WhatsApp for questions. " + ADVERT
+    _store(session, [_li(6, company="Acme Limited", content=advert, title="Backend Developer", applyUrl="https://www.linkedin.com/jobs/view/6")])
+    job = _job(session, 6)
+    assert is_fake_job(session, job)  # not checked yet: the wording alone keeps it off
+
+    gateway = _gateway(_acme_site)
+    report = await verify_jobs(session, gateway=gateway, settings=_settings(), persist=session.flush, now=NOW)
+    await gateway.aclose()
+    assert report.real == 1
+    row = session.scalar(select(JobVerification).where(JobVerification.job_id == job.id))
+    assert row is not None and row.outcome == ListingVerdict.real and row.listing_found
+    assert row.reasons[0] == "confirmed on company site despite scam-like wording"
+    assert not is_fake_job(session, job)
+    signal = VerificationSignal(outcome="real", listing_found=True, reasons=tuple(row.reasons))
+    assert check_real(_facts(description=advert), signal)[0] == Confidence.high
+
+
+@pytest.mark.asyncio
+async def test_a_job_flagged_by_older_scam_rules_is_checked_again(session: Session) -> None:
+    advert = "We will never ask you to pay a fee or deposit. " + ADVERT
+    _store(session, [_li(7, company="Scam Co", content=advert)])
+    job = _job(session, 7)
+    session.add(
+        JobVerification(
+            job_id=job.id,
+            source_hash=content_hash(job),
+            outcome=ListingVerdict.fake,
+            reasons=["asks the applicant for money"],
+            evidence={"scam_text": ["asks the applicant for money"]},
+            checked_at=NOW,
+        )
+    )
+    session.flush()
+    assert is_fake_job(session, job)
+
+    gateway = _gateway(lambda request: httpx.Response(500))
+    report = await verify_jobs(session, gateway=gateway, settings=_settings(), persist=session.flush, now=NOW)
+    await gateway.aclose()
+    assert report.checked == 1 and report.fake == 0
+    assert not is_fake_job(session, job)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "We will never ask you to pay a fee or deposit.",
+        "No registration fee. Training fees are paid by us.",
+        "Retail assistant. You must be over 18. No experience required, full training given.",
+        "You can contact us on WhatsApp or via email.",
+        "Graduate scheme: apply, then message our recruiter on Telegram.",
+        "We process card payments and handle transaction fees for merchants.",
+    ],
+)
+def test_honest_adverts_are_not_scam_text(text: str) -> None:
+    assert scam_reasons(text) == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("To start you must pay a registration fee of £50.", "asks the applicant for money"),
+        ("A small onboarding fee of £30 is required before you start.", "asks the applicant for money"),
+        ("Apply by sending your CV via WhatsApp to +44 7700 900123.", "chat-only contact"),
+        ("Contact us only on Telegram.", "chat-only contact"),
+        ("Must be over 18 and know how to type, that's all you need!", "vague requirements only"),
+    ],
+)
+def test_scam_adverts_are_still_caught(text: str, reason: str) -> None:
+    assert reason in scam_reasons(text)

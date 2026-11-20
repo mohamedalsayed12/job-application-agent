@@ -138,17 +138,19 @@ def check_real(
 
     LinkedIn starts at medium. Scam text or a fake verification forces low.
     Without a low, a company-site confirmation raises to high.
+    Once the check has run its verdict stands in for the scam text, which it already weighed:
+    a job its company's careers page lists is not lowered for scam-like wording.
     """
     signals: list[tuple[Confidence, str]] = [(Confidence.medium, f"listed on {job.source}")]
     if _NOT_A_ROLE.search(job.title):
         signals.append((Confidence.medium, "a general sign-up, not a specific role"))
-    signals.extend((Confidence.low, reason) for reason in scam_reasons(job.description))
-    if verification is not None:
-        if verification.outcome == "fake":
-            reason = verification.reasons[0] if verification.reasons else "failed fake-listing check"
-            signals.append((Confidence.low, reason))
-        elif verification.outcome == "real" and verification.listing_found:
-            signals.append((Confidence.high, "confirmed on company site"))
+    if verification is None:
+        signals.extend((Confidence.low, reason) for reason in scam_reasons(job.description))
+    elif verification.outcome == "fake":
+        reason = verification.reasons[0] if verification.reasons else "failed fake-listing check"
+        signals.append((Confidence.low, reason))
+    elif verification.outcome == "real" and verification.listing_found:
+        signals.append((Confidence.high, "confirmed on company site"))
     levels = [level for level, _ in signals]
     if Confidence.low in levels:
         confidence = Confidence.low
