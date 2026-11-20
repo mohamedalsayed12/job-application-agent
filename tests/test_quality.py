@@ -296,3 +296,25 @@ async def test_the_admin_page_shows_the_report_and_escapes_job_text(
     assert "<script>" not in response.text
     assert "<h2>Summaries</h2>" in response.text
     assert before == {job.id: job.quality_results for job in session.scalars(select(Job))}
+
+
+async def test_the_admin_page_shows_a_sub_penny_spend_in_the_totals(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    session.add(
+        SpendLedger(
+            provider="apify",
+            kind=SpendKind.ai_job_judge,
+            estimated_cost=Decimal("0.003"),
+            actual_cost=Decimal("0.003"),
+            units=Decimal(1),
+            unit_label="job",
+            occurred_at=datetime.now(UTC),
+        )
+    )
+    session.flush()
+
+    response = await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})
+
+    assert response.text.count("£0.0030") == 2
+    assert "£0.00<" not in response.text

@@ -130,8 +130,8 @@ def _render(report: QualityReport) -> str:
 {_examples("Jobs below high confidence", jobs.lower_confidence_examples)}
 <h2>Spending</h2>
 <div class="stats">
-  {_stat("Spent this month", f"£{spend.this_month:.2f}")}
-  {_stat("Spent in total", f"£{spend.total:.2f}")}
+  {_stat("Spent this month", f"£{spend.this_month:.4f}")}
+  {_stat("Spent in total", f"£{spend.total:.4f}")}
 </div>
 {_table(("Kind", "This month £"), ((kind, f"{amount:.4f}") for kind, amount in spend.by_kind_this_month.items()), empty="Nothing spent this month.")}
 {_table(("Provider", "Period", "Money cap", "Request cap", "Currency"), spend.caps, empty="No budget caps set.")}
