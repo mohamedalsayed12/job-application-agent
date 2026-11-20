@@ -798,3 +798,87 @@ async def test_a_sent_email_is_never_rewritten_by_a_later_edit_or_resend(session
         app.dependency_overrides.clear()
         get_settings.cache_clear()
         throttle.reset()
+
+
+async def test_save_send_and_copy_refuse_a_contact_from_another_job(session: Session, monkeypatch) -> None:
+    from app.accounts import throttle
+    from app.api.forms import require_csrf
+    from app.core.config import get_settings
+    from app.core.db import get_db
+    from app.main import app
+    from app.models import Applicant
+
+    monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    get_settings.cache_clear()
+    throttle.reset()
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as client:
+            await client.post("/register", data={"email": "mixed@example.com", "password": "correct horse battery"})
+            applicant = session.scalar(select(Applicant).where(Applicant.email == "mixed@example.com"))
+            job_a = _matched_job(session, applicant.id)
+            _store(session, [_li(98, company="Beta", title="Junior Tester")])
+            from app.models import Job, JobLink, JobPosting
+
+            job_b = session.scalar(
+                select(Job)
+                .join(JobLink, JobLink.job_id == Job.id)
+                .join(JobPosting, JobPosting.id == JobLink.job_posting_id)
+                .where(JobPosting.source_job_id == "98")
+            )
+            job_b.freshness = JobFreshness.open
+            session.add(
+                ApplicantJobMatch(
+                    applicant_id=applicant.id,
+                    job_id=job_b.id,
+                    score=Decimal("1.0"),
+                    reasons={},
+                    role_match=True,
+                    location_fit=True,
+                    salary_status=SalaryStatus.unknown,
+                )
+            )
+            session.flush()
+            assert (await client.post(f"/jobs/{job_a.id}/applied")).status_code == 303
+            assert (await client.post(f"/jobs/{job_b.id}/applied")).status_code == 303
+            contact = OutreachContact(
+                applicant_id=applicant.id,
+                job_id=job_a.id,
+                full_name="Casey Hire",
+                title="Hiring Manager",
+                company_name="Acme",
+                linkedin_url="https://www.linkedin.com/in/casey",
+                email="casey@acme.test",
+                role_kind="hiring_manager",
+                evidence={},
+                source_actor="test",
+            )
+            session.add(contact)
+            session.flush()
+            draft = OutreachDraft(
+                applicant_id=applicant.id,
+                contact_id=contact.id,
+                job_id=job_a.id,
+                channel=OutreachChannel.gmail.value,
+                subject="About Junior Developer",
+                body="Hi Casey.",
+                pattern_ids=["name_the_role"],
+                evidence_digest="abc",
+                status=OutreachDraftStatus.draft.value,
+            )
+            session.add(draft)
+            session.flush()
+            form = {"draft_id": str(draft.id), "subject": "x", "body": "changed"}
+            wrong = f"/jobs/{job_b.id}/outreach/{contact.id}"
+            right = f"/jobs/{job_a.id}/outreach/{contact.id}"
+
+            for action in ("save", "send", "copy"):
+                assert (await client.post(f"{wrong}/{action}", data=form)).status_code == 404
+            session.refresh(draft)
+            assert draft.user_edited_body is None
+            assert (await client.post(f"{right}/save", data=form)).status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        throttle.reset()
