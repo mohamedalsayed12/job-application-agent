@@ -249,6 +249,9 @@ Requirements:
 
 Put the whole letter in the "letter" field as plain text, paragraphs separated by a blank line. No markdown formatting."""
 
+# Each swap must keep the claim the same. Words with their own meaning stay even when they sound like
+# stock CV wording: "stakeholder" is not "team member", "facilitated" a workshop is not "helped" one,
+# "scalable" and "bandwidth" are technical terms. Only filler phrases are deleted outright.
 AI_PHRASE_REPLACEMENTS: dict[str, str] = {
     "spearheaded": "led",
     "orchestrated": "coordinated",
@@ -263,7 +266,6 @@ AI_PHRASE_REPLACEMENTS: dict[str, str] = {
     "envisioned": "planned",
     "effectuated": "completed",
     "endeavored": "worked",
-    "facilitated": "helped",
     "utilized": "used",
     "synergy": "collaboration",
     "synergies": "collaborations",
@@ -276,17 +278,13 @@ AI_PHRASE_REPLACEMENTS: dict[str, str] = {
     "game-changer": "innovation",
     "game-changing": "innovative",
     "disruptive": "innovative",
-    "disruptor": "",
     "holistic": "comprehensive",
     "robust": "strong",
-    "scalable": "expandable",
     "actionable": "practical",
     "impactful": "effective",
     "proactive": "active",
     "proactively": "actively",
-    "stakeholder": "team member",
     "deliverables": "outputs",
-    "bandwidth": "capacity",
     "circle back": "follow up",
     "deep dive": "analysis",
     "move the needle": "make progress",
@@ -315,7 +313,6 @@ AI_PHRASE_REPLACEMENTS: dict[str, str] = {
 PLURAL_REPLACEMENTS: dict[str, str] = {
     "paradigm": "approaches",
     "deep dive": "analyses",
-    "bandwidth": "capacities",
     "low-hanging fruit": "quick wins",
     "move the needle": "make progress",
 }

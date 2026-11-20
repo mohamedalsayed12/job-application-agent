@@ -290,9 +290,41 @@ def test_stock_ai_wording_goes_unless_the_candidate_wrote_it() -> None:
     cleaned, removed = remove_ai_phrases(data, "", protected_text="")
     kept, _ = remove_ai_phrases(data, "", protected_text="I built a robust test suite.")
 
-    assert cleaned["summary"] == "Led a strong API with team members."
-    assert removed == ["robust", "spearheaded", "stakeholder"]
-    assert kept["summary"] == "Led a robust API with team members."
+    assert cleaned["summary"] == "Led a strong API with stakeholders."
+    assert removed == ["robust", "spearheaded"]
+    assert kept["summary"] == "Led a robust API with stakeholders."
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Led stakeholder communication.",
+        "Facilitated workshops for 20 people.",
+        "Built scalable services.",
+        "Raised network bandwidth by 40%.",
+        "Was a disruptor in the market.",
+    ],
+)
+def test_the_cleaner_never_changes_what_a_line_claims(line: str) -> None:
+    cleaned, removed = remove_ai_phrases({"line": line}, "", protected_text="")
+    assert cleaned["line"] == line
+    assert removed == []
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Set the team's approach, going forward.", "Set the team's approach."),
+        ("We delivered on time, at the end of the day.", "We delivered on time."),
+        ("At the end of the day, we shipped it.", "We shipped it."),
+        ("Going forward, I will lead releases.", "I will lead releases."),
+        ("Moving forward we hired two engineers. Going forward, we grew.", "We hired two engineers. We grew."),
+        ("Plans going forward include testing.", "Plans include testing."),
+    ],
+)
+def test_a_deleted_filler_phrase_leaves_a_clean_sentence(line: str, expected: str) -> None:
+    cleaned, _ = remove_ai_phrases({"line": line}, "", protected_text="")
+    assert cleaned["line"] == expected
 
 
 def test_em_dash_becomes_a_comma_without_stray_spaces() -> None:

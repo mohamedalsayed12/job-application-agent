@@ -63,7 +63,10 @@ def remove_ai_phrases(data: Any, job_description: str, protected_text: str) -> t
             if phrase in keep or not pattern.search(text):
                 continue
             removed.add(phrase)
+            if not AI_PHRASE_REPLACEMENTS[phrase]:
+                text = _drop_filler(text, phrase)
             text = pattern.sub(lambda match, phrase=phrase: _substitute(match, phrase), text)
+            text = re.sub(r",[ \t]*(?=[.;:!?])", "", text)
             text = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", text)
             text = re.sub(r"(?<![ \t])[ \t]+([.,;:!?])", r"\1", text)
             text = text.strip(" \t")
@@ -114,6 +117,21 @@ def _phrase_pattern(phrase: str) -> re.Pattern[str]:
 _PATTERNS = {
     phrase: _phrase_pattern(phrase) for phrase in sorted(AI_PHRASE_REPLACEMENTS, key=len, reverse=True)
 }
+
+
+def _drop_filler(text: str, phrase: str) -> str:
+    """Delete a filler phrase with the comma that set it off, so no ",." or leading ", " is left.
+
+    "on time, going forward." -> "on time."; "Going forward, I will" -> "I will".
+    """
+    filler = rf"(?<!\w){re.escape(phrase)}(?!\w)"
+    text = re.sub(rf"[ \t]*,?[ \t]*{filler}[ \t]*(?=[.;:!?]|$)", "", text, flags=re.IGNORECASE | re.MULTILINE)
+    return re.sub(
+        rf"(?P<lead>^|(?<=[.!?])[ \t]+){filler}[ \t]*,?[ \t]*(?P<next>\w)",
+        lambda match: match.group("lead") + match.group("next").upper(),
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
 
 
 def _substitute(match: re.Match[str], phrase: str) -> str:
