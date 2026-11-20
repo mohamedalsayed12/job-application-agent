@@ -77,7 +77,7 @@ async def plan_application(
     if retire_if_flagged(db, row):
         db.commit()
         raise HTTPException(status.HTTP_409_CONFLICT, detail=FLAGGED)
-    if row.status in (ApplicationStatus.submitted.value, ApplicationStatus.filled_awaiting_review.value):
+    if row.status != ApplicationStatus.ready_to_fill.value:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="This application is no longer being filled.")
     plan = await build_application_plan(db, applicant, row, body.fields)
     db.commit()

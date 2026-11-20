@@ -727,6 +727,27 @@ async def test_the_extension_reports_only_on_applications_it_can_fill(
     assert row.status == current
 
 
+@pytest.mark.parametrize("current", ["submitted", "filled_awaiting_review", "needs_input", "failed", "abandoned"])
+async def test_the_extension_only_plans_applications_waiting_to_be_filled(
+    client: httpx.AsyncClient, session: Session, current: str
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    row = _ready_application(session, applicant, _job(session))
+    row.status = current
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.post(
+        f"/extension/applications/{row.id}/plan",
+        headers={"Authorization": f"Bearer {token}"},
+        json=_plan_fields(("f0", "First name", "first_name")),
+    )
+    assert response.status_code == 409
+    session.refresh(row)
+    assert row.status == current
+
+
 @pytest.mark.parametrize("current", ["ready_to_fill", "filled_awaiting_review"])
 async def test_the_extension_reports_a_failed_fill(client: httpx.AsyncClient, session: Session, current: str) -> None:
     await _register(client)
