@@ -37,6 +37,7 @@ from app.outreach.draft import current_body, draft_for_contact
 from app.outreach.find import find_contacts
 from app.outreach.gmail import (
     active_connection,
+    already_sent,
     authorize_url,
     exchange_code,
     gmail_configured,
@@ -392,6 +393,9 @@ def outreach_save(
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
         raise HTTPException(status_code=404)
+    if draft.channel == OutreachChannel.gmail.value and already_sent(db, draft):
+        # What was emailed stays on record: a sent draft is never rewritten.
+        return RedirectResponse(f"/jobs/{job.id}/outreach/{contact.id}?notice=already_sent", status_code=_SEE_OTHER)
     draft.user_edited_body = body.strip()
     if draft.channel == OutreachChannel.gmail.value and subject is not None:
         draft.subject = subject.strip() or draft.subject
@@ -419,6 +423,9 @@ async def outreach_send(
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
         raise HTTPException(status_code=404)
+    if draft.channel == OutreachChannel.gmail.value and already_sent(db, draft):
+        # What was emailed stays on record: a sent draft is never rewritten.
+        return RedirectResponse(f"/jobs/{job.id}/outreach/{contact.id}?notice=already_sent", status_code=_SEE_OTHER)
     draft.user_edited_body = body.strip()
     if draft.channel == OutreachChannel.gmail.value and subject is not None:
         draft.subject = subject.strip() or draft.subject

@@ -674,3 +674,73 @@ async def test_a_rejected_draft_call_shows_a_readable_notice_and_a_retry_button(
         app.dependency_overrides.clear()
         get_settings.cache_clear()
         throttle.reset()
+
+
+async def test_a_sent_email_is_never_rewritten_by_a_later_edit_or_resend(session: Session, monkeypatch) -> None:
+    from app.accounts import throttle
+    from app.api.forms import require_csrf
+    from app.core.config import get_settings
+    from app.core.db import get_db
+    from app.main import app
+    from app.models import Applicant
+
+    monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    get_settings.cache_clear()
+    throttle.reset()
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as client:
+            await client.post("/register", data={"email": "sent@example.com", "password": "correct horse battery"})
+            applicant = session.scalar(select(Applicant).where(Applicant.email == "sent@example.com"))
+            job = _matched_job(session, applicant.id)
+            assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
+            contact = OutreachContact(
+                applicant_id=applicant.id,
+                job_id=job.id,
+                full_name="Casey Hire",
+                title="Hiring Manager",
+                company_name="Acme",
+                linkedin_url="https://www.linkedin.com/in/casey",
+                email="casey@acme.test",
+                role_kind="hiring_manager",
+                evidence={},
+                source_actor="test",
+            )
+            session.add(contact)
+            session.flush()
+            draft = OutreachDraft(
+                applicant_id=applicant.id,
+                contact_id=contact.id,
+                job_id=job.id,
+                channel=OutreachChannel.gmail.value,
+                subject="About Junior Developer",
+                body="Hi Casey, I am interested in the Junior Developer role.",
+                user_edited_body="What I actually sent.",
+                pattern_ids=["name_the_role"],
+                evidence_digest="abc",
+                status=OutreachDraftStatus.sent.value,
+            )
+            session.add(draft)
+            session.flush()
+            session.add(OutreachSend(draft_id=draft.id, channel=OutreachChannel.gmail.value, status="sent"))
+            session.flush()
+            base = f"/jobs/{job.id}/outreach/{contact.id}"
+            form = {"draft_id": str(draft.id), "subject": "x", "body": "again"}
+
+            saved = await client.post(f"{base}/save", data=form)
+            resent = await client.post(f"{base}/send", data={**form, "confirm": "1"})
+
+            assert saved.headers["location"].endswith("notice=already_sent")
+            assert resent.headers["location"].endswith("notice=already_sent")
+            session.refresh(draft)
+            assert (draft.subject, draft.user_edited_body, draft.status) == (
+                "About Junior Developer",
+                "What I actually sent.",
+                OutreachDraftStatus.sent.value,
+            )
+            assert len(session.scalars(select(OutreachSend)).all()) == 1
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        throttle.reset()
