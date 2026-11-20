@@ -1,8 +1,9 @@
-"""Fetch and cache employer mission / vision / values from public pages (D55)."""
+"""Fetch and cache employer mission / vision / values from public pages (D60)."""
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urljoin, urlparse
 
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 from app.fetch.policy import BLOCKED_SUFFIXES, host_matches_suffix
 from app.models import CompanyResearch, CompanyResearchStatus
+from app.tailor.refiner import job_keyword_terms
 
 PROMPT_VERSION = "company-research-v1"
 TTL = timedelta(days=30)
@@ -202,6 +204,205 @@ def _snippet(text: str, lower: str, needles: tuple[str, ...]) -> str:
         end = min(len(text), idx + 280)
         return text[start:end].strip()
     return ""
+
+
+NO_SITE = "No employer website was named in the advert or the apply link."
+NO_LOAD = "The employer website did not load."
+NO_TITLE = "The website title did not name the company, so its wording was not used."
+NO_WORDS = "The employer website did not repeat any wording we could use."
+
+_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_URL = re.compile(r"https?://[^\s)>\"]+")
+_TERM = re.compile(r"[A-Za-z][A-Za-z0-9+#.-]{4,}")
+_TERM_STOP = frozenset(
+    "about company their with from this that have been were your into also they them just more "
+    "than over under after before there these those using through where when what which while "
+    "would could should and the for are was not you all can will our team work jobs career "
+    "careers people years year".split()
+)
+
+
+# Words many company names share. A title that matches only these could be any company's site.
+_COMPANY_FILLER = frozenset(
+    "limited group holdings company services solutions consulting consultancy recruitment international "
+    "global technologies technology systems partners associates management enterprises".split()
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SiteTerms:
+    row: CompanyResearch | None
+    terms: list[str]
+    note: str
+
+
+def employer_domains(apply_url: str | None, named_url: str | None, posting: str) -> list[str]:
+    """Employer hosts in the order to try, never a job board."""
+    found: list[str] = []
+    for candidate in (apply_url, named_url, *_URL.findall(posting)):
+        domain = official_domain_from_apply_url(candidate)
+        if domain and domain not in found:
+            found.append(domain)
+    return found
+
+
+def employer_domain(apply_url: str | None, named_url: str | None, posting: str) -> str | None:
+    """The employer's own host, never a job board."""
+    domains = employer_domains(apply_url, named_url, posting)
+    return domains[0] if domains else None
+
+
+def title_names_company(title: str, company_name: str) -> bool:
+    tokens = [
+        token.casefold()
+        for token in re.findall(r"[A-Za-z0-9]{4,}", company_name)
+        if token.casefold() not in _COMPANY_FILLER
+    ]
+    if not tokens and len(company_name.strip()) >= 3:
+        tokens = [company_name.strip().casefold()]
+    words = {word.casefold() for word in re.findall(r"[A-Za-z0-9]{3,}", title)}
+    return any(token in words for token in tokens)
+
+
+def terms_from_text(text: str, *, company_name: str, limit: int = 8) -> list[str]:
+    """Words the employer's pages repeat, in the casing of their first use."""
+    skipped = {token.casefold() for token in re.findall(r"[A-Za-z0-9]{4,}", company_name)}
+    counts: dict[str, int] = {}
+    casing: dict[str, str] = {}
+    for word in _TERM.findall(text):
+        key = word.casefold()
+        if key in _TERM_STOP or key in skipped:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        casing.setdefault(key, word)
+    ranked = sorted((key for key, count in counts.items() if count >= 2), key=lambda key: (-counts[key], key))
+    return [casing[key] for key in ranked[:limit]]
+
+
+def with_keyword_sources(keywords: dict, company_terms: list[str], note: str) -> dict:
+    """Each term keeps where it was read from."""
+    advert = job_keyword_terms(keywords)
+    company_keys = {term.casefold() for term in company_terms}
+    advert_keys = {term.casefold() for term in advert}
+    sources = [
+        {"term": term, "source": "advert and company" if term.casefold() in company_keys else "advert"}
+        for term in advert
+    ]
+    sources.extend(
+        {"term": term, "source": "company"} for term in company_terms if term.casefold() not in advert_keys
+    )
+    return {**keywords, "company_keywords": list(company_terms), "sources": sources, "company_note": note}
+
+
+async def load_site_terms(
+    session: Session,
+    gateway: FetchGateway,
+    *,
+    company_name: str,
+    apply_url: str | None,
+    named_url: str | None,
+    posting: str,
+    now: datetime | None = None,
+) -> SiteTerms:
+    """Wording from the employer's site, cached per company. A failed read is not cached."""
+    now = now or datetime.now(UTC)
+    if not company_name.strip():
+        return SiteTerms(None, [], NO_SITE)
+    domains = employer_domains(apply_url, named_url, posting)
+    row = session.scalars(select(CompanyResearch).where(CompanyResearch.company_key == company_key(company_name))).first()
+    if not domains:
+        return SiteTerms(row, [], NO_SITE)
+    for domain in domains:
+        cached = _cached_terms(row, domain, now)
+        if cached is not None:
+            return SiteTerms(row, cached[0], cached[1])
+    note = NO_TITLE
+    for domain in domains:
+        home = await _page(gateway, f"https://{domain}/", domain)
+        if home is None:
+            note = NO_LOAD
+            continue
+        raw, text = home
+        if not title_names_company(_title_text(raw), company_name):
+            note = NO_TITLE
+            continue
+        pages = await _fetch_about_pages(gateway, domain)
+        blob = "\n".join([text, *(page for _, page in pages)])
+        terms = terms_from_text(blob, company_name=company_name)
+        saved_note = "" if terms else NO_WORDS
+        saved = _save_terms(
+            session, row, company_name=company_name, domain=domain, terms=terms, note=saved_note, now=now
+        )
+        return SiteTerms(saved, terms, saved_note)
+    return SiteTerms(row, [], note)
+
+
+def _title_text(raw: str) -> str:
+    match = _TITLE.search(raw)
+    if match is None:
+        return ""
+    return _SPACE.sub(" ", _TAG.sub(" ", match.group(1))).strip()
+
+
+def _cached_terms(row: CompanyResearch | None, domain: str, now: datetime) -> tuple[list[str], str] | None:
+    if row is None or not isinstance(row.site_terms, dict) or row.site_terms.get("domain") != domain:
+        return None
+    raw = row.site_terms.get("fetched_at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        fetched = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=UTC)
+    if now - fetched > TTL:
+        return None
+    terms = row.site_terms.get("terms")
+    if not isinstance(terms, list):
+        return None
+    note = row.site_terms.get("note")
+    return [term for term in terms if isinstance(term, str)], note if isinstance(note, str) else ""
+
+
+def _save_terms(
+    session: Session,
+    row: CompanyResearch | None,
+    *,
+    company_name: str,
+    domain: str,
+    terms: list[str],
+    note: str,
+    now: datetime,
+) -> CompanyResearch:
+    payload = {"terms": terms, "domain": domain, "fetched_at": now.isoformat(), "note": note}
+    if row is None:
+        # fetched_at stays stale so interview research still loads the About pages itself.
+        row = CompanyResearch(
+            company_key=company_key(company_name),
+            company_name=company_name.strip() or company_name,
+            status=CompanyResearchStatus.unavailable.value,
+            research=_empty_research(),
+            official_domain=None,
+            fetched_at=now - TTL - timedelta(days=1),
+            site_terms=payload,
+        )
+        session.add(row)
+    else:
+        row.site_terms = payload
+        row.updated_at = now
+    session.flush()
+    return row
+
+
+async def _page(gateway: FetchGateway, url: str, domain: str) -> tuple[str, str] | None:
+    outcome = await gateway.fetch(FetchRequest(url=url, kind="page", official_domain=domain, timeout_s=15.0))
+    if isinstance(outcome, FetchRefusal) or not isinstance(outcome, FetchResponse):
+        return None
+    if outcome.status_code != 200 or not outcome.body:
+        return None
+    raw = outcome.body.decode("utf-8", errors="replace")
+    return raw, html_to_text(outcome.body, max_chars=8000)
 
 
 def research_for_prompt(row: CompanyResearch) -> str:

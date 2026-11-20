@@ -35,12 +35,15 @@ class InvalidLinkError(AccountError):
 def _clean_email(email: str) -> str:
     cleaned = email.strip()
     local, at, domain = cleaned.partition("@")
-    if not (local and at and domain) or len(cleaned) > MAX_EMAIL_LENGTH or any(c.isspace() for c in cleaned):
+    labels = domain.split(".")
+    if not (local and at and domain) or len(labels) < 2 or not all(labels) or len(cleaned) > MAX_EMAIL_LENGTH or any(c.isspace() for c in cleaned):
         raise AccountError("Enter a valid email address.")
     return cleaned
 
 
 def _check_password(password: str) -> None:
+    if not password.strip():
+        raise AccountError("Password can't be blank or only spaces.")
     if len(password) < MIN_PASSWORD_LENGTH:
         raise AccountError(f"Use a password of at least {MIN_PASSWORD_LENGTH} characters.")
     if len(password) > MAX_PASSWORD_LENGTH:

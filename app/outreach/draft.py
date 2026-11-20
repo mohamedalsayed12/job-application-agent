@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai.anthropic import AiCallFailure, AiCallResponse, send_anthropic_request
+from app.applicants.cv import base_cv
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
@@ -22,6 +23,7 @@ from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.models import (
     CvFile,
+    CvFileType,
     Job,
     OutreachChannel,
     OutreachContact,
@@ -36,6 +38,7 @@ from app.outreach.patterns import intent_for, load_patterns
 PROMPT_VERSION = "outreach-draft-v1"
 LINKEDIN_MAX = 300
 GMAIL_WORD_SOFT = 120
+MAX_PATTERN_IDS = 6
 
 SYSTEM = """You write a short, human outreach message for a job seeker.
 Use only PROFILE_DATA, CV_DATA, JOB_POSTING_DATA, CONTACT_DATA and PATTERN_DATA.
@@ -55,7 +58,7 @@ SCHEMA = {
     "properties": {
         "subject": {"type": "string"},
         "body": {"type": "string"},
-        "pattern_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+        "pattern_ids": {"type": "array", "items": {"type": "string"}},
     },
 }
 
@@ -85,7 +88,8 @@ async def draft_for_contact(
     patterns = library.for_role(contact.role_kind)
     quotes = list(research.quotes) if research else []
     about = research.about_text if research else None
-    digest = _digest(job, contact, research, channel, library.version)
+    chosen = base_cv(session, applicant_id, job)
+    digest = _digest(job, contact, research, channel, library.version, None if chosen is None else chosen.id)
     existing = session.scalar(
         select(OutreachDraft).where(
             OutreachDraft.applicant_id == applicant_id,
@@ -102,7 +106,7 @@ async def draft_for_contact(
     ):
         return DraftResult(draft=existing)
 
-    cv = _cv_excerpt(session, applicant_id, settings)
+    cv = _cv_excerpt(chosen, settings)
     sources = _sources_text(job, contact, about, quotes, cv)
     gate = BudgetGate(session, clock=clock)
     cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_outreach, units=Decimal(1), settings=settings)
@@ -136,13 +140,14 @@ async def draft_for_contact(
         intent=intent_for(contact.role_kind),
     )
     if isinstance(call, AiCallFailure):
-        gate.settle(reservation, consumed=False)
+        gate.settle(reservation, consumed=call.billed)
         persist()
         return DraftResult(problem=call.reason)
 
     subject = str(call.payload.get("subject") or "").strip() or None
     body = str(call.payload.get("body") or "").strip()
-    pattern_ids = [str(p) for p in call.payload.get("pattern_ids") or [] if str(p) in {x.id for x in patterns}]
+    known = {x.id for x in patterns}
+    pattern_ids = [str(p) for p in call.payload.get("pattern_ids") or [] if str(p) in known][:MAX_PATTERN_IDS]
     if not pattern_ids:
         pattern_ids = [p.id for p in patterns[:3]]
     if channel == OutreachChannel.linkedin_note:
@@ -185,6 +190,7 @@ def _digest(
     research: OutreachResearch | None,
     channel: OutreachChannel,
     pattern_version: str,
+    cv_id: UUID | None,
 ) -> str:
     payload = {
         "job": job.id.hex,
@@ -196,14 +202,12 @@ def _digest(
         "channel": channel.value,
         "patterns": pattern_version,
         "prompt": PROMPT_VERSION,
+        "cv": "" if cv_id is None else cv_id.hex,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def _cv_excerpt(session: Session, applicant_id: UUID, settings: Settings) -> str:
-    from app.models import CvFileType
-
-    cv = session.scalar(select(CvFile).where(CvFile.applicant_id == applicant_id))
+def _cv_excerpt(cv: CvFile | None, settings: Settings) -> str:
     if cv is None:
         return ""
     try:

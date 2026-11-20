@@ -6,7 +6,7 @@ import html
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,24 +17,57 @@ from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
 from app.api.interview_intel import _materials, _plan, _section, _themes
 from app.api.jobs import get_gateway
+from app.api.listings import visible_job
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.interview.job_pack import _matched_role, build_job_pack
+from app.interview.roles import role_key
 from app.interview.service import enqueue
-from app.models import Applicant, InterviewJobPack, Job, JobFreshness
+from app.models import (
+    Applicant,
+    InterviewIntelRequest,
+    InterviewJobPack,
+    InterviewRequestStatus,
+    Job,
+)
 
 router = APIRouter(prefix="/jobs", tags=["interview-intel"])
 
 
-def _job(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> tuple[Job, str]:
-    job = db.get(Job, job_id)
-    if job is None or job.freshness != JobFreshness.open:
-        raise HTTPException(status_code=404)
+def _job(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> tuple[Job, str] | None:
+    job = visible_job(db, applicant_id, job_id)
     role = _matched_role(db, applicant_id, job)
-    if role is None:
-        raise HTTPException(status_code=404)
-    return job, role
+    return None if role is None else (job, role)
+
+
+def _not_available(request: Request) -> HTMLResponse:
+    return page(
+        "Interview practice",
+        "<h1>Interview practice isn&#39;t available for this job</h1>"
+        "<p>Practice packs are built for jobs that match your target roles, while they are still open.</p>"
+        '<p><a href="/listings">Back to your matches</a></p>',
+        status_code=404,
+        header=applicant_bar(request, "matches"),
+        narrow=True,
+    )
+
+
+def _research_in_progress(db: Session, applicant_id: uuid.UUID, role: str) -> bool:
+    return (
+        db.scalar(
+            select(InterviewIntelRequest.id)
+            .where(
+                InterviewIntelRequest.applicant_id == applicant_id,
+                InterviewIntelRequest.role_key == role_key(role),
+                InterviewIntelRequest.status.in_(
+                    (InterviewRequestStatus.queued.value, InterviewRequestStatus.running.value)
+                ),
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 @router.get("/{job_id}/interview", response_class=HTMLResponse)
@@ -44,7 +77,10 @@ def interview_job_view(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    job, _ = _job(db, applicant.id, job_id)
+    found = _job(db, applicant.id, job_id)
+    if found is None:
+        return _not_available(request)
+    job, role = found
     pack = db.scalar(
         select(InterviewJobPack)
         .where(InterviewJobPack.applicant_id == applicant.id, InterviewJobPack.job_id == job_id)
@@ -57,7 +93,13 @@ def interview_job_view(
         '<button type="submit" class="primary">Build or refresh practice pack</button></form>'
     )
     if pack is None or pack.expires_at <= datetime.now(UTC):
-        body = heading + '<p>Build a pack from this advert and public interview stories.</p>' + form
+        waiting = (
+            '<p class="notice">Role interview research is queued. Return after the worker finishes, '
+            "then build this job's pack.</p>"
+            if _research_in_progress(db, applicant.id, role)
+            else ""
+        )
+        body = heading + waiting + '<p>Build a pack from this advert and public interview stories.</p>' + form
     else:
         body = (
             heading
@@ -81,7 +123,10 @@ async def interview_job_create(
     db: Session = Depends(get_db),
     gateway: FetchGateway = Depends(get_gateway),
 ) -> HTMLResponse | RedirectResponse:
-    job, role = _job(db, applicant.id, job_id)
+    found = _job(db, applicant.id, job_id)
+    if found is None:
+        return _not_available(request)
+    job, role = found
     result = await build_job_pack(
         db, applicant_id=applicant.id, job=job, gateway=gateway, settings=get_settings()
     )

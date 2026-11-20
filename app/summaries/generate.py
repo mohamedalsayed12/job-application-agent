@@ -171,7 +171,7 @@ async def summary_for_view(
     call = await _call(gateway, posting, settings=settings, model=model)
     if isinstance(call, AiCallFailure):
         logger.warning("job summary failed for %s: %s", job.id, call.reason)
-        gate.settle(reservation, consumed=False)
+        gate.settle(reservation, consumed=call.billed)
         session.delete(row)
         persist()
         return Shown(None, Reason.provider_failed)

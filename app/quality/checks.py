@@ -12,27 +12,14 @@ from enum import StrEnum
 
 from app.cleaning.linking import title_key
 from app.models import JobFreshness
+from app.verify.scam_text import scam_reasons
 
 FLAG_OLDER_THAN = timedelta(days=60)
 REPOST_WINDOW = timedelta(days=30)
+RECENT_WITHIN = timedelta(hours=48)
 # Search snippets run to about 300 characters. The shortest real advert stored so far has 605.
 MIN_FULL_DESCRIPTION = 300
 
-# Payment and fintech adverts talk about fees and payments all the time, so these need the request itself.
-_SCAM_SIGNS = (
-    (
-        "asks the applicant for money",
-        re.compile(
-            r"\b(?:registration|training|processing|admin(?:istration)?) fees?\b"
-            r"|\bpay (?:a|an|the|your) (?:\w+ )?(?:fee|deposit)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "chat-only contact",
-        re.compile(r"\b(?:contact|message|text|reach|apply)\b[^.]{0,40}\b(?:whatsapp|telegram)\b", re.IGNORECASE),
-    ),
-)
 _NOT_A_ROLE = re.compile(
     r"talent (?:community|pool|network|pipeline)|can.t find|general application|speculative|expression of interest",
     re.IGNORECASE,
@@ -45,12 +32,10 @@ class Confidence(StrEnum):
     high = "high"
 
 
-_RANK = {Confidence.low: 0, Confidence.medium: 1, Confidence.high: 2}
-
-
 class NotRecent(StrEnum):
     closed = "closed"
     past_closing_date = "past_closing_date"
+    not_seen_in_48_hours = "not_seen_in_48_hours"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +84,11 @@ class JobQuality:
         return self.not_recent is None
 
     @property
+    def not_ended(self) -> bool:
+        """Not closed and before its closing date. Matching uses this, not the 48-hour report rule: a job a daily search no longer returns is still open until it closes (D54)."""
+        return self.not_recent in (None, NotRecent.not_seen_in_48_hours)
+
+    @property
     def complete(self) -> bool:
         return not self.missing
 
@@ -126,24 +116,47 @@ def check_recent(job: JobFacts, now: datetime) -> NotRecent | None:
         return NotRecent.closed
     if job.closes_at is not None and job.closes_at <= now:
         return NotRecent.past_closing_date
+    if job.last_seen_at < now - RECENT_WITHIN:
+        return NotRecent.not_seen_in_48_hours
     return None
 
 
-def check_real(job: JobFacts) -> tuple[Confidence, tuple[str, ...]]:
-    """The confidence is the lowest any signal allows. Companies House is not connected yet.
+@dataclass(frozen=True, slots=True)
+class VerificationSignal:
+    """What the D55 fake-listing check concluded for this job, if it has run."""
 
-    LinkedIn checks who posts, but anyone can post there, so a job starts at medium.
+    outcome: str
+    listing_found: bool
+    reasons: tuple[str, ...]
+
+
+def check_real(
+    job: JobFacts,
+    verification: VerificationSignal | None = None,
+) -> tuple[Confidence, tuple[str, ...]]:
+    """Real confidence for a job.
+
+    LinkedIn starts at medium. Scam text or a fake verification forces low.
+    Without a low, a company-site confirmation raises to high.
     """
-    signals = [(Confidence.medium, f"listed on {job.source}")]
+    signals: list[tuple[Confidence, str]] = [(Confidence.medium, f"listed on {job.source}")]
     if _NOT_A_ROLE.search(job.title):
         signals.append((Confidence.medium, "a general sign-up, not a specific role"))
-    signals.extend(
-        (Confidence.low, reason) for reason, pattern in _SCAM_SIGNS if pattern.search(job.description or "")
-    )
-    return (
-        min((level for level, _ in signals), key=_RANK.__getitem__),
-        tuple(reason for _, reason in signals),
-    )
+    signals.extend((Confidence.low, reason) for reason in scam_reasons(job.description))
+    if verification is not None:
+        if verification.outcome == "fake":
+            reason = verification.reasons[0] if verification.reasons else "failed fake-listing check"
+            signals.append((Confidence.low, reason))
+        elif verification.outcome == "real" and verification.listing_found:
+            signals.append((Confidence.high, "confirmed on company site"))
+    levels = [level for level, _ in signals]
+    if Confidence.low in levels:
+        confidence = Confidence.low
+    elif Confidence.high in levels:
+        confidence = Confidence.high
+    else:
+        confidence = Confidence.medium
+    return confidence, tuple(reason for _, reason in signals)
 
 
 def check_complete(job: JobFacts) -> tuple[str, ...]:
@@ -191,8 +204,13 @@ def _shares_a_place(first: JobFacts, second: JobFacts) -> bool:
     return first.place_keys == second.place_keys or bool(first.place_keys & second.place_keys)
 
 
-def check_job(job: JobFacts, now: datetime, same_advert: SameAdvert | None = None) -> JobQuality:
-    confidence, reasons = check_real(job)
+def check_job(
+    job: JobFacts,
+    now: datetime,
+    same_advert: SameAdvert | None = None,
+    verification: VerificationSignal | None = None,
+) -> JobQuality:
+    confidence, reasons = check_real(job, verification)
     return JobQuality(
         not_recent=check_recent(job, now),
         older_than_60_days=now - job.listed_since > FLAG_OLDER_THAN,

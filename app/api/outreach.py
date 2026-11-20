@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import secrets
 import uuid
 from collections.abc import AsyncIterator
@@ -17,6 +18,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
+from app.api.listings import visible_job
 from app.applications.prepare import has_applied
 from app.applications.ui import applied_button
 from app.core.config import Settings, get_settings
@@ -24,9 +26,7 @@ from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.models import (
     Applicant,
-    ApplicantJobMatch,
     Job,
-    JobFreshness,
     OutreachChannel,
     OutreachContact,
     OutreachDraft,
@@ -49,10 +49,28 @@ from app.outreach.gmail import (
 from app.outreach.patterns import load_patterns
 from app.outreach.research import research_contact
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["outreach"])
 _CSRF = [Depends(require_csrf)]
 _SEE_OTHER = 303
 _APPLY_FIRST = "Mark this job as applied first. Outreach comes after you've sent your application."
+_DRAFT_RETRY = "We couldn't write a message just now. Press Research and draft to try again."
+_DRAFT_PROBLEMS = {
+    "budget": "The spending limit has been reached. Try again after the budget resets.",
+    "not_configured": "Message drafting is not set up on this server yet.",
+    "anthropic_rate_limited": "The AI service is busy. Wait a minute, then press Research and draft again.",
+}
+
+
+def _draft_notice(problem: str) -> str:
+    """Readable text for a draft failure; the raw code goes to the log for the operator."""
+    logger.warning("outreach draft failed: %s", problem)
+    if problem.startswith("invented quote"):
+        return (
+            "The draft quoted something we couldn't find in this person's profile, so we threw it away. "
+            "Press Research and draft to try again."
+        )
+    return _DRAFT_PROBLEMS.get(problem, _DRAFT_RETRY)
 
 
 async def get_gateway() -> AsyncIterator[FetchGateway]:
@@ -61,21 +79,6 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         yield gateway
     finally:
         await gateway.aclose()
-
-
-def _open_matched_job(db: Session, applicant: Applicant, job_id: uuid.UUID) -> Job:
-    job = db.get(Job, job_id)
-    if job is None or job.freshness != JobFreshness.open:
-        raise HTTPException(status_code=404)
-    match = db.scalar(
-        select(ApplicantJobMatch).where(
-            ApplicantJobMatch.applicant_id == applicant.id,
-            ApplicantJobMatch.job_id == job.id,
-        )
-    )
-    if match is None:
-        raise HTTPException(status_code=404)
-    return job
 
 
 def _own_contact(db: Session, applicant: Applicant, contact_id: uuid.UUID) -> OutreachContact:
@@ -102,6 +105,13 @@ def _find_button(job: Job, request: Request, *, applied: bool) -> str:
 </form>"""
 
 
+def _draft_button(job: Job, contact: OutreachContact, request: Request) -> str:
+    return f"""<form method="post" action="/jobs/{job.id}/outreach/{contact.id}/draft">
+  {csrf_field(request)}
+  <button type="submit" class="primary">Research and draft</button>
+</form>"""
+
+
 def _contacts_html(
     job: Job, contacts: list[OutreachContact], request: Request, *, applied: bool, notice: str | None = None
 ) -> str:
@@ -116,10 +126,7 @@ def _contacts_html(
 <div class="card">
   <p><b>{name}</b> · {title} · {kind}</p>
   <p class="muted">{email}</p>
-  <form method="post" action="/jobs/{job.id}/outreach/{contact.id}/draft">
-    {csrf_field(request)}
-    <button type="submit" class="primary">Research and draft</button>
-  </form>
+  {_draft_button(job, contact, request)}
 </div>"""
         )
     body = "\n".join(rows) if rows else '<p class="muted">No contacts stored yet.</p>'
@@ -143,7 +150,7 @@ def outreach_list(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contacts = list(
         db.scalars(
             select(OutreachContact)
@@ -169,7 +176,7 @@ async def outreach_find(
     gateway: FetchGateway = Depends(get_gateway),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     if not has_applied(db, applicant.id, job.id):
         return _apply_first(job)
     report = await find_contacts(
@@ -193,7 +200,7 @@ async def outreach_draft_create(
     gateway: FetchGateway = Depends(get_gateway),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     if contact.job_id != job.id:
         raise HTTPException(status_code=404)
@@ -201,7 +208,8 @@ async def outreach_draft_create(
         return _apply_first(job)
     researched = await research_contact(db, contact, gateway=gateway, settings=settings, persist=db.commit)
     if researched.stopped_by == "budget":
-        return RedirectResponse(f"/jobs/{job.id}/outreach?notice=budget", status_code=_SEE_OTHER)
+        notice = _draft_notice("budget")
+        return RedirectResponse(f"/jobs/{job.id}/outreach?notice={quote(notice)}", status_code=_SEE_OTHER)
     gmail = await draft_for_contact(
         db,
         applicant_id=applicant.id,
@@ -224,10 +232,13 @@ async def outreach_draft_create(
         settings=settings,
         persist=db.commit,
     )
-    draft = gmail.draft or note.draft
-    if draft is None:
-        problem = gmail.problem or note.problem or gmail.stopped_by or note.stopped_by or "draft_failed"
-        return RedirectResponse(f"/jobs/{job.id}/outreach?notice={quote(problem)}", status_code=_SEE_OTHER)
+    problem = gmail.problem or note.problem or gmail.stopped_by or note.stopped_by
+    if gmail.draft is None and note.draft is None:
+        notice = _draft_notice(problem or "draft_failed")
+        return RedirectResponse(f"/jobs/{job.id}/outreach?notice={quote(notice)}", status_code=_SEE_OTHER)
+    if problem:
+        notice = _draft_notice(problem)
+        return RedirectResponse(f"/jobs/{job.id}/outreach/{contact.id}?notice={quote(notice)}", status_code=_SEE_OTHER)
     return RedirectResponse(f"/jobs/{job.id}/outreach/{contact.id}", status_code=_SEE_OTHER)
 
 
@@ -239,7 +250,7 @@ def outreach_contact_page(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     if contact.job_id != job.id:
         raise HTTPException(status_code=404)
@@ -292,7 +303,7 @@ def _draft_html(
     quotes = ""
     if research and research.quotes:
         quotes = "<ul>" + "".join(f"<li>{html.escape(str(q.get('text') or '')[:200])}</li>" for q in research.quotes[:5]) + "</ul>"
-    gmail_form = "<p class=\"muted\">No Gmail draft yet. Press Research and draft again.</p>"
+    gmail_form = '<p class="muted">No Gmail draft yet.</p>'
     if gmail_draft:
         body = html.escape(current_body(gmail_draft))
         subject = html.escape(gmail_draft.subject or "")
@@ -320,7 +331,7 @@ def _draft_html(
   </p>
 </form>
 """
-    note_form = "<p class=\"muted\">No LinkedIn note yet.</p>"
+    note_form = '<p class="muted">No LinkedIn note yet.</p>'
     if note_draft:
         note_body = html.escape(current_body(note_draft))
         profile = (
@@ -353,6 +364,7 @@ def _draft_html(
 <ul>{pattern_bits}</ul>
 <p class="muted">Research hooks</p>
 {quotes or '<p class="muted">None yet.</p>'}
+{"" if gmail_draft and note_draft else _draft_button(job, contact, request)}
 </div>
 <div class="card">
 <h2>Gmail</h2>
@@ -375,7 +387,7 @@ def outreach_save(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
@@ -402,7 +414,7 @@ async def outreach_send(
     gateway: FetchGateway = Depends(get_gateway),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
@@ -438,7 +450,7 @@ def outreach_copy(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    job = _open_matched_job(db, applicant, job_id)
+    job = visible_job(db, applicant.id, job_id)
     contact = _own_contact(db, applicant, contact_id)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:

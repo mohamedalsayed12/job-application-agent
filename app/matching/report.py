@@ -26,15 +26,17 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.anthropic import AiCallResponse
+from app.applicants.cv import cvs_by_applicant, pick_base_cv
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.batches import Ask, Spend, ask_in_batches
-from app.matching.match import showable
+from app.matching.match import level_fit, showable
+from app.matching.verdicts import ADD_LINE
 from app.matching.verdicts import REPORT_PROMPT_VERSION as PROMPT_VERSION
 from app.matching.verdicts import current_verdicts, digest, job_text, load_profiles
-from app.models import ApplicantPreference, CvFile, JobReport, SpendKind
+from app.models import ApplicantJobMatch, ApplicantPreference, JobReport, SpendKind
 from app.quality.checks import JobFacts
 from app.summaries.check import unsupported
 
@@ -184,7 +186,7 @@ def load_readers(session: Session, *, cv_chars: int, applicant_ids: set[uuid.UUI
     """The profile the judge uses, plus salary wish and locations, plus the CV's text when one is uploaded."""
     profiles = load_profiles(session, applicant_ids)
     preferences = {row.applicant_id: row for row in session.scalars(select(ApplicantPreference))}
-    cvs = {row.applicant_id: row for row in session.scalars(select(CvFile).where(CvFile.applicant_id.in_(profiles)))}
+    cvs = {applicant_id: pick_base_cv(rows) for applicant_id, rows in cvs_by_applicant(session, profiles).items()}
     readers: dict[uuid.UUID, Reader] = {}
     for applicant_id, profile in profiles.items():
         preference = preferences[applicant_id]
@@ -320,8 +322,18 @@ def tokens_used_today(session: Session, now: datetime) -> int:
 
 
 def _todo(session: Session, now: datetime, readers: dict[uuid.UUID, Reader]) -> list[_Work]:
-    """Jobs the judge scored 3.0 or more with no report for the current advert, profile and CV. Best score first."""
+    """Jobs the judge scored 3.0 or more with no report for the current advert, profile and CV. Best score first.
+
+    Only jobs the person can see: matched now, or hidden only by their own report, which a changed
+    CV or profile may lift. A job the rules hide (degree, salary, sector) is never paid for.
+    """
     profiles = load_profiles(session, set(readers))
+    matched = {
+        (row.applicant_id, row.job_id)
+        for row in session.execute(
+            select(ApplicantJobMatch.applicant_id, ApplicantJobMatch.job_id).where(ApplicantJobMatch.applicant_id.in_(readers))
+        )
+    }
     facts_by_job = {facts.job_id: facts for facts in showable(session, now) if facts.description}
     texts = {
         job_id: job_text(
@@ -334,16 +346,25 @@ def _todo(session: Session, now: datetime, readers: dict[uuid.UUID, Reader]) -> 
         for job_id, facts in facts_by_job.items()
     }
     digests = {job_id: digest(text) for job_id, text in texts.items()}
-    done = {(row.applicant_id, row.job_id): row.input_hash for row in session.scalars(select(JobReport))}
+    done = {(row.applicant_id, row.job_id): row for row in session.scalars(select(JobReport))}
     work: list[tuple[Decimal, float, _Work]] = []
     for applicant_id, reader in readers.items():
         for job_id, verdict in current_verdicts(session, profiles[applicant_id], digests).items():
             if not verdict.fits or job_id not in facts_by_job:
                 continue
-            wanted = input_hash(reader, texts[job_id])
-            if done.get((applicant_id, job_id)) == wanted:
-                continue
             facts = facts_by_job[job_id]
+            profile = profiles[applicant_id]
+            if not level_fit(facts.title, facts.description, profile.levels, ai_level=verdict.level)[0]:
+                continue
+            wanted = input_hash(reader, texts[job_id])
+            previous = done.get((applicant_id, job_id))
+            if previous is not None and previous.input_hash == wanted:
+                continue
+            hidden_by_report = (
+                previous is not None and previous.prompt_version == PROMPT_VERSION and previous.score < ADD_LINE
+            )
+            if (applicant_id, job_id) not in matched and not hidden_by_report:
+                continue
             work.append((-(verdict.score or Decimal(0)), -facts.first_seen_at.timestamp(), _Work(reader, facts, texts[job_id], wanted)))
     work.sort(key=lambda item: (item[0], item[1]))
     return [item[2] for item in work]

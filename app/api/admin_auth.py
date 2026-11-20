@@ -12,6 +12,7 @@ import time
 
 from fastapi import Header, HTTPException, Request, status
 
+from app.accounts import throttle
 from app.core.config import get_settings
 
 ADMIN_SESSION_SECONDS = 12 * 60 * 60
@@ -22,6 +23,22 @@ def admin_key_matches(provided: str | None) -> bool:
     if not expected:
         return False
     return secrets.compare_digest((provided or "").encode(), expected.encode())
+
+
+def admin_key_header_ok(request: Request, provided: str | None) -> bool:
+    """Shares the admin login form's limit, so the header is no way round it."""
+    if provided is None:
+        return False
+    ip = throttle.client_ip(request)
+    if not throttle.admin_key_header_allowed(ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many wrong admin keys. Wait a while and try again.",
+        )
+    if admin_key_matches(provided):
+        return True
+    throttle.record_wrong_admin_key_header(ip)
+    return False
 
 
 def _session_mark() -> str:
@@ -52,7 +69,7 @@ def _has_admin_session(request: Request) -> bool:
 
 
 def require_admin(request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
-    allowed = admin_key_matches(x_admin_key) if x_admin_key is not None else _has_admin_session(request)
+    allowed = admin_key_header_ok(request, x_admin_key) if x_admin_key is not None else _has_admin_session(request)
     if not allowed:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -2,11 +2,12 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.accounts import admin_router as admin_accounts_router
-from app.api.accounts import admin_session_router
+from app.api.accounts import admin_session_router, current_applicant
 from app.api.accounts import router as accounts_router
 from app.api.applicants import router as applicants_router
 from app.api.applications import router as applications_router
@@ -17,6 +18,7 @@ from app.api.health import router as health_router
 from app.api.interview_intel import router as interview_intel_router
 from app.api.interview_job import router as interview_job_router
 from app.api.jobs import router as jobs_router
+from app.api.listings import JobUnavailable, job_unavailable_page
 from app.api.listings import router as listings_router
 from app.api.outreach import router as outreach_router
 from app.api.privacy import router as privacy_router
@@ -24,6 +26,7 @@ from app.api.profile import router as profile_router
 from app.api.quality import router as quality_router
 from app.api.workflow import router as workflow_router
 from app.core.config import get_settings
+from app.models import Applicant
 
 SESSION_DAYS = 14
 
@@ -48,6 +51,7 @@ app.add_middleware(
     https_only=settings.session_cookie_secure,
 )
 app.add_exception_handler(FormRefused, form_refused_page)
+app.add_exception_handler(JobUnavailable, job_unavailable_page)
 app.include_router(health_router)
 app.include_router(privacy_router)
 app.include_router(accounts_router)
@@ -65,3 +69,8 @@ app.include_router(admin_session_router)
 app.include_router(admin_accounts_router)
 app.include_router(applicants_router)
 app.include_router(quality_router)
+
+
+@app.get("/", include_in_schema=False)
+def home(applicant: Applicant | None = Depends(current_applicant)) -> RedirectResponse:
+    return RedirectResponse("/listings" if applicant else "/login", status_code=303)

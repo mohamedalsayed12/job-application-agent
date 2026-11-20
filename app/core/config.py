@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = "postgresql+psycopg://jaa:jaa@localhost:5432/jaa"
+    database_url: str = "postgresql+psycopg://jaa:jaa@localhost:5436/jaa"
     admin_key: str = "change-me"
     session_secret: str = ""
     # Local development over plain http needs this false, or the browser drops the cookie.
@@ -30,9 +30,14 @@ class Settings(BaseSettings):
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
     api_allowlist: str = (
-        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
-        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com"
+        "api.apify.com,api.anthropic.com,"
+        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,"
+        "api.company-information.service.gov.uk"
     )
+    # D55: Companies House Public Data API. Blank = skip the register lookup.
+    companies_house_api_key: str = ""
+    # Fake-listing checks per worker cycle (CH + page fetches).
+    verify_per_cycle: int = 20
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
     apify_api_token: str = ""
@@ -43,6 +48,8 @@ class Settings(BaseSettings):
     linkedin_posted_within_days: int = 3
     linkedin_stale_days: int = 14
     linkedin_wait_minutes: int = 15
+    # The typed titles and then their related titles, searched in each location.
+    linkedin_titles_per_person: int = 10
     # The scraper charges $0.00027 a job and $0.0005 a run, and Apify adds compute; these ceilings cover all three.
     linkedin_unit_price: Decimal = Decimal("0.001")
     linkedin_run_price: Decimal = Decimal("0.02")
@@ -58,11 +65,7 @@ class Settings(BaseSettings):
     indeed_country: str = "uk"  # actor enum uses uk, not ISO gb
     indeed_unit_price: Decimal = Decimal("0.0002")
     indeed_run_price: Decimal = Decimal("0.01")
-    # Post-MVP apply agent: Greenhouse boards API first, else Apify form-schema actor.
-    apply_form_actor: str = ""
-    apply_form_unit_price: Decimal = Decimal("0.01")
-    apply_form_run_price: Decimal = Decimal("0.02")
-    apply_form_wait_minutes: int = 5
+    # Apply fill: matching form questions the patterns miss to the person's own answers or CV text.
     ai_apply_map_unit_price: Decimal = Decimal("0.002")
     ai_apply_map_model: str = ""
     ai_apply_map_max_output_tokens: int = 800
@@ -85,7 +88,7 @@ class Settings(BaseSettings):
     gmail_token_key: str = ""
 
     # Interview intel: public Reddit, YouTube and LinkedIn posts through Apify (no Instagram/TikTok in v1).
-    interview_reddit_actor: str = "trudax/reddit-scraper-lite"
+    interview_reddit_actor: str = "harshmaur/reddit-search-scraper"
     interview_youtube_actor: str = "streamers/youtube-scraper"
     interview_linkedin_actor: str = "apimaestro/linkedin-posts-search-scraper-no-cookies"
     interview_max_per_platform: int = 25
@@ -117,8 +120,12 @@ class Settings(BaseSettings):
     ai_judge_unit_price: Decimal = Decimal("0.0005")
     # D52: about 6k tokens in (advert and CV) and 1.5k out, ~$0.0014 at the prices above; this is a ceiling.
     ai_report_unit_price: Decimal = Decimal("0.0015")
-    # D55: keyword extract / tailor / ATS revise each reserve this ceiling once.
+    # D60: keyword extract / tailor / ATS revise each reserve this ceiling once.
     ai_tailor_unit_price: Decimal = Decimal("0.003")
+    # About 300 tokens in and 100 out on Haiku 5.5 for one title; this is a ceiling.
+    ai_related_titles_unit_price: Decimal = Decimal("0.001")
+    # D64: about 0.5k tokens in and 0.4k out on Haiku 5.5, well under £0.001; this is a ceiling.
+    ai_ideas_unit_price: Decimal = Decimal("0.002")
 
     # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
     ai_summary_model: str = ""
@@ -128,8 +135,11 @@ class Settings(BaseSettings):
 
     # D43: reading a CV to fill the profile form. Blank model = provider default.
     ai_cv_model: str = ""
-    ai_cv_max_output_tokens: int = 1500
+    ai_cv_max_output_tokens: int = 8000
     ai_cv_max_chars: int = 24000
+    ai_related_titles_max_output_tokens: int = 300
+    # D64: suggesting roles and places to search uses the CV model.
+    ai_ideas_max_output_tokens: int = 800
 
     # D50: the AI judging whether each job fits each person. Blank model = provider default.
     ai_judge_model: str = ""
@@ -150,7 +160,7 @@ class Settings(BaseSettings):
     ai_report_daily_token_cap: int = 3000000
     ai_report_cv_chars: int = 12000
 
-    # D55: tailored CV for Apply / Consider jobs. Blank model = provider default.
+    # D60: tailored CV for listed jobs scoring 3.0 or more. Blank model = provider default.
     ai_tailor_model: str = ""
     ai_tailor_max_output_tokens: int = 8000
     ai_tailor_cv_chars: int = 12000
@@ -162,8 +172,6 @@ class Settings(BaseSettings):
         "indeed_unit_price",
         "indeed_run_price",
         "usd_to_gbp",
-        "apply_form_unit_price",
-        "apply_form_run_price",
         "ai_apply_map_unit_price",
         "interview_collect_unit_price",
         "interview_collect_run_price",
@@ -175,9 +183,11 @@ class Settings(BaseSettings):
         "ai_judge_unit_price",
         "ai_report_unit_price",
         "ai_tailor_unit_price",
+        "ai_related_titles_unit_price",
         "outreach_people_unit_price",
         "outreach_profile_unit_price",
         "outreach_ai_unit_price",
+        "ai_ideas_unit_price",
         mode="before",
     )
     @classmethod
@@ -217,6 +227,9 @@ class Settings(BaseSettings):
 
     def resolved_ai_outreach_model(self) -> str:
         return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_apply_map_model(self) -> str:
+        return self.ai_apply_map_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def gmail_seal_secret(self) -> str:
         return (self.gmail_token_key or self.session_secret).strip()

@@ -10,12 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.listings import load_listings, render_listing
-from app.applicants.cv import store_cv
+from app.applicants.cv import replace_cv, store_cv
 from app.fetch.gateway import FetchGateway
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.matching.report import write_reports
-from app.models import JobReport, SpendLedger
+from app.models import CvFile, JobReport, SpendLedger
 from tests.jobs import _public_resolve
 from tests.test_cv_read import _docx
 from tests.test_judge import _jobs, _policy, _settings
@@ -115,6 +115,7 @@ class _Ai:
 async def _run(session: Session, ai: _Ai):
     gateway, settings = ai.gateway(), _settings(ai_report_unit_price=Decimal("0.0015"))
     await judge_jobs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
+    match_all(session, now=SOON)
     run = await write_reports(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
     match_all(session, now=SOON)
     return run
@@ -186,10 +187,28 @@ async def test_d52_a_report_is_reused_until_the_cv_changes(session: Session) -> 
     await _run(session, ai)
     assert len(ai.reported) == 1
 
-    store_cv(session, applicant, _docx([*CV_LINES, "Built a Django app for a local charity."]))
+    current = session.scalar(select(CvFile).where(CvFile.applicant_id == applicant, CvFile.is_primary.is_(True)))
+    replace_cv(session, applicant, current.id, _docx([*CV_LINES, "Built a Django app for a local charity."]))
     session.flush()
     await _run(session, ai)
 
     assert len(ai.reported) == 2
     assert "Django" in ai.reported[1]
+    assert _job(session, 1).id in _matches(session, applicant)
+
+
+async def test_a_job_its_own_low_report_hid_is_reported_again_when_the_cv_changes(session: Session) -> None:
+    applicant = await _person_with_a_cv(session)
+    ai = _Ai(report=_report(score=2.6, verdict="Skip"))
+    await _run(session, ai)
+    await _run(session, ai)
+    assert (len(ai.reported), _matches(session, applicant)) == (1, {})
+
+    primary = session.scalars(select(CvFile).where(CvFile.applicant_id == applicant)).one()
+    replace_cv(session, applicant, primary.id, _docx([*CV_LINES, "Built a Django app for a local charity."]))
+    session.flush()
+    ai.report = _report()
+    await _run(session, ai)
+
+    assert len(ai.reported) == 2
     assert _job(session, 1).id in _matches(session, applicant)

@@ -16,7 +16,7 @@ PARSE_SYSTEM = "You are a JSON extraction engine. Output only valid JSON, no exp
 
 PARSE_RESUME_PROMPT = """Parse this resume into JSON. Output ONLY the JSON object, no other text.
 
-Map content to standard sections when possible. Put volunteering and other roles held in workExperience. Leave out content that fits no section.
+Map content to standard sections when possible. Put volunteering and other roles held in workExperience, except a society, club or committee role listed under a degree: that goes in the description of the education entry it sits directly beneath (the line after a degree belongs to that degree, not the next one). Leave out content that fits no section.
 
 Example output format:
 {schema}
@@ -96,12 +96,15 @@ Example format:
   "key_responsibilities": ["Lead team"],
   "keywords": ["microservices", "agile"],
   "experience_years": 5,
-  "seniority_level": "senior"
+  "seniority_level": "senior",
+  "company_website": ""
 }}
 
 Extract numeric years (e.g., "5+ years" → 5) and infer seniority level.
 Set "company" to the hiring company name and "role" to the job title exactly as
 written in the posting; use an empty string for either if it is not stated.
+Set "company_website" to the employer's own https URL only when the posting states it.
+Otherwise use an empty string. Never guess a website.
 
 Job description:
 {job_description}"""
@@ -316,3 +319,28 @@ PLURAL_REPLACEMENTS: dict[str, str] = {
     "low-hanging fruit": "quick wins",
     "move the needle": "make progress",
 }
+
+REVISE_SYSTEM = "You are a resume editor repairing machine-written lines. Output only valid JSON. " + DATA_RULE
+
+REVISE_PROMPT = """These lines still sound machine-written. Return quoted changes that fix only those lines.
+
+Rules:
+1. Quote the current line exactly as "original"
+2. Keep every fact that is already in the master resume. Do not add a skill, metric, employer or date
+3. Do not use an em dash or a stock phrase such as "spearheaded", "leveraged", "results-driven" or "passionate about"
+4. Vary the shape of bullets that all have the same length
+5. If a line has no concrete detail from the master resume, change it back to the master wording
+
+Findings:
+{findings}
+
+Current resume:
+{current_resume}
+
+Master resume:
+{master_resume}
+
+Job description:
+{job_description}
+
+Return JSON with "changes" and "strategy_notes" only."""

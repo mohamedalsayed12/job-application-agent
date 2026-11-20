@@ -110,10 +110,12 @@ async def test_logging_in_replaces_the_token(client: httpx.AsyncClient) -> None:
 
 
 async def test_every_form_on_every_page_carries_a_token(client: httpx.AsyncClient) -> None:
+    # A logged-in applicant is redirected off /register and /login, so read those logged out.
+    logged_out = {path: (await client.get(path)).text for path in ("/register", "/login")}
     await _log_in_as_applicant_and_admin(client)
     pages = ("/account", "/profile", "/register", "/login", "/admin/login", *ADMIN_FORM_PAGES)
     for path in pages:
-        text = (await client.get(path)).text
+        text = logged_out[path] if path in logged_out else (await client.get(path)).text
         forms = re.findall(r"<form\b.*?</form>", text, flags=re.S)
         assert forms, path
         assert all('name="csrf_token"' in form for form in forms), path
@@ -169,6 +171,29 @@ async def test_a_wrong_admin_key_is_refused_and_then_limited(client: httpx.Async
         assert response.status_code == 401
     assert (await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})).status_code == 429
     assert (await client.get("/admin/quality")).status_code == 401
+
+
+async def test_wrong_admin_key_headers_are_limited_like_the_login_form(client: httpx.AsyncClient) -> None:
+    for _ in range(10):
+        assert (await client.get("/admin/quality", headers={"X-Admin-Key": "wrong"})).status_code == 401
+    assert (await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})).status_code == 429
+    refused = await client.post(
+        "/admin/accounts/set-password-link", data={"email": "no@example.com"}, headers={"X-Admin-Key": ADMIN}
+    )
+    assert refused.status_code == 429
+    assert (await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})).status_code == 429
+
+
+async def test_wrong_keys_on_a_form_post_header_also_count(client: httpx.AsyncClient) -> None:
+    for _ in range(10):
+        response = await client.post("/login", data={"email": EMAIL, "password": PASSWORD}, headers={"X-Admin-Key": "x"})
+        assert response.status_code == 403
+    assert (await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})).status_code == 429
+
+
+async def test_a_script_with_the_right_key_is_not_limited(client: httpx.AsyncClient) -> None:
+    for _ in range(15):
+        assert (await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})).status_code == 200
 
 
 async def test_admin_log_out_ends_admin_access_but_not_the_applicant_session(client: httpx.AsyncClient) -> None:

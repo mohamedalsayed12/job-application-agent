@@ -33,10 +33,11 @@ def main() -> None:
     summaries = report.summaries
     print(f"summaries written {summaries.accepted}, rejected {summaries.rejected}, being written {summaries.in_progress}, cost £{summaries.cost:.4f}")
     relevance = report.relevance
+    held = "an unknown share" if relevance.skill_share_pct is None else f"{relevance.skill_share_pct}%"
     print(
         f"relevance, not a quality measure: {relevance.applicants_with_matches} of {relevance.applicants} applicants "
         f"matched, {relevance.matches} matches, {relevance.fitting_location} in a wanted location, "
-        f"{relevance.naming_skills} name skills and applicants hold {relevance.skill_share_pct}% of those skills, "
+        f"{relevance.naming_skills} name skills and applicants hold {held} of those skills, "
         f"{relevance.missing_licences} missing a licence"
     )
     for gap in report.gaps:

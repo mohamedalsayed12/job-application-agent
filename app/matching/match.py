@@ -10,20 +10,24 @@ from __future__ import annotations
 import re
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import Numeric, Select, delete, func, select
 from sqlalchemy.orm import Session
 
+from app.applicants.levels import LEVELS, Levels, chosen_or_inferred, saved_levels
 from app.applicants.salary import job_excluded_for_salary, salary_match_status
 from app.applicants.types import ExpectedSalary
 from app.cleaning.normalize import Place, parse_location, parse_places
 from app.matching.credentials import Held, held_groups, required_in_advert
-from app.matching.degrees import degree_shuts_out, required_fields
+from app.matching import semantic
+from app.matching.related_titles import with_related
+from app.matching.semantic import Embedder, similarity
 from app.matching.titles import (
     ENTRY_TITLE,
     NOT_ENTRY_TITLE,
@@ -43,7 +47,6 @@ from app.models import (
     ApplicantCertification,
     ApplicantJobMatch,
     ApplicantPreference,
-    ApplicantProfile,
     ApplicantSkill,
     ExperienceLevel,
     Job,
@@ -57,7 +60,6 @@ from app.quality.checks import Confidence, JobFacts, JobQuality
 from app.quality.report import check_all
 from app.skills.mapping import label_forms
 
-_TRAINING_TITLE = re.compile(r"\b(intern|interns|internship|placement|apprentice|apprenticeship)\b", re.IGNORECASE)
 _INTERNSHIP_TITLE = re.compile(r"\b(intern|interns|internship|internships|placement|placements)\b", re.IGNORECASE)
 _APPRENTICE_TITLE = re.compile(r"\b(apprentice|apprentices|apprenticeship|apprenticeships)\b", re.IGNORECASE)
 _SPELLINGS = (
@@ -72,18 +74,9 @@ _LEVEL_WORDS = frozenset(
 )
 _INTERNSHIP_WORDS = frozenset("intern interns internship internships placement placements".split())
 _INTERNSHIP_LEVEL = "internship in the title"
-_ENGINEER = "engineer"
-# Titles that share a skill with the target. Milestone 2 replaces this table with skill overlap.
-_SIMILAR_TITLES = {
-    "backend": frozenset({"software", "python", "fullstack", "platform", "api"}),
-    "python": frozenset({"software", "backend", "fullstack", "api", "django", "platform"}),
-    "software": frozenset(
-        {"backend", "frontend", "fullstack", "python", "platform", "web", "java", "golang", "api", "applications"}
-    ),
-    "fullstack": frozenset({"software", "backend", "frontend", "web", "python"}),
-    "frontend": frozenset({"web", "fullstack", "software"}),
-    "data": frozenset({"analytics", "etl"}),
-}
+# How close in meaning a job title must be to one of the person's titles to match it. Set on 248 stored job
+# titles: the lowest line at which no title from another kind of job matched (see MVP.md).
+TITLE_SIMILAR = 0.82
 # A title with one of these is a different job, unless the applicant asked for that word.
 _DIFFERENT_JOB_WORDS = frozenset(
     {"sales", "solutions", "support", "hardware", "field", "manager", "director", "head", "vp", "recruiter", "scheduler"}
@@ -123,6 +116,18 @@ _ENTRY_ADVERT = re.compile(
     re.IGNORECASE,
 )
 _NEGATED = re.compile(r"\bnot (?:an? |for )?$", re.IGNORECASE)
+# D46: an explicit ask for 2 or more years. A range that starts lower ("1-2 years", "0 to 2 years") doesn't count.
+_TWO_PLUS_YEARS = re.compile(
+    r"(?<![-–\d])(?<![-–] )(?<!to )\b2\s*\+?\s*(?:(?:-|–|to)\s*\d+\s*)?(?:years?|yrs?)\b\s*\+?"
+    r"[^.]{0,60}\bexperience",
+    re.IGNORECASE,
+)
+_GRADUATES_WELCOME = re.compile(
+    r"\b(?:recent |new )?graduates? (?:are )?(?:welcome|encouraged to apply)\b|\bwelcome (?:recent |new )?graduates?\b|"
+    r"\bgraduate (?:scheme|programme|program)\b|\bno (?:prior |previous )?experience (?:is )?(?:required|needed|necessary)\b",
+    re.IGNORECASE,
+)
+_GRADUATE_OR_JUNIOR_TITLE = re.compile(r"\b(?:graduate|grad|junior|jr\.?)\b", re.IGNORECASE)
 
 
 class RoleKind(StrEnum):
@@ -215,6 +220,30 @@ class MatchReport:
     by_applicant: dict[uuid.UUID, int] = field(default_factory=dict)
 
 
+class TitleMeaning:
+    """Compares job titles by meaning. Each title's vector is made once, and the model loads on first use."""
+
+    def __init__(self, load: Callable[[], Embedder]) -> None:
+        self._load = load
+        self._embedder: Embedder | None = None
+        self._vectors: dict[str, list[float]] = {}
+
+    def _vector(self, title: str) -> list[float]:
+        key = " ".join(title.casefold().split())
+        if key not in self._vectors:
+            self._embedder = self._embedder or self._load()
+            self._vectors[key] = self._embedder.passages([key])[0]
+        return self._vectors[key]
+
+    def closest(self, title: str, roles: list[str]) -> str | None:
+        """The role nearest in meaning to the job title, when it is near enough."""
+        if not roles:
+            return None
+        job = self._vector(title)
+        nearness, role = max((similarity(job, self._vector(role)), role) for role in roles)
+        return role if nearness >= TITLE_SIMILAR else None
+
+
 def _title_words(text: str) -> set[str]:
     lowered = text.lower()
     for pattern, spelling in _SPELLINGS:
@@ -222,90 +251,98 @@ def _title_words(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9+#]+", lowered))
 
 
-def worth_judging(title: str, target_roles: list[str]) -> bool:
-    """A free check before paying the AI (D50): the title shares a word with a target role."""
-    words = _title_words(title)
-    core = set().union(*(_title_words(role) for role in target_roles)) - _LEVEL_WORDS - _INTERNSHIP_WORDS
-    return bool(words & core) and not words & (_DIFFERENT_JOB_WORDS - core)
+def _core(roles: list[str]) -> set[str]:
+    return set().union(*(_title_words(role) for role in roles)) - _LEVEL_WORDS - _INTERNSHIP_WORDS
+
+
+def worth_judging(title: str, titles: list[str], levels: Levels, meaning: TitleMeaning) -> bool:
+    """A free check before paying the AI (D50): the job title shares a word with one of the person's titles,
+    their target roles and the titles related to them, or is close to one in meaning.
+
+    A job whose title shuts this person out (D63) is never shown to them, so it is never worth paying for.
+    """
+    if training_title_shuts_out(title, levels):
+        return False
+    words, core = _title_words(title), _core(titles)
+    if words & (_DIFFERENT_JOB_WORDS - core):
+        return False
+    return bool(words & core) or meaning.closest(title, titles) is not None
+
+
+def training_title_shuts_out(title: str, levels: Levels) -> bool:
+    """D63: apprenticeships are shown to nobody, and internships only to people who chose them."""
+    if _APPRENTICE_TITLE.search(title):
+        return True
+    return bool(_INTERNSHIP_TITLE.search(title)) and ExperienceLevel.internship not in levels
+
+
+def level_fit(
+    title: str, description: str | None, levels: Levels, *, ai_level: str | None = None
+) -> tuple[bool, str | None]:
+    """Whether the job is at a level the person chose, and what shows it.
+
+    Someone who chose only entry level sees only jobs shown to be entry level (D46). Anyone who
+    also chose mid or senior sees every ordinary job.
+    """
+    if training_title_shuts_out(title, levels):
+        return False, None
+    if _INTERNSHIP_TITLE.search(title):
+        return True, _INTERNSHIP_LEVEL
+    ordinary = [LEVELS[level] for level in levels - {ExperienceLevel.internship}]
+    if not ordinary:
+        return False, None
+    evidence = entry_evidence(title, description, ai_level=ai_level) if any(level.needs_entry_evidence for level in ordinary) else None
+    return evidence is not None or not all(level.needs_entry_evidence for level in ordinary), evidence
 
 
 def match_role(
-    title: str, description: str | None, target_roles: list[str], *, internship: bool = False, entry: bool = False
+    title: str, description: str | None, titles: list[str], levels: Levels, meaning: TitleMeaning
 ) -> RoleMatch | None:
-    """The best way this job fits any target role. An exact fit beats a similar one.
-
-    `internship` is for someone whose profile says they want one: they see only internships.
-    `entry` is for someone whose profile says entry level: they see only jobs shown to be entry level.
+    """How this job fits the person's titles, at a level they chose: every word of one of the titles is in it,
+    or failing that it is close to one in meaning.
     """
+    fits, level = level_fit(title, description, levels)
+    if not fits:
+        return None
     words = _title_words(title)
-    if internship:
-        found = [fit for role in target_roles if (fit := _fit_internship(title, words, role))]
-    else:
-        found = [fit for role in target_roles if (fit := _fit_role(title, words, description, role, entry=entry))]
-    return min(found, key=lambda fit: fit.kind != RoleKind.exact) if found else None
+    same_job = [role for role in titles if not words & (_DIFFERENT_JOB_WORDS - _core([role]))]
+    for role in same_job:
+        if (core := _core([role])) and core <= words:
+            return RoleMatch(role, RoleKind.exact, level)
+    near = meaning.closest(title, same_job)
+    return RoleMatch(near, RoleKind.similar, level) if near else None
 
 
-def entry_evidence(title: str, description: str | None) -> str | None:
+def entry_evidence(title: str, description: str | None, *, ai_level: str | None = None) -> str | None:
     """Where the job shows it is entry level, or None when it doesn't (D46).
 
     A plain "Backend Developer" with nothing in the advert about level is left out:
-    someone asking for graduate and junior roles sees only those.
+    someone asking for graduate and junior roles sees only those. The AI reading the
+    advert as entry level counts last, so it never outweighs the title or the years asked for.
     """
     if NOT_ENTRY_TITLE.search(title):
         return None
-    if ENTRY_TITLE.search(title):
+    if _GRADUATE_OR_JUNIOR_TITLE.search(title):
         return ENTRY_IN_TITLE
     text = description or ""
+    if _TWO_PLUS_YEARS.search(text) and not _GRADUATES_WELCOME.search(text):
+        return None
+    if ENTRY_TITLE.search(title):
+        return ENTRY_IN_TITLE
     if YEARS_REQUIRED.search(text):
         return None
     for found in _ENTRY_ADVERT.finditer(text):
         if not _NEGATED.search(text[max(0, found.start() - 14) : found.start()]):
             return ENTRY_IN_ADVERT
-    return None
+    return ENTRY_BY_AI if ai_level == "entry" else None
 
 
-def _fit_internship(title: str, words: set[str], role: str) -> RoleMatch | None:
-    if not _INTERNSHIP_TITLE.search(title) or _APPRENTICE_TITLE.search(title):
-        return None
-    return _fit_title(words, _title_words(role) - _LEVEL_WORDS - _INTERNSHIP_WORDS, role, _INTERNSHIP_LEVEL)
-
-
-def _fit_role(title: str, words: set[str], description: str | None, role: str, *, entry: bool) -> RoleMatch | None:
-    if _TRAINING_TITLE.search(title) and not _TRAINING_TITLE.search(role):
-        return None
-    level = None
-    if entry or ENTRY_TITLE.search(role):
-        if (level := entry_evidence(title, description)) is None:
-            return None
-    return _fit_title(words, _title_words(role) - _LEVEL_WORDS, role, level)
-
-
-def match_by_skills(title: str, description: str | None, skills: SkillFit, *, level: str | None) -> RoleMatch | None:
+def match_by_skills(title: str, description: str | None, skills: SkillFit, levels: Levels) -> RoleMatch | None:
     """A job outside the target roles that the applicant's skills fit (D44). Level rules still apply."""
     if len(skills.matched) < SKILLS_MATCH_MIN or skills.share < SKILLS_MATCH_SHARE:
         return None
-    if level == ExperienceLevel.internship:
-        if not _INTERNSHIP_TITLE.search(title) or _APPRENTICE_TITLE.search(title):
-            return None
-        return RoleMatch("", RoleKind.skills, _INTERNSHIP_LEVEL)
-    if _TRAINING_TITLE.search(title):
-        return None
-    if level != ExperienceLevel.entry:
-        return RoleMatch("", RoleKind.skills, None)
-    evidence = entry_evidence(title, description)
-    return RoleMatch("", RoleKind.skills, evidence) if evidence else None
-
-
-def _fit_title(words: set[str], core: set[str], role: str, level: str | None) -> RoleMatch | None:
-    if not core or words & (_DIFFERENT_JOB_WORDS - core):
-        return None
-    if core <= words:
-        return RoleMatch(role, RoleKind.exact, level)
-    if _ENGINEER in core and _ENGINEER in words:
-        skills = core - {_ENGINEER}
-        if any(_SIMILAR_TITLES.get(skill, frozenset()) & words for skill in skills):
-            return RoleMatch(role, RoleKind.similar, level)
-    return None
+    fits, level = level_fit(title, description, levels)
+    return RoleMatch("", RoleKind.skills, level) if fits else None
 
 
 def wanted_locations(locations: list[str]) -> list[Wanted]:
@@ -328,8 +365,13 @@ def location_fit(wanted: list[Wanted], places: list[dict[str, Any]], remote_type
             if _same_city(want, place):
                 return True, f"in {place['city']}"
         for place in places:
-            if remote_type != "remote" and place["city"] is None and _covers(place, want.country):
+            if remote_type == "remote" or not _covers(place, want.country):
+                continue
+            if place["city"] is None:
                 return True, f"anywhere in {place['country'] or place['region']}"
+            whole_country = not want.city
+            if whole_country:
+                return True, f"in {place['city']}"
     if remote_type == "remote":
         for want in wanted:
             if not places:
@@ -406,22 +448,35 @@ def _can_be_shown(facts: JobFacts, quality: JobQuality) -> bool:
     """D23: open jobs only, so `unknown` jobs stay out until they are confirmed open again."""
     return (
         facts.freshness == JobFreshness.open
-        and quality.recent
+        and quality.not_ended
         and quality.unique
         and quality.confidence != Confidence.low
     )
 
 
+# D53: the score out of 5 shown for a job, in SQL: the fit report's, else the quick AI score. Unscored jobs get 0.
+AI_SCORE_SQL = func.coalesce(
+    ApplicantJobMatch.reasons["report"]["score"].astext.cast(Numeric),
+    ApplicantJobMatch.reasons["ai"]["score"].astext.cast(Numeric),
+    0,
+)
+
+
+def listed(*, everywhere: bool = False) -> Select[tuple[ApplicantJobMatch, Job]]:
+    """Jobs on people's listings: matched, still open, and in their locations unless they ask for everywhere.
+
+    Matching already leaves out what a person must never see (training roles, degree rules, unsafe jobs).
+    """
+    query = (
+        select(ApplicantJobMatch, Job)
+        .join(Job, Job.id == ApplicantJobMatch.job_id)
+        .where(Job.freshness == JobFreshness.open)
+    )
+    return query if everywhere else query.where(ApplicantJobMatch.location_fit.is_(True))
+
+
 def showable(session: Session, now: datetime) -> list[JobFacts]:
     return [facts for facts, quality in check_all(session, now) if _can_be_shown(facts, quality)]
-
-
-def experience_levels(session: Session) -> dict[uuid.UUID, str]:
-    return dict(session.execute(select(ApplicantProfile.applicant_id, ApplicantProfile.experience_level)).all())
-
-
-def applicant_degrees(session: Session) -> dict[uuid.UUID, list[str]]:
-    return dict(session.execute(select(ApplicantProfile.applicant_id, ApplicantProfile.degrees)).all())
 
 
 def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] | None = None) -> MatchReport:
@@ -431,12 +486,11 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
     """
     report = MatchReport()
     shown = showable(session, now)
-    levels = experience_levels(session)
+    levels = saved_levels(session)
     skills = load_skills(session, now=now)
     required = {facts.job_id: required_in_advert(facts.description) for facts in shown}
-    degrees = applicant_degrees(session)
-    subjects = {facts.job_id: required_fields(facts.description) for facts in shown}
     profiles = load_profiles(session, applicant_ids)
+    meaning = TitleMeaning(semantic.local_embedder)
     job_digests = {
         facts.job_id: digest(
             job_text(
@@ -461,9 +515,9 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
             report,
             skills,
             required,
-            subjects,
-            level=levels.get(preference.applicant_id),
-            degrees=degrees.get(preference.applicant_id) or [],
+            levels=chosen_or_inferred(levels.get(preference.applicant_id, frozenset()), preference.target_roles),
+            titles=with_related(session, preference.target_roles),
+            meaning=meaning,
             verdicts=_verdicts(session, profiles.get(preference.applicant_id), job_digests),
         )
     session.flush()
@@ -477,10 +531,10 @@ def _match_applicant(
     report: MatchReport,
     skills: Skills,
     required: dict[uuid.UUID, list[str]],
-    subjects: dict[uuid.UUID, list[frozenset[str]]],
     *,
-    level: str | None,
-    degrees: list[str],
+    levels: Levels,
+    titles: list[str],
+    meaning: TitleMeaning,
     verdicts: dict[uuid.UUID, JobVerdict],
 ) -> None:
     applicant_id = preference.applicant_id
@@ -494,7 +548,7 @@ def _match_applicant(
     }
     kept: set[uuid.UUID] = set()
     for facts in shown:
-        if facts.sector != preference.sector:
+        if facts.sector != preference.sector or training_title_shuts_out(facts.title, levels):
             continue
         verdict = verdicts.get(facts.job_id)
         if verdict is not None and not verdict.fits:
@@ -504,16 +558,15 @@ def _match_applicant(
         if fit_report is not None and fit_report.score < ADD_LINE:
             continue
         skill_fit = skills.fit(applicant_id, facts.job_id)
-        role = match_role(
-            facts.title,
-            facts.description,
-            preference.target_roles,
-            internship=level == ExperienceLevel.internship,
-            entry=level == ExperienceLevel.entry,
-        ) or match_by_skills(facts.title, facts.description, skill_fit, level=level)
+        role = match_role(facts.title, facts.description, titles, levels, meaning) or match_by_skills(
+            facts.title, facts.description, skill_fit, levels
+        )
         if role is None and verdict is not None:
-            role = RoleMatch(target="", kind=RoleKind.ai, level=ENTRY_BY_AI if verdict.level == "entry" else None)
-        if role is None or degree_shuts_out(subjects[facts.job_id], degrees):
+            # The AI may add only what the gate allows: an internship, an apprenticeship or a job not shown to be
+            # entry level stays out for someone who chose entry level only.
+            fits, evidence = level_fit(facts.title, facts.description, levels, ai_level=verdict.level)
+            role = RoleMatch(target="", kind=RoleKind.ai, level=evidence) if fits else None
+        if role is None:
             continue
         job = session.get(Job, facts.job_id)
         salary = salary_match_status(

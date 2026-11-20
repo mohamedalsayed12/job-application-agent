@@ -1,20 +1,15 @@
-"""Create or refresh an Application: extract schema, map answers, set status."""
+"""Create or refresh an Application and move it through its statuses."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.applicants.apply_answers import answers_as_map, load_answers
-from app.applications.extract import extract_form_schema
-from app.applications.mapper import build_fill_plan
-from app.applications.schema import schema_to_json
-from app.core.config import Settings
-from app.fetch.gateway import FetchGateway
-from app.models import Applicant, Application, ApplicationStatus, Job
+from app.applicants.cv import base_cv
+from app.applications.mapper import FillPlan
+from app.models import Application, ApplicationStatus, Job, JobFreshness
 
 
 class PrepareRefused(Exception):
@@ -46,79 +41,47 @@ def list_applications(session: Session, applicant_id: uuid.UUID) -> list[Applica
     )
 
 
-async def prepare_application(
-    session: Session,
-    *,
-    applicant: Applicant,
-    job_id: uuid.UUID,
-    gateway: FetchGateway,
-    settings: Settings,
-    persist,
-    now=lambda: datetime.now(UTC),
-) -> Application:
+def prepare_application(session: Session, *, applicant_id: uuid.UUID, job_id: uuid.UUID) -> Application:
+    """Ready the job for the extension, which reads the form from the page the person opens."""
     job = session.get(Job, job_id)
     if job is None:
         raise PrepareRefused("That job was not found.")
+    if job.freshness != JobFreshness.open:
+        raise PrepareRefused("This job is closed, so it can no longer be prepared.")
     apply_url = (job.apply_url or "").strip()
     if not apply_url.lower().startswith(("http://", "https://")):
         raise PrepareRefused("This job has no usable apply link.")
 
-    row = application_for_job(session, applicant.id, job_id)
+    row = application_for_job(session, applicant_id, job_id)
     if row is not None and row.status == ApplicationStatus.submitted.value:
         raise PrepareRefused("You have already applied for this job.")
     if row is None:
-        row = Application(
-            applicant_id=applicant.id,
-            job_id=job_id,
-            apply_url=apply_url,
-            status=ApplicationStatus.preparing.value,
-        )
+        row = Application(applicant_id=applicant_id, job_id=job_id, apply_url=apply_url)
         session.add(row)
-    else:
-        row.apply_url = apply_url
-        row.status = ApplicationStatus.preparing.value
-        row.error = None
-        row.missing_fields = []
-        row.schema_json = None
-        row.fill_plan_json = None
-    session.flush()
-    persist()
-
-    extracted = await extract_form_schema(
-        session,
-        apply_url=apply_url,
-        gateway=gateway,
-        settings=settings,
-        persist=persist,
-        now=now,
-    )
-    if extracted.budget_blocked:
-        # BudgetWait must not fail the work (T3): leave it waiting for a later prepare.
-        row.status = ApplicationStatus.preparing.value
-        row.error = extracted.error or "Waiting on monthly budget."
-        session.flush()
-        return row
-    if extracted.schema is None:
-        row.status = ApplicationStatus.failed.value
-        row.error = extracted.error or "Could not read the application form."
-        session.flush()
-        return row
-
-    schema = extracted.schema
-    row.ats_kind = schema.ats_kind.value
-    row.schema_json = schema_to_json(schema)
-    answers = answers_as_map(load_answers(session, applicant.id), email=applicant.email)
-    plan = build_fill_plan(schema, answers)
-    row.fill_plan_json = plan.to_json()
-    row.missing_fields = plan.missing
-    if plan.missing:
-        row.status = ApplicationStatus.needs_input.value
-        row.error = "Some required fields need answers on your apply profile."
-    else:
-        row.status = ApplicationStatus.ready_to_fill.value
-        row.error = None
+    row.apply_url = apply_url
+    row.schema_json = None
+    store_fill_outcome(row, None, reopen=True)
+    row.cv_file_id = cv.id if (cv := base_cv(session, applicant_id, job)) else None
     session.flush()
     return row
+
+
+def store_fill_outcome(application: Application, plan: FillPlan | None, *, reopen: bool = False) -> None:
+    """Write status, missing questions, and the fill plan together. A submitted application stays submitted."""
+    if application.status == ApplicationStatus.submitted.value:
+        return
+    if plan is not None and plan.missing:
+        shown = FillPlan(steps=[], missing=plan.missing, attach=plan.attach)
+        application.status = ApplicationStatus.needs_input.value
+        application.missing_fields = [question.label for question in plan.missing]
+        application.fill_plan_json = shown.to_json()
+        application.error = None
+        return
+    if reopen or application.status != ApplicationStatus.filled_awaiting_review.value:
+        application.status = ApplicationStatus.ready_to_fill.value
+    application.missing_fields = []
+    application.fill_plan_json = plan.to_json() if plan is not None else None
+    application.error = None
 
 
 def set_application_status(
@@ -128,11 +91,14 @@ def set_application_status(
     status: ApplicationStatus,
     error: str | None = None,
 ) -> Application:
-    if status is ApplicationStatus.filled_awaiting_review and application.status not in (
+    """The extension's report on a form it was handed. It never touches any other application."""
+    if status is ApplicationStatus.filled_awaiting_review and application.missing_fields:
+        raise PrepareRefused("Answer the missing questions first.")
+    if application.status not in (
         ApplicationStatus.ready_to_fill.value,
         ApplicationStatus.filled_awaiting_review.value,
     ):
-        raise PrepareRefused("This application is not ready to mark as filled.")
+        raise PrepareRefused("This application is not waiting to be filled.")
     application.status = status.value
     if error is not None:
         application.error = error
@@ -149,6 +115,17 @@ def mark_submitted(session: Session, applicant_id: uuid.UUID, job: Job) -> Appli
     else:
         row.status = ApplicationStatus.submitted.value
         row.error = None
+    session.flush()
+    return row
+
+
+def mark_abandoned(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> Application | None:
+    """The person decides not to apply. Only an existing, unsent application can be dropped."""
+    row = application_for_job(session, applicant_id, job_id)
+    if row is None or row.status == ApplicationStatus.submitted.value:
+        return None
+    row.status = ApplicationStatus.abandoned.value
+    row.error = None
     session.flush()
     return row
 

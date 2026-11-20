@@ -27,12 +27,14 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
 <h2>What we keep about you, and why</h2>
 <ul>
   <li><b>Your email and password.</b> To let you log in. The password is stored only as an Argon2 hash, never as text.</li>
-  <li><b>Your profile:</b> target roles, locations, experience level, travel distance, minimum salary, degrees, skills,
+  <li><b>Your profile:</b> target roles, locations, experience levels, travel distance, minimum salary, degrees, skills,
   certifications and licences. To find jobs that fit you and explain each match.</li>
   <li><b>Your CV, if you upload one.</b> Stored so you can download it again. When you upload it, or press "Fill my profile
   from my CV", its text is read to suggest entries for your profile form. The suggestions aren't stored: only what you
   save is kept. For jobs the fit report marks Apply or Consider, a tailored CV copy (PDF and DOCX) may also be stored
-  for you to download; it never replaces your uploaded CV.</li>
+  for you to download; it never replaces your uploaded CV. While a tailored copy is being written, each finished AI
+  step is saved so a crash does not repeat it. Those steps are deleted once the copy is finished or has failed, and
+  always with the copy itself.</li>
   <li><b>Your job matches:</b> which jobs fit your profile, with a score and the reasons.</li>
   <li><b>Apply answers</b> (optional): legal name, phone, address, work authorisation, visa sponsorship need,
   links, and optional demographics such as free school meals. Used only to fill employer forms in your browser.
@@ -60,19 +62,28 @@ below.</p>
 <p>The service uses Anthropic's Claude AI to summarise job adverts and to read your CV when you upload it or ask it to.
 So the text of your CV is sent to Anthropic at those times. When you ask for an outreach draft, Claude also receives the
 job text, a CV excerpt, and public research snippets about the contact; your login email and name are not sent.</p>
-<p>To judge which jobs suit you, the service also sends Anthropic your target roles, experience level, skills and degrees,
+<p>To judge which jobs suit you, the service also sends Anthropic your target roles, experience levels, skills and degrees,
 together with each job advert. Your email address, name, locations, salary and CV are not part of that.</p>
+<p>To search more widely, the service sends Anthropic each of your target roles on its own and asks which other job
+titles employers use for the same work. Nothing else about you is sent with it, and the answer is kept for anyone who
+wants the same role.</p>
+<p>When you press "Suggest roles and places" on your profile, the service sends Anthropic your skills, degrees, experience
+level, target roles, locations and travel distance, so it can suggest job titles and nearby towns to search. Your email
+address, name, salary and CV are not part of that.</p>
 <p>For each job that first check scores 3.0 or more, the service writes a fuller fit report. For that it sends Anthropic
-the job advert with your target roles, experience level, skills, degrees, salary wish, wanted locations and the text of
+the job advert with your target roles, experience levels, skills, degrees, salary wish, wanted locations and the text of
 your CV, if you uploaded one. Your email address and name are never sent.</p>
 <p>When that fit report says Apply or Consider, or when you ask for one, the service may tailor a CV for that job. It
 sends Anthropic the job advert and your CV text, so Claude can suggest edits that each quote the CV line they change.
 Edits that add a number, a skill or an employer your CV does not show are dropped. Nothing is invented that is not
 already in your CV. Your email address is only kept in the tailored file when
 it already appears in your uploaded CV.</p>
-<p>When you prepare an application, the service may call Greenhouse's public boards API or an Apify actor to read the
-application form questions for that job URL. Your answers are not sent to Apify. The fill happens in your browser via
-the extension; this service never clicks Submit for you.</p>
+<p>When you fill an application, the extension reads the questions on the employer's page in your browser and sends
+them to this service. Each answer comes only from your apply answers, answers you saved earlier, your email address or
+your CV. For questions it cannot match by itself, the service sends Anthropic those questions, the wording of the
+questions you answered before and your CV text, so Claude can point to one of your answers or quote your CV. Your saved
+answers themselves are not sent. Anything Claude returns that is not one of your answers or an exact quote from your CV
+is dropped. The fill happens in your browser; this service never clicks Submit for you.</p>
 <p>Finding contacts and public profile research runs through Apify's LinkedIn people actors (not by this app fetching
 linkedin.com). Sending approved mail uses Google's Gmail API when you have connected Gmail.</p>
 <p>When you ask for interview intel on a target role, the service collects public posts through Apify and sends those
@@ -89,7 +100,8 @@ no tracking or advertising cookie to accept or refuse.</p>
 <div class="card">
 <h2>How long we keep it</h2>
 <p>Until you delete your account. Deleting it on <a href="/account">your account page</a> removes your profile, CV, preferences,
-apply answers, applications, extension token, matches, outreach contacts, drafts, send log and Gmail connection at once.</p>
+apply answers, applications, extension token, matches, tailored CVs and their unfinished steps, outreach contacts, drafts,
+send log and Gmail connection at once.</p>
 <p>Copies of the database are kept as backups. Only the latest two are kept, and none for more than 30 days, so your data has
 left every backup within 30 days of deletion.</p>
 </div>

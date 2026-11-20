@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<body>
+<form id="form" action="?submitted=1">
+  <div id="step1">
+    <label>First name <input name="first_name" required></label>
+    <button type="button" id="next">Next</button>
+  </div>
+  <div id="step2" hidden>
+    <label>Email <input name="email" type="email" required></label>
+    <label>CV <input name="cv" type="file" required></label>
+    <button type="submit" id="submit">Submit</button>
+  </div>
+</form>
+<script>
+  window.__submitted = 0;
+  window.__next = 0;
+  document.getElementById("form").addEventListener("submit", (event) => {
+    window.__submitted += 1;
+    event.preventDefault();
+  });
+  document.getElementById("submit").addEventListener("click", () => { window.__submitted += 1; });
+  document.getElementById("next").addEventListener("click", () => {
+    window.__next += 1;
+    document.getElementById("step2").hidden = false;
+    document.getElementById("next").hidden = true;
+  });
+</script>
+</body>
+</html>

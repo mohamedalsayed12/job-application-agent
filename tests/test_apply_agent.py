@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
-from decimal import Decimal
+from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -15,16 +15,21 @@ from sqlalchemy.orm import Session
 
 from app.accounts import throttle
 from app.api.forms import require_csrf
-from app.api.jobs import get_gateway
 from app.applicants.apply_answers import AnswersInput, save_answers
 from app.applications.extension_device import issue_token
-from app.applications.fill_safety import assert_plan_has_no_submit_clicks, is_submit_control
-from app.applications.mapper import build_fill_plan, match_answer_key
-from app.applications.prepare import prepare_application
-from app.applications.schema import FormField, FormSchema, parse_greenhouse_board
+from app.applications.mapper import (
+    FillPlan,
+    FillStep,
+    FormField,
+    Match,
+    build_fill_plan,
+    facts_from_profile,
+    match_answer_key,
+    matches_from_payload,
+)
+from app.applications.prepare import store_fill_outcome
 from app.core.config import get_settings
 from app.core.db import get_db
-from app.fetch.gateway import FetchGateway
 from app.main import app
 from app.models import (
     PREFER_NOT,
@@ -32,19 +37,15 @@ from app.models import (
     Application,
     ApplicationAnswers,
     ApplicationStatus,
-    AtsKind,
-    BudgetPolicy,
     CvFile,
     CvFileType,
     ExtensionDevice,
     Job,
     JobFreshness,
-    SpendKind,
-    SpendLedger,
     TailoredCv,
     TailoredCvStatus,
 )
-from tests.jobs import _li, _public_resolve, _store
+from tests.jobs import _li, _public_resolve, _store, show_to
 
 EMAIL = "apply-agent@example.com"
 PASSWORD = "correct horse battery"
@@ -63,6 +64,11 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[require_csrf] = lambda: None
+
+    async def _no_model(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr("app.applications.plan.model_matches", _no_model)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -78,6 +84,17 @@ def _applicant(session: Session) -> Applicant:
     return session.scalar(select(Applicant).where(Applicant.email == EMAIL))
 
 
+def _job_titled(session: Session, title: str) -> Job:
+    _store(
+        session,
+        [
+            _li(9001, title="Platform Engineer", **{"applyUrl": "https://boards.greenhouse.io/acme/jobs/12345"}),
+            _li(9002, title=title, **{"applyUrl": "https://boards.greenhouse.io/acme/jobs/67890"}),
+        ],
+    )
+    return session.scalar(select(Job).where(Job.title == title))
+
+
 def _job(session: Session) -> Job:
     _store(
         session,
@@ -85,7 +102,7 @@ def _job(session: Session) -> Job:
             _li(
                 9001,
                 title="Platform Engineer",
-                **{"applyUrl": "https://boards.greenhouse.io/acme/jobs/12345"},
+                **{"applyUrl": "https://careers.example.com/jobs/12345/apply"},
             )
         ],
     )
@@ -97,6 +114,7 @@ def test_mapper_recognises_common_labels() -> None:
     assert match_answer_key("Have you had free school meals?") == "free_school_meals"
     assert match_answer_key("Upload your resume / CV") == "cv"
     assert match_answer_key("Right to work in the UK") == "right_to_work_uk"
+    assert match_answer_key("How is your name pronounced?") is None
 
 
 def test_mapper_does_not_false_match_common_traps() -> None:
@@ -107,137 +125,107 @@ def test_mapper_does_not_false_match_common_traps() -> None:
     assert match_answer_key("Gender") == "gender"
 
 
+def _field(field_id: str, label: str, name: str, field_type: str, required: bool = False, options: list[str] | None = None) -> FormField:
+    return FormField(id=field_id, label=label, name=name, type=field_type, required=required, options=options or [])
+
+
 def test_fill_plan_maps_answers_and_flags_gaps() -> None:
-    schema = FormSchema(
-        ats_kind=AtsKind.greenhouse,
-        source="stub",
-        fields=[
-            FormField("First name", "first_name", "text", True),
-            FormField("Visa sponsorship", "sponsorship", "yes_no", True),
-            FormField("Free school meals", "fsm", "select", False, ["Yes", "No", "Prefer not to say"]),
-            FormField("Resume", "resume", "file", True),
-            FormField("Secret custom question", "custom", "text", True),
-        ],
+    fields = [
+        _field("name", "First name", "first_name", "text", True),
+        _field("visa", "Visa sponsorship", "sponsorship", "select", True, ["Yes", "No"]),
+        _field("fsm", "Free school meals", "fsm", "select", False, ["Yes", "No", "Prefer not to say"]),
+        _field("cv", "Resume", "resume", "file", True),
+        _field("why", "Secret custom question", "custom", "text", True),
+    ]
+    facts = facts_from_profile(
+        {
+            "legal_first_name": "Ada",
+            "needs_visa_sponsorship": False,
+            "free_school_meals": PREFER_NOT,
+            "email": EMAIL,
+        },
+        [],
     )
-    answers = {
-        "legal_first_name": "Mo",
-        "needs_visa_sponsorship": False,
-        "free_school_meals": PREFER_NOT,
-        "cv": "upload_cv",
-        "email": EMAIL,
-    }
-    plan = build_fill_plan(schema, answers)
-    actions = {s.label: s for s in plan.steps}
-    assert actions["First name"].value == "Mo"
-    assert actions["Visa sponsorship"].value == "No"
-    assert actions["Free school meals"].value == "Prefer not to say"
-    assert actions["Resume"].action == "upload_cv"
-    assert plan.missing == ["Secret custom question"]
-    assert_plan_has_no_submit_clicks(plan.to_json())
+    plan = build_fill_plan(fields, facts)
+    actions = {step.field_id: step for step in plan.steps}
+    assert actions["name"].value == "Ada"
+    assert actions["visa"].value == "No"
+    assert actions["fsm"].value == "Prefer not to say"
+    assert actions["cv"].action == "upload_cv"
+    assert [question.label for question in plan.missing] == ["Secret custom question"]
 
-    decline_plan = build_fill_plan(
-        FormSchema(
-            ats_kind=AtsKind.greenhouse,
-            source="stub",
-            fields=[FormField("Ethnicity", "eth", "select", False, ["Yes", "No", "I do not want to answer"])],
-        ),
-        {"ethnicity": PREFER_NOT},
+    decline = build_fill_plan(
+        [_field("eth", "Ethnicity", "eth", "select", False, ["Yes", "No", "I do not want to answer"])],
+        facts_from_profile({"ethnicity": PREFER_NOT}, []),
     )
-    assert decline_plan.steps[0].value == "I do not want to answer"
+    assert decline.steps[0].value == "I do not want to answer"
 
 
-def test_submit_controls_are_detected() -> None:
-    assert is_submit_control(tag="button", type_attr="submit", text="Save")
-    assert is_submit_control(tag="button", type_attr="button", text="Apply now")
-    assert not is_submit_control(tag="button", type_attr="button", text="Next section")
-
-
-def test_greenhouse_url_parse() -> None:
-    assert parse_greenhouse_board("https://boards.greenhouse.io/acme/jobs/12345") == ("acme", "12345")
-    assert parse_greenhouse_board(
-        "https://boards.greenhouse.io/embed/job_app?for=acme&token=99"
-    ) == ("acme", "99")
-
-
-async def test_prepare_uses_greenhouse_questions(
-    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _register(client)
-    applicant = _applicant(session)
-    save_answers(
-        session,
-        applicant.id,
-        AnswersInput(
-            legal_first_name="Mo",
-            legal_last_name="Ali",
-            phone="07000000000",
-            address_line="1 High St",
-            city="Manchester",
-            postcode="M1 1AA",
-            country="United Kingdom",
-            linkedin_url="",
-            github_url="",
-            portfolio_url="",
-            right_to_work_uk="yes",
-            needs_visa_sponsorship="no",
-            nationality="British",
-            heard_about="Job board",
-            previously_employed="no",
-            free_school_meals=PREFER_NOT,
-            gender=PREFER_NOT,
-            ethnicity=PREFER_NOT,
-            disability=PREFER_NOT,
-            veteran=PREFER_NOT,
-        ),
+def test_an_invented_model_value_is_rejected() -> None:
+    field = _field("why", "Why do you want this role?", "why", "textarea", True)
+    facts = facts_from_profile({"email": EMAIL}, [])
+    invented = matches_from_payload({"matches": [{"field_id": "why", "value": "I am a world-class ninja"}]})
+    assert invented["why"] == Match()
+    plan = build_fill_plan(
+        [field],
+        facts,
+        cv_text="Ada Lovelace builds tools.",
+        matches={"why": Match(cv_quote="I am a world-class ninja")},
     )
-    job = _job(session)
-    session.add(
-        CvFile(
-            applicant_id=applicant.id,
-            content=PDF,
-            file_type=CvFileType.pdf.value,
-            size_bytes=len(PDF),
-            uploaded_at=datetime.now(UTC),
-        )
+    assert plan.steps == []
+    assert plan.missing[0].label == "Why do you want this role?"
+
+    quoted = build_fill_plan(
+        [field],
+        facts,
+        cv_text="Ada Lovelace builds tools.",
+        matches={"why": Match(cv_quote="Ada Lovelace builds tools.")},
     )
-    session.flush()
+    assert quoted.steps[0].value == "Ada Lovelace builds tools."
+    assert quoted.steps[0].source == "cv"
 
-    payload = {
-        "id": 12345,
-        "questions": [
-            {
-                "label": "Do you require visa sponsorship?",
-                "name": "sponsorship",
-                "type": "boolean",
-                "required": True,
-            }
-        ],
-    }
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if "boards-api.greenhouse.io" in request.url.host:
-            return httpx.Response(200, json=payload)
-        return httpx.Response(404)
-
-    gateway = FetchGateway(
-        user_agent="test",
-        allowlist=frozenset({"boards-api.greenhouse.io"}),
-        resolve=_public_resolve,
-        transport=httpx.MockTransport(handler),
+def test_a_cv_quote_cannot_be_letters_inside_a_word() -> None:
+    field = _field("visa", "Do you need visa sponsorship?", "visa", "select", True, ["Yes", "No"])
+    plan = build_fill_plan(
+        [field],
+        facts_from_profile({"email": EMAIL}, []),
+        cv_text="North London knowledge and another note",
+        matches={"visa": Match(cv_quote="No")},
     )
+    assert plan.steps == []
+    assert plan.missing[0].label == "Do you need visa sponsorship?"
 
-    async def _gw() -> AsyncIterator[FetchGateway]:
-        yield gateway
 
-    app.dependency_overrides[get_gateway] = _gw
-    response = await client.post("/applications", data={"job_id": str(job.id)})
-    assert response.status_code == 303
-    assert "/applications/" in response.headers["location"]
-    row = session.scalar(select(Application).where(Application.job_id == job.id))
-    assert row is not None
+def test_a_complete_plan_reopens_a_failed_application() -> None:
+    row = Application(
+        applicant_id=uuid4(),
+        job_id=uuid4(),
+        apply_url="https://careers.example.com/jobs/1/apply",
+        status=ApplicationStatus.failed.value,
+        missing_fields=["Why"],
+        fill_plan_json={"steps": []},
+        error="nope",
+    )
+    store_fill_outcome(row, FillPlan(steps=[FillStep("f0", "fill", "Ada", "answers")], missing=[], attach=[]))
     assert row.status == ApplicationStatus.ready_to_fill.value
-    assert row.ats_kind == AtsKind.greenhouse.value
-    assert any(step["action"] == "upload_cv" for step in row.fill_plan_json["steps"])
+    assert row.missing_fields == []
+    assert row.error is None
+    assert row.fill_plan_json["steps"][0]["value"] == "Ada"
+
+
+async def test_prepare_readies_the_job_for_the_extension(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
+
+    response = await client.post("/applications", data={"job_id": str(job.id)})
+
+    assert response.status_code == 303
+    row = session.scalar(select(Application).where(Application.job_id == job.id))
+    assert response.headers["location"] == f"/applications/{row.id}"
+    assert row.status == ApplicationStatus.ready_to_fill.value
+    assert row.apply_url == "https://careers.example.com/jobs/12345/apply"
 
 
 async def test_extension_ready_cv_and_status(client: httpx.AsyncClient, session: Session) -> None:
@@ -258,8 +246,7 @@ async def test_extension_ready_cv_and_status(client: httpx.AsyncClient, session:
         job_id=job.id,
         apply_url=job.apply_url,
         status=ApplicationStatus.ready_to_fill.value,
-        ats_kind=AtsKind.greenhouse.value,
-        fill_plan_json={"steps": [{"label": "First name", "name": "first_name", "action": "fill", "value": "Mo", "required": True}], "missing": []},
+        fill_plan_json=None,
         missing_fields=[],
     )
     session.add(app_row)
@@ -325,51 +312,16 @@ async def test_deleting_account_removes_apply_data(client: httpx.AsyncClient, se
     )
     issue_token(session, applicant_id)
     session.flush()
-    assert session.scalar(select(func.count()).select_from(ApplicationAnswers)) == 1
-    assert session.scalar(select(func.count()).select_from(ExtensionDevice)) == 1
+    assert session.scalar(select(func.count()).select_from(ApplicationAnswers).where(ApplicationAnswers.applicant_id == applicant_id)) == 1
+    assert session.scalar(select(func.count()).select_from(ExtensionDevice).where(ExtensionDevice.applicant_id == applicant_id)) == 1
 
     response = await client.post("/account/delete", data={"password": PASSWORD})
     assert response.status_code == 200
     session.expire_all()
     assert session.get(Applicant, applicant_id) is None
-    assert session.scalar(select(func.count()).select_from(ApplicationAnswers)) == 0
-    assert session.scalar(select(func.count()).select_from(Application)) == 0
-    assert session.scalar(select(func.count()).select_from(ExtensionDevice)) == 0
-
-
-async def test_apify_form_extract_respects_budget(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.applications.extract import extract_form_schema
-
-    monkeypatch.setenv("APIFY_API_TOKEN", "token")
-    monkeypatch.setenv("APPLY_FORM_ACTOR", "owner/form-actor")
-    get_settings.cache_clear()
-    settings = get_settings()
-    # Cap at zero so reserve fails.
-    session.add(
-        BudgetPolicy(
-            provider="apify",
-            period="month",
-            money_cap=Decimal("0"),
-            request_cap=None,
-            currency="GBP",
-            effective_from=datetime(2020, 1, 1, tzinfo=UTC),
-        )
-    )
-    session.flush()
-    gateway = FetchGateway(
-        user_agent="test",
-        allowlist=frozenset({"api.apify.com"}),
-        resolve=_public_resolve,
-    )
-    result = await extract_form_schema(
-        session,
-        apply_url="https://jobs.lever.co/acme/abc",
-        gateway=gateway,
-        settings=settings,
-        persist=session.flush,
-    )
-    assert result.budget_blocked is True
-    get_settings.cache_clear()
+    assert session.scalar(select(func.count()).select_from(ApplicationAnswers).where(ApplicationAnswers.applicant_id == applicant_id)) == 0
+    assert session.scalar(select(func.count()).select_from(Application).where(Application.applicant_id == applicant_id)) == 0
+    assert session.scalar(select(func.count()).select_from(ExtensionDevice).where(ExtensionDevice.applicant_id == applicant_id)) == 0
 
 
 async def test_apply_answers_page_saves(client: httpx.AsyncClient, session: Session) -> None:
@@ -472,6 +424,7 @@ async def test_after_review_the_person_marks_the_application_submitted(
     await _register(client)
     applicant = _applicant(session)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     row = _ready_application(session, applicant, job)
     row.status = ApplicationStatus.filled_awaiting_review.value
     session.flush()
@@ -489,6 +442,7 @@ async def test_a_job_applied_for_elsewhere_can_be_marked_applied(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     await _register(client)
     job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
     assert "Prepare apply" in (await client.get(f"/jobs/{job.id}")).text
 
     assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
@@ -498,9 +452,112 @@ async def test_a_job_applied_for_elsewhere_can_be_marked_applied(
 
     again = await client.post("/applications", data={"job_id": str(job.id)})
     assert again.status_code == 303
-    assert "apply_error" in again.headers["location"]
+    assert again.headers["location"].startswith(f"/jobs/{job.id}?notice=")
+    assert "already%20applied" in again.headers["location"]
     session.refresh(row)
     assert row.status == ApplicationStatus.submitted.value
+
+
+async def test_a_refused_prepare_shows_its_message_on_the_job_page(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
+    job.apply_url = "mailto:hr@example.com"
+    session.flush()
+
+    refused = await client.post("/applications", data={"job_id": str(job.id)})
+    page = await client.get(refused.headers["location"])
+
+    assert page.status_code == 200
+    assert "no usable apply link" in page.text
+
+
+async def test_a_closed_job_cannot_be_prepared_but_an_existing_application_can_be_marked_applied(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    applicant = _applicant(session)
+    other = _job_titled(session, "Closed Analyst")
+    job = session.scalar(select(Job).where(Job.title == "Platform Engineer"))
+    row = _ready_application(session, applicant, job)
+    job.freshness = JobFreshness.closed
+    other.freshness = JobFreshness.closed
+    session.commit()
+    refused = await client.post("/applications", data={"job_id": str(other.id)})
+    assert refused.status_code == 404
+    assert "closed" in refused.text
+    assert (await client.post(f"/jobs/{other.id}/applied")).status_code == 404
+
+    assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
+    session.refresh(row)
+    assert row.status == ApplicationStatus.submitted.value
+
+
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [
+        (ApplicationStatus.needs_input, "Check again"),
+        (ApplicationStatus.failed, "Try again"),
+        (ApplicationStatus.abandoned, "Prepare apply"),
+    ],
+)
+async def test_a_stuck_application_can_be_prepared_again(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch, status: ApplicationStatus, label: str
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
+    row = _ready_application(session, _applicant(session), job)
+    row.status = status.value
+    row.error = "Could not read the application form."
+    session.flush()
+
+    job_page = (await client.get(f"/jobs/{job.id}")).text
+    card = (await client.get(f"/applications/{row.id}")).text
+    assert label in job_page
+    assert label in card
+    assert "in progress" not in job_page
+    if status is ApplicationStatus.failed:
+        assert "Could not read the application form" in job_page
+
+
+async def test_the_person_can_say_they_are_not_applying(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    await _register(client)
+    job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
+    row = _ready_application(session, _applicant(session), job)
+    assert "not applying" in (await client.get(f"/jobs/{job.id}")).text
+    assert "not applying" in (await client.get(f"/applications/{row.id}")).text
+
+    assert (await client.post(f"/jobs/{job.id}/abandoned")).status_code == 303
+    session.refresh(row)
+    assert row.status == ApplicationStatus.abandoned.value
+    assert "You marked this as not applying" in (await client.get(f"/jobs/{job.id}")).text
+
+    row.status = ApplicationStatus.submitted.value
+    session.flush()
+    assert (await client.post(f"/jobs/{job.id}/abandoned")).status_code == 404
+    session.refresh(row)
+    assert row.status == ApplicationStatus.submitted.value
+
+
+async def test_abandon_needs_a_csrf_token(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    job = _job(session)
+    _ready_application(session, _applicant(session), job)
+    app.dependency_overrides.pop(require_csrf)
+    try:
+        assert (await client.post(f"/jobs/{job.id}/abandoned")).status_code == 403
+    finally:
+        app.dependency_overrides[require_csrf] = lambda: None
 
 
 async def test_the_extension_cannot_mark_an_application_submitted(client: httpx.AsyncClient, session: Session) -> None:
@@ -518,3 +575,202 @@ async def test_the_extension_cannot_mark_an_application_submitted(client: httpx.
     assert response.status_code == 400
     session.refresh(row)
     assert row.status == ApplicationStatus.ready_to_fill.value
+
+
+def test_extension_source_never_submits() -> None:
+    root = Path(__file__).resolve().parents[1] / "extension"
+    source = "\n".join(path.read_text(encoding="utf-8") for path in root.glob("*.js"))
+    assert "requestSubmit" not in source
+    assert ".submit(" not in source
+    assert "KeyboardEvent" not in source
+    assert "https://*/*" not in (root / "manifest.json").read_text(encoding="utf-8")
+
+
+def _plan_fields(*rows: tuple[str, str, str]) -> dict:
+    return {
+        "fields": [
+            {"id": field_id, "label": label, "name": name, "type": "textarea" if name == "why" else "text", "required": True, "options": []}
+            for field_id, label, name in rows
+        ]
+    }
+
+
+async def test_missing_answer_is_named_saved_and_reused(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    save_answers(
+        session,
+        applicant.id,
+        AnswersInput(
+            legal_first_name="Ada",
+            legal_last_name="Lovelace",
+            phone="",
+            address_line="",
+            city="",
+            postcode="",
+            country="",
+            linkedin_url="",
+            github_url="",
+            portfolio_url="",
+            right_to_work_uk="yes",
+            needs_visa_sponsorship="no",
+            nationality="",
+            heard_about="",
+            previously_employed="no",
+            free_school_meals=PREFER_NOT,
+            gender=PREFER_NOT,
+            ethnicity=PREFER_NOT,
+            disability=PREFER_NOT,
+            veteran=PREFER_NOT,
+        ),
+    )
+    job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
+    prepared = await client.post("/applications", data={"job_id": str(job.id)})
+    assert prepared.status_code == 303
+    row = session.scalar(select(Application).where(Application.job_id == job.id))
+    token = issue_token(session, applicant.id)
+    session.flush()
+    headers = {"Authorization": f"Bearer {token}"}
+    asked = _plan_fields(("f0", "First name", "first_name"), ("f1", "Why do you want this role?", "why"))
+
+    first = await client.post(f"/extension/applications/{row.id}/plan", headers=headers, json=asked)
+    assert first.status_code == 200
+    body = first.json()
+    assert body["status"] == ApplicationStatus.needs_input.value
+    assert body["plan"]["steps"] == []
+    assert "Why do you want this role?" in body["notice"]
+    page = await client.get("/applications")
+    assert "Why do you want this role?" in page.text
+    assert "Answer these questions, then fill again" in page.text
+
+    saved = await client.post(
+        f"/applications/{row.id}/answers",
+        data={"question_0": "Why do you want this role?", "answer_0": "I like building tools."},
+    )
+    assert saved.status_code == 303
+    session.refresh(row)
+    assert row.status == ApplicationStatus.ready_to_fill.value
+    assert row.fill_plan_json is None
+
+    again = await client.post(f"/extension/applications/{row.id}/plan", headers=headers, json=asked)
+    assert again.status_code == 200
+    filled = {step["field_id"]: step for step in again.json()["plan"]["steps"]}
+    assert filled["f0"]["value"] == "Ada"
+    assert filled["f1"]["value"] == "I like building tools."
+    assert "click Submit yourself" in again.json()["notice"]
+
+    _store(
+        session,
+        [_li(9002, title="Support Engineer", **{"applyUrl": "https://careers.example.com/jobs/9002/apply"})],
+    )
+    other = session.scalar(select(Job).where(Job.title == "Support Engineer"))
+    show_to(session, applicant.id, other.id)
+    assert (await client.post("/applications", data={"job_id": str(other.id)})).status_code == 303
+    second = session.scalar(select(Application).where(Application.job_id == other.id))
+    reworded = _plan_fields(("f0", "Please tell us why you want this role", "why"))
+    reused = await client.post(f"/extension/applications/{second.id}/plan", headers=headers, json=reworded)
+    assert reused.status_code == 200
+    assert reused.json()["plan"]["missing"] == []
+    assert reused.json()["plan"]["steps"][0]["value"] == "I like building tools."
+
+
+async def test_plan_rejects_an_invented_model_value(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _invented(*_args, **_kwargs):
+        return {"f0": Match(cv_quote="I am a world-class ninja")}
+
+    monkeypatch.setattr("app.applications.plan.model_matches", _invented)
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    show_to(session, _applicant(session).id, job.id)
+    await client.post("/applications", data={"job_id": str(job.id)})
+    row = session.scalar(select(Application).where(Application.job_id == job.id))
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.post(
+        f"/extension/applications/{row.id}/plan",
+        headers={"Authorization": f"Bearer {token}"},
+        json=_plan_fields(("f0", "Why do you want this role?", "why")),
+    )
+    assert response.status_code == 200
+    assert response.json()["plan"]["steps"] == []
+    assert response.json()["status"] == ApplicationStatus.needs_input.value
+    assert "Why do you want this role?" in response.json()["notice"]
+
+
+@pytest.mark.parametrize("current", ["submitted", "needs_input", "failed", "abandoned"])
+@pytest.mark.parametrize("reported", ["filled_awaiting_review", "needs_input", "failed", "abandoned"])
+async def test_the_extension_reports_only_on_applications_it_can_fill(
+    client: httpx.AsyncClient, session: Session, current: str, reported: str
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    row = _ready_application(session, applicant, _job(session))
+    row.status = current
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.post(
+        f"/extension/applications/{row.id}/status",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"status": reported, "error": "Fill failed"},
+    )
+    assert response.status_code == 409
+    session.refresh(row)
+    assert row.status == current
+
+
+@pytest.mark.parametrize("current", ["ready_to_fill", "filled_awaiting_review"])
+async def test_the_extension_reports_a_failed_fill(client: httpx.AsyncClient, session: Session, current: str) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    row = _ready_application(session, applicant, _job(session))
+    row.status = current
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.post(
+        f"/extension/applications/{row.id}/status",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"status": "failed", "error": "Could not download CV"},
+    )
+    assert response.status_code == 200
+    session.refresh(row)
+    assert (row.status, row.error) == ("failed", "Could not download CV")
+
+
+async def test_the_extension_cv_for_an_unknown_application_is_not_found(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    _master_cv(session, applicant)
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.get(f"/extension/cv?application_id={uuid.uuid4()}", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 404
+    assert response.content != PDF
+
+
+async def test_the_extension_cv_for_another_persons_application_is_not_found(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    _master_cv(session, applicant)
+    token = issue_token(session, applicant.id)
+    other = Applicant(email="someone-else@example.com")
+    session.add(other)
+    session.flush()
+    theirs = _ready_application(session, other, _job(session))
+
+    response = await client.get(f"/extension/cv?application_id={theirs.id}", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 404
+    assert response.content != PDF

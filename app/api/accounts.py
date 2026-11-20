@@ -39,13 +39,10 @@ admin_session_router = APIRouter(prefix="/admin", tags=["admin-accounts"])
 admin_router = APIRouter(prefix="/admin/accounts", tags=["admin-accounts"], dependencies=[Depends(require_admin)])
 
 _LOGIN_FAILED = "Email or password is wrong."
+_FIELDS_MISSING = "Enter your email and password."
 _TOO_MANY = "Too many attempts. Wait a while and try again."
 _SEE_OTHER = status.HTTP_303_SEE_OTHER
 _CSRF = [Depends(require_csrf)]
-
-
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
 
 
 def _error(message: str | None) -> str:
@@ -92,8 +89,14 @@ def _credentials_page(
     )
 
 
+_ADMIN_SESSION_KEYS = ("admin", "admin_until")
+
+
 def _start_session(request: Request, applicant: Applicant) -> RedirectResponse:
+    # The cookie is rebuilt from scratch against fixation; the admin marker is carried over on purpose.
+    admin = {key: request.session[key] for key in _ADMIN_SESSION_KEYS if key in request.session}
     request.session.clear()
+    request.session.update(admin)
     request.session["applicant"] = str(applicant.id)
     request.session["version"] = applicant.session_version
     return RedirectResponse("/account", status_code=_SEE_OTHER)
@@ -116,15 +119,17 @@ def require_login(applicant: Applicant | None = Depends(current_applicant)) -> A
 
 
 @router.get("/register", response_class=HTMLResponse)
-def register_form(request: Request) -> HTMLResponse:
+def register_form(request: Request, applicant: Applicant | None = Depends(current_applicant)) -> Response:
+    if applicant is not None:
+        return RedirectResponse("/account", status_code=_SEE_OTHER)
     return _credentials_page(request, "Register", "/register", new_password=True)
 
 
 @router.post("/register", response_class=HTMLResponse, dependencies=_CSRF)
 def register_submit(
-    request: Request, email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)
+    request: Request, email: str = Form(""), password: str = Form(""), db: Session = Depends(get_db)
 ) -> Response:
-    if not throttle.take_register_attempt(_client_ip(request)):
+    if not throttle.take_register_attempt(throttle.client_ip(request)):
         return _credentials_page(
             request, "Register", "/register", new_password=True, error=_TOO_MANY, email=email, status_code=429
         )
@@ -140,15 +145,21 @@ def register_submit(
 
 
 @router.get("/login", response_class=HTMLResponse)
-def login_form(request: Request) -> HTMLResponse:
+def login_form(request: Request, applicant: Applicant | None = Depends(current_applicant)) -> Response:
+    if applicant is not None:
+        return RedirectResponse("/account", status_code=_SEE_OTHER)
     return _credentials_page(request, "Log in", "/login", new_password=False)
 
 
 @router.post("/login", response_class=HTMLResponse, dependencies=_CSRF)
 def login_submit(
-    request: Request, email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)
+    request: Request, email: str = Form(""), password: str = Form(""), db: Session = Depends(get_db)
 ) -> Response:
-    ip = _client_ip(request)
+    if not email.strip() or not password:
+        return _credentials_page(
+            request, "Log in", "/login", new_password=False, error=_FIELDS_MISSING, email=email, status_code=400
+        )
+    ip = throttle.client_ip(request)
     if not throttle.login_allowed(email, ip):
         return _credentials_page(
             request, "Log in", "/login", new_password=False, error=_TOO_MANY, email=email, status_code=429
@@ -229,7 +240,7 @@ def account_delete(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    email, ip = applicant.email, _client_ip(request)
+    email, ip = applicant.email, throttle.client_ip(request)
     if not throttle.login_allowed(email, ip):
         return _account_page(request, applicant, error=_TOO_MANY, status_code=429)
     if authenticate(db, email=email, password=password) is None:
@@ -272,7 +283,7 @@ def _bad_link(message: str, status_code: int = 400) -> HTMLResponse:
 
 
 @router.get("/set-password", response_class=HTMLResponse)
-def set_password_form(request: Request, token: str = Query(...), db: Session = Depends(get_db)) -> HTMLResponse:
+def set_password_form(request: Request, token: str = Query(""), db: Session = Depends(get_db)) -> HTMLResponse:
     try:
         applicant_for_token(db, token)
     except InvalidLinkError as exc:
@@ -282,9 +293,9 @@ def set_password_form(request: Request, token: str = Query(...), db: Session = D
 
 @router.post("/set-password", response_class=HTMLResponse, dependencies=_CSRF)
 def set_password_submit(
-    request: Request, token: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)
+    request: Request, token: str = Form(""), password: str = Form(""), db: Session = Depends(get_db)
 ) -> Response:
-    if not throttle.take_set_password_attempt(_client_ip(request)):
+    if not throttle.take_set_password_attempt(throttle.client_ip(request)):
         return _bad_link(_TOO_MANY, status_code=429)
     try:
         set_password(db, token=token, password=password)
@@ -322,8 +333,8 @@ def admin_login_form(request: Request) -> HTMLResponse:
 
 
 @admin_session_router.post("/login", response_class=HTMLResponse, dependencies=_CSRF)
-def admin_login(request: Request, admin_key: str = Form(...)) -> Response:
-    if not throttle.take_admin_login_attempt(_client_ip(request)):
+def admin_login(request: Request, admin_key: str = Form("")) -> Response:
+    if not throttle.take_admin_login_attempt(throttle.client_ip(request)):
         return _admin_login_page(request, error=_TOO_MANY, status_code=429)
     if not admin_key_matches(admin_key):
         return _admin_login_page(request, error="That key is wrong.", status_code=401)

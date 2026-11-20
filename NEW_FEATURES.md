@@ -6,7 +6,7 @@ Catalog of post-MVP features planned and built on 15–16 November 2026. These s
 |---|---|---|---|
 | Apply fill agent | `integration/apply-agent` | `jaa-apply-agent` | ready for review |
 | Job application auto-apply | — (with `feat/apply-agent`) | — | planned: fill → review → notify user to click Submit |
-| Fake listing agent | `feat/fake-listing` | `jaa-fake-listing` | open on origin |
+| Fake listing agent | `feat/p2-fake-listing` | `jaa-p2-fake-listing` | merged onto the current base |
 | Personalized outreach | `integration/outreach` | `jaa-outreach` | ready for review |
 | Interview intel | `integration/interview-job-pack` | `jaa-interview-intel` | ready for review |
 | CV tailoring | `integration/cv-tailor` | `jaa-cv-tailor` | ready for review |
@@ -22,14 +22,15 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 **How it works**
 1. User clicks **Prepare apply** on a listing.
-2. Apify extracts the form schema from the job's `apply_url`.
-3. Server maps fields to an `application_answers` profile (patterns first, LLM for leftovers).
-4. Browser extension (MV3) fills the open tab, uploads the CV, and **never** clicks Submit.
-5. Status becomes `filled_awaiting_review`; in-app + extension notify the user.
+2. The extension reads the questions on the employer page the person has open. It works on any site. There is no Greenhouse, Lever, or Apify form fetch.
+3. Server maps fields to the person's apply answers, saved answers, account email, or an exact CV quote (patterns first, model only to point at one of those).
+4. A required question with nothing grounded becomes `needs_input`. The app and the extension name the questions. The person answers, the answer is saved, and a later form that asks the same thing in other words reuses it.
+5. Browser extension (MV3) fills the open tab, uploads the CV (tailored PDF when that job has one ready, otherwise the uploaded CV), scrolls to Submit, and **never** clicks Submit.
+6. Status becomes `filled_awaiting_review`; in-app + extension notify the user.
 
 **Locked choices**
 - Fill UX: browser extension on the employer page (not server-side submit).
-- Form intel: Apify + existing `BudgetGate` / `APIFY_API_TOKEN`.
+- The person clicks Fill. `activeTab` and `scripting` cover that employer tab. The extension does not hold a standing permission to read every site. Host access is only the local app, so it can fetch the plan and the CV.
 - Demographics default to Prefer not to say; never invent required answers.
 
 **New data.** `application_answers`, `application` (status machine), `extension_device` (hashed API token).
@@ -45,7 +46,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 **Depends on.** Apply fill agent (§1): same `application` row, fill plan, extension device token, and `application_answers`. Optionally uses a tailored CV (§6) when one is ready for that job.
 
 **How it works**
-1. User (or an Apply-verdict queue) starts **Prepare apply** → Apify schema + field map + extension fill + CV upload (§1).
+1. User (or an Apply-verdict queue) starts **Prepare apply** → the extension reads the open page, the server maps grounded answers, then the extension fills and uploads the CV (§1).
 2. Status becomes `filled_awaiting_review`. The extension scrolls to / highlights Submit but **does not click it**.
 3. Notify the user (extension badge/notification + in-app banner on `/applications` and the listings chip): form is ready — review the answers, then click Submit on the employer page.
 4. User reviews and clicks Submit themselves.
@@ -56,7 +57,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 - Prefer tailored CV upload when a package exists; otherwise master CV.
 - Refuse fill when required answers are still missing (`needs_input`); do not notify “ready to submit” until the form is fully filled.
 
-**New data (on top of §1).** Optional user-reported `submitted` / `abandoned` on `application`; notification already covered by fill-agent badge + in-app banner.
+**New data (on top of §1).** Optional user-reported `submitted` / `abandoned` on `application`; notification already covered by fill-agent badge + in-app banner. The person sets `abandoned` with **I'm not applying** (job page and application card). A `needs_input`, `failed` or `abandoned` application can be prepared again from the same two places; closed jobs cannot be prepared, but an existing application can still be marked applied. A refused prepare shows its reason on the job page.
 
 **Status.** The extension stops before Submit, and the person can mark the application submitted or record an application sent elsewhere. No automatic submit is implemented.
 
@@ -73,13 +74,13 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 2. Companies House Public Data API — dissolved / liquidation → fake; no match → soft unknown.
 3. Official domain via DuckDuckGo HTML search + homepage name check (fetch gateway).
 4. Careers-page title match → set `apply_url` to company URL, raise Real confidence to high.
-5. Persist `job_verification`; rematch when outcome or URL changes.
+5. Persist `job_verification` (migration `0022_job_verification`); the worker rematches in the same cycle whenever it checked a job.
 
 **Locked choices**
 - Soft gate: missing careers hit alone does **not** hide a job.
 - No AI spend; page + CH fetches only.
 - Do **not** mark fakes `freshness=closed` (LinkedIn would reopen them).
-- Hide via Real confidence `low` → no match → off listings (and 404 `/jobs/{id}`).
+- Hide via Real confidence `low` → no match → off listings. `/jobs/{id}` and every action under it (tailor, tailored CV downloads, mark applied, interview practice, outreach) answer 404 through one check, `listed_job`, even before the rematch.
 
 **Config.** `COMPANIES_HOUSE_API_KEY` (optional); allowlist `api.company-information.service.gov.uk`.
 
@@ -92,7 +93,7 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 **Goal.** After the user marks an application submitted, find hiring managers / company figures for that job, research public signals, draft a human message from a curated success-pattern library, let the user edit, then send via Gmail or copy for LinkedIn.
 
 **Flow**
-1. User marks the job as applied → job page shows **Find people** (Apify LinkedIn people / employees actors, budget-gated).
+1. User marks the job as applied → the job's card on `/listings` and its job page show **Find people** (and, once drafted, each contact's messages in folded sections under the summary; before applying they say to mark the job applied) (Apify LinkedIn people / employees actors, budget-gated).
 2. Pick contact → **Research & draft** (About + quotes as evidence).
 3. User edits subject/body.
 4. **Send with Gmail** (OAuth) or **Copy for LinkedIn** + open profile.
@@ -135,26 +136,26 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 ## 6. CV tailoring pipeline
 
-**Goal.** For jobs with fit verdict **Apply** or **Consider**, automatically produce a grounded tailored CV (PDF + DOCX), a cover letter written from it, plus an ATS keyword coverage report.
+**Goal.** For every job on a person's listings with an AI score of 3.0 or more (out of 5), automatically produce a grounded tailored CV (PDF + DOCX), a cover letter written from it, plus an ATS keyword coverage report.
 
 **Pipeline order** (Resume-Matcher's tailorer, MVP.md D60)
-1. Gate (verdict or request + master CV + budget; hash reuse).
+1. Gate (listed with AI score 3.0+, or requested + master CV + budget; hash reuse).
 2. Parse the master CV into structured sections; keep only what the CV text shows.
 3. Extract the posting's required skills, preferred skills and keywords.
 4. Claude proposes path-based edits that quote what they replace; only quoted edits on allowed paths land.
 5. One keyword-injection pass for posting terms the master CV supports but the edit lost.
 6. Replace stock AI wording; remove skills the master CV never mentions.
 7. Hold the result to the master CV row by row (identity fields, years, numbers, similarity).
-8. Write a cover letter from the final CV and the posting (Resume-Matcher's cover-letter prompt, MVP.md D61); a failure is a warning, not a failed CV.
+8. Write a cover letter from the final CV and the posting (Resume-Matcher's cover-letter prompt, MVP.md D68); a failure is a warning, not a failed CV.
 9. Render single-column ATS-friendly PDF + DOCX; ATS text-layer checks + keyword coverage.
 
 **Locked choices**
-- Trigger: automatic after Apply/Consider fit reports.
+- Trigger: automatic for every job that lands on a person's listings with an AI score of 3.0 or more, whatever the verdict label, in the person's tailoring scope (their locations, or everywhere when they ticked that); the "Tailor my CV" button covers any other open job. Jobs matching hides (training roles, unsafe jobs) are never tailored automatically. When the budget or the per-cycle cap is short, requested packages go first, then best score, then newest.
 - CV and cover letter; no LaTeX.
 - Never invent employers, dates, metrics, or skills.
 - Master CV on profile stays the source of truth; tailored files are per-job copies.
 
-**Out of scope.** Company web research in cover letters; fetching URLs embedded in advert HTML; tailoring Skip/Research-first jobs by default; fabricating skills to “pass ATS”.
+**Out of scope.** Company web research in cover letters; fetching URLs embedded in advert HTML; tailoring jobs that are off the listings or score under 3.0 without a request; fabricating skills to “pass ATS”.
 
 ---
 
@@ -185,4 +186,4 @@ Plans live under `~/.cursor/plans/` (`apply_fill_agent_*`, `fake_listing_agent_*
 
 ## Merge note
 
-The connected workflow is stacked in review branches: base cleanup → Indeed → CV tailoring → apply → outreach → interview. Alembic revisions form one chain through `0021_interview_job_pack`. Auto-submit remains out of scope; the person reviews and submits the form.
+The connected workflow is stacked in review branches: base cleanup → Indeed → CV tailoring → apply → outreach → interview. Alembic revisions form one chain through `0022_job_verification`. Auto-submit remains out of scope; the person reviews and submits the form.

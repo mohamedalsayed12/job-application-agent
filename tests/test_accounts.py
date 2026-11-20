@@ -148,6 +148,14 @@ async def test_a_password_of_the_wrong_length_is_refused(client: httpx.AsyncClie
     assert _applicant(session) is None
 
 
+@pytest.mark.parametrize("password", [" " * 12, "\t" * 12, " \n " * 6])
+async def test_a_blank_password_is_refused(client: httpx.AsyncClient, session: Session, password: str) -> None:
+    response = await _register(client, password=password)
+    assert response.status_code == 400
+    assert "blank or only spaces" in response.text
+    assert _applicant(session) is None
+
+
 @pytest.mark.parametrize("email", ["no-at-sign", "@example.com", "two words@example.com", "a@" + "b" * 260])
 async def test_a_bad_email_is_refused(client: httpx.AsyncClient, session: Session, email: str) -> None:
     assert (await _register(client, email=email)).status_code == 400
@@ -195,6 +203,14 @@ async def test_a_set_password_link_works_once(client: httpx.AsyncClient, session
 async def test_a_short_password_does_not_use_up_the_link(client: httpx.AsyncClient, session: Session) -> None:
     token = set_password_token(_admin_created(session))
     assert (await client.post("/set-password", data={"token": token, "password": "short"})).status_code == 400
+    assert (await client.post("/set-password", data={"token": token, "password": PASSWORD})).status_code == 303
+
+
+async def test_a_blank_password_does_not_use_up_the_link(client: httpx.AsyncClient, session: Session) -> None:
+    token = set_password_token(_admin_created(session))
+    response = await client.post("/set-password", data={"token": token, "password": " " * 12})
+    assert response.status_code == 400
+    assert "blank or only spaces" in response.text
     assert (await client.post("/set-password", data={"token": token, "password": PASSWORD})).status_code == 303
 
 
@@ -302,8 +318,129 @@ def test_safe_settings_pass() -> None:
 async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: httpx.AsyncClient) -> None:
     notice = await client.get("/privacy")
     assert notice.status_code == 200
-    for expected in ("controller", "Argon2", "jaa_session", "30 days", "ico.org.uk", "the text of your CV is sent to Anthropic", "your target roles, experience level, skills and degrees", "your CV, if you uploaded one"):
+    for expected in ("controller", "Argon2", "jaa_session", "30 days", "ico.org.uk", "the text of your CV is sent to Anthropic", "your target roles, experience levels, skills and degrees", "your CV, if you uploaded one"):
         assert expected in notice.text
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register
     assert register.count('href="/privacy"') == 2
+
+
+@pytest.mark.parametrize("email", ["name@nodot", "name@.com", "name@example.", "name@a..com", "name@"])
+async def test_register_rejects_email_without_dotted_domain(client: httpx.AsyncClient, email: str) -> None:
+    response = await _register(client, email=email)
+    assert response.status_code == 400
+    assert "Enter a valid email address." in response.text
+
+
+async def test_register_accepts_dotted_domain_case_and_whitespace(client: httpx.AsyncClient) -> None:
+    response = await _register(client, email="  Name@Mail.Example.COM ")
+    assert response.status_code == 303
+
+
+async def test_register_with_a_missing_field_shows_the_form_not_json(client: httpx.AsyncClient) -> None:
+    for data in ({"email": EMAIL}, {"password": PASSWORD}, {}):
+        response = await client.post("/register", data=data)
+        assert response.status_code == 400
+        assert response.headers["content-type"].startswith("text/html")
+        assert '<p class="error">' in response.text
+        assert 'action="/register"' in response.text
+
+
+async def test_login_with_a_missing_field_shows_the_form_not_json(client: httpx.AsyncClient) -> None:
+    for data in ({"email": EMAIL}, {"password": PASSWORD}, {}):
+        response = await client.post("/login", data=data)
+        assert response.status_code == 400
+        assert response.headers["content-type"].startswith("text/html")
+        assert "Enter your email and password." in response.text
+
+
+async def test_admin_login_with_no_key_shows_the_form_not_json(client: httpx.AsyncClient) -> None:
+    response = await client.post("/admin/login", data={})
+    assert response.status_code == 401
+    assert response.headers["content-type"].startswith("text/html")
+    assert "That key is wrong." in response.text
+
+
+async def test_set_password_without_a_token_shows_a_page_not_json(client: httpx.AsyncClient) -> None:
+    response = await client.get("/set-password")
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("text/html")
+    assert '<p class="error">' in response.text
+    post = await client.post("/set-password", data={})
+    assert post.status_code == 400
+    assert post.headers["content-type"].startswith("text/html")
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_logged_in_applicant_is_redirected_from_login_and_register(
+    client: httpx.AsyncClient, path: str
+) -> None:
+    await _register(client)
+    response = await client.get(path)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/account"
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_logged_out_visitor_still_gets_the_form(client: httpx.AsyncClient, path: str) -> None:
+    assert (await client.get(path)).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/login", "/register"])
+async def test_stale_session_still_gets_the_form(
+    client: httpx.AsyncClient, session: Session, path: str
+) -> None:
+    await _register(client)
+    _applicant(session).session_version += 1
+    session.commit()
+    assert (await client.get(path)).status_code == 200
+
+
+async def _admin_login(client: httpx.AsyncClient) -> None:
+    assert (await client.post("/admin/login", data={"admin_key": ADMIN})).status_code == 303
+
+
+async def test_applicant_login_keeps_an_admin_session(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    await client.post("/logout")
+    await _admin_login(client)
+    assert (await client.get("/admin/applicants")).status_code == 200
+    assert (await _login(client)).status_code == 303
+    assert (await client.get("/account")).status_code == 200
+    assert (await client.get("/admin/applicants")).status_code == 200
+
+
+async def test_registering_keeps_an_admin_session(client: httpx.AsyncClient) -> None:
+    await _admin_login(client)
+    assert (await _register(client)).status_code == 303
+    assert (await client.get("/account")).status_code == 200
+    assert (await client.get("/admin/applicants")).status_code == 200
+
+
+async def test_applicant_login_still_replaces_the_applicant_session(client: httpx.AsyncClient) -> None:
+    await _register(client, email="a@example.com")
+    await client.post("/logout")
+    await _register(client, email="b@example.com")
+    await _admin_login(client)
+    await _login(client, email="b@example.com")
+    assert "b@example.com" in (await client.get("/account")).text
+
+
+async def test_a_forged_admin_marker_is_not_made_valid_by_login(client: httpx.AsyncClient) -> None:
+    await _register(client)
+    await client.post("/logout")
+    assert (await _login(client)).status_code == 303
+    assert (await client.get("/admin/applicants")).status_code == 401
+
+
+async def test_home_sends_a_visitor_to_login(client: httpx.AsyncClient) -> None:
+    response = await client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+async def test_home_sends_a_logged_in_applicant_to_listings(client: httpx.AsyncClient) -> None:
+    await _register(client)
+    response = await client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/listings"

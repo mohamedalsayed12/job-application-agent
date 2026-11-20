@@ -7,14 +7,16 @@ everything here is local and free.
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.tailor.preservation import similarity
 from app.tailor.prompts import AI_PHRASE_REPLACEMENTS, PLURAL_REPLACEMENTS
-from app.tailor.resume import all_text, keyword_in_text
+from app.tailor.resume import all_text, stem_in_text, term_in_text
 
-KEYWORD_FIELDS = ("required_skills", "preferred_skills", "keywords")
+KEYWORD_FIELDS = ("required_skills", "preferred_skills", "keywords", "company_keywords")
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,18 +37,10 @@ def job_keyword_terms(keywords: dict[str, Any]) -> list[str]:
     return list(terms)
 
 
-def keyword_match(resume: dict[str, Any], keywords: dict[str, Any]) -> float:
-    terms = job_keyword_terms(keywords)
-    if not terms:
-        return 0.0
-    text = all_text(resume)
-    return sum(keyword_in_text(term, text) for term in terms) / len(terms) * 100
-
-
 def analyze_keyword_gaps(keywords: dict[str, Any], tailored: dict[str, Any], master: dict[str, Any]) -> KeywordGaps:
     tailored_text, master_text = all_text(tailored), all_text(master)
-    missing = [term for term in job_keyword_terms(keywords) if not keyword_in_text(term, tailored_text)]
-    injectable = [term for term in missing if keyword_in_text(term, master_text)]
+    missing = [term for term in job_keyword_terms(keywords) if not term_in_text(term, tailored_text)]
+    injectable = [term for term in missing if term_in_text(term, master_text)]
     return KeywordGaps(
         missing=missing, injectable=injectable, gaps=[term for term in missing if term not in injectable]
     )
@@ -100,7 +94,7 @@ def drop_fabricated_skills(tailored: dict[str, Any], master: dict[str, Any]) -> 
         known = (
             lower in master_skills
             or any(lower in master or master in lower for master in master_skills if master)
-            or keyword_in_text(skill, master_text)
+            or term_in_text(skill, master_text)
         )
         (kept if known else fabricated).append(skill)
     if not fabricated:
@@ -139,3 +133,39 @@ def _substitute(match: re.Match[str], phrase: str) -> str:
         return ""
     wanted = "an" if replacement[0].lower() in "aeiou" else "a"
     return f"{wanted.capitalize() if article[0].isupper() else wanted} {replacement}"
+
+
+def revert_unsupported_claims(
+    tailored: dict[str, Any], master: dict[str, Any], keywords: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Put a row back to the master's wording when it newly names a posting term the master lacks.
+
+    Catches "JavaScript-adjacent" and "to monitor data accuracy": no wording that says the candidate
+    does what the posting asks, but the CV never showed, survives.
+    """
+    master_text = all_text(master)
+    gaps = [term for term in job_keyword_terms(keywords) if not (term_in_text(term, master_text) or stem_in_text(term, master_text))]
+    if not gaps:
+        return tailored, []
+    reverted: list[str] = []
+
+    def claims(text: str, source: str) -> list[str]:
+        return [term for term in gaps if stem_in_text(term, text) and not stem_in_text(term, source)]
+
+    def restore(text: str, sources: list[str]) -> str:
+        source = max(sources, key=lambda row: similarity(row, text), default="")
+        found = claims(text, source)
+        if not found:
+            return text
+        reverted.extend(term for term in found if term not in reverted)
+        return source
+
+    result = copy.deepcopy(tailored)
+    if isinstance(result.get("summary"), str):
+        result["summary"] = restore(result["summary"], [str(master.get("summary") or "")])
+    for section in ("workExperience", "personalProjects"):
+        for entry in result.get(section) or []:
+            source_entry = next((e for e in master.get(section) or [] if e.get("id") == entry.get("id")), None)
+            sources = [str(row) for row in (source_entry or {}).get("description") or []]
+            entry["description"] = [restore(str(row), sources) for row in entry.get("description") or []]
+    return result, reverted
