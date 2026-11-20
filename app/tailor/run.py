@@ -45,6 +45,7 @@ from app.models import (
     TailoredCvStatus,
     TailorRun,
     attempt_failed,
+    posting_flagged,
 )
 from app.tailor import ai
 from app.tailor.ats import ats_report
@@ -217,9 +218,9 @@ def request_tailored_cv(
             prompt_version=PROMPT_VERSION,
         )
         session.add(row)
-    elif (row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft)) and not (
-        isinstance(row.draft, dict) and row.draft.get("reason") == "posting_flagged"
-    ):
+    elif (
+        row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft)
+    ) and not posting_flagged(row.draft):
         row.status = TailoredCvStatus.pending.value
         row.input_hash = REQUESTED
     row.requested_at = now

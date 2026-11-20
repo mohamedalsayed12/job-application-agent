@@ -197,6 +197,11 @@ def attempt_failed(status: str, draft: object) -> bool:
     return status == TailoredCvStatus.ready.value and isinstance(draft, dict) and bool(draft.get("last_error"))
 
 
+def posting_flagged(draft: object) -> bool:
+    """The advert was flagged as unsafe to tailor: a failed row keeps it as `reason`, a ready one as `last_error`."""
+    return isinstance(draft, dict) and "posting_flagged" in (draft.get("reason"), draft.get("last_error"))
+
+
 class CompanyResearchStatus(StrEnum):
     ready = "ready"
     unavailable = "unavailable"

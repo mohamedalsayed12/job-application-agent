@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import uuid
 
-from app.models import TailoredCv, TailoredCvStatus, attempt_failed
+from app.models import TailoredCv, TailoredCvStatus, attempt_failed, posting_flagged
 
 _REASONS = {
     "posting_flagged": "This advert was flagged as unsafe to tailor, so no CV was written.",
@@ -60,7 +60,7 @@ def listing_tailor(
         return ""
     block = tailored_block(job_id, row, auto=auto)
     # A flagged advert fails the same way every time, so it gets no retry.
-    flagged = row is not None and isinstance(row.draft, dict) and row.draft.get("reason") == "posting_flagged"
+    flagged = row is not None and posting_flagged(row.draft)
     retry = row is not None and not flagged and (
         row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft)
     )

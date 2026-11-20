@@ -1134,3 +1134,20 @@ async def test_a_flagged_advert_explains_itself_and_offers_no_retry(
     assert "Try again" not in page
     assert (await client.post(f"/jobs/{job.id}/tailor")).status_code == 303
     assert session.scalars(select(TailoredCv)).one().status == TailoredCvStatus.failed.value
+
+
+async def test_a_ready_cv_whose_refresh_hit_a_flagged_advert_offers_no_retry(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    _, job = await _person_on_a_job_without_a_report(session, client)
+    await client.post(f"/jobs/{job.id}/tailor")
+    row = session.scalars(select(TailoredCv)).one()
+    row.status = TailoredCvStatus.ready.value
+    row.pdf_content = b"%PDF"
+    row.draft = {"last_error": "posting_flagged"}
+    session.flush()
+
+    page = (await client.get(f"/jobs/{job.id}")).text
+    assert "Try again" not in page
+    assert (await client.post(f"/jobs/{job.id}/tailor")).status_code == 303
+    assert session.scalars(select(TailoredCv)).one().status == TailoredCvStatus.ready.value
