@@ -82,8 +82,10 @@ def _indeed(
 class _Apify:
     """Answers like Apify: a run starts, is still running at the first check, then succeeds with ``items``."""
 
-    def __init__(self, items: list[dict[str, Any]], *, status: str = "SUCCEEDED", cost_usd: float = 0.02) -> None:
-        self.items, self.status, self.cost_usd = items, status, cost_usd
+    def __init__(
+        self, items: list[dict[str, Any]], *, status: str = "SUCCEEDED", cost_usd: float = 0.02, start_status: int = 201
+    ) -> None:
+        self.items, self.status, self.cost_usd, self.start_status = items, status, cost_usd, start_status
         self.requests: list[httpx.Request] = []
         self.checks = 0
 
@@ -92,6 +94,8 @@ class _Apify:
         path = request.url.path
         run = {"id": f"run{len(self.requests)}", "defaultDatasetId": "data1", "usageTotalUsd": self.cost_usd}
         if request.method == "POST" and path.endswith("/runs"):
+            if self.start_status >= 400:
+                return httpx.Response(self.start_status, json={"error": "refused"})
             return httpx.Response(201, json={"data": {**run, "status": "RUNNING"}})
         if path.startswith("/v2/actor-runs/"):
             self.checks += 1

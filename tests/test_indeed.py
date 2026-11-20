@@ -205,6 +205,15 @@ async def test_a_failed_run_is_recorded_and_its_cost_still_counted(session: Sess
     assert session.scalar(select(SpendLedger).limit(1)).actual_cost == Decimal("0.0080")
 
 
+async def test_a_run_that_never_started_costs_nothing(session: Session) -> None:
+    _policy(session)
+    applicant_id = _entry_applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    await _collect(session, _Apify([_indeed(1)], start_status=500), applicant_id=applicant_id)
+
+    costs = {row.actual_cost for row in session.scalars(select(SpendLedger))}
+    assert costs == {Decimal(0)}
+
+
 async def test_a_run_that_does_not_finish_in_time_is_stopped(session: Session) -> None:
     _policy(session)
     applicant_id = _entry_applicant(session, roles=["Backend Developer"], locations=["Manchester"])

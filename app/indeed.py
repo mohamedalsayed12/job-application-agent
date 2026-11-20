@@ -232,7 +232,7 @@ class _Run:
         )
         run = (started or {}).get("data") or {}
         if not run.get("id"):
-            return None, None
+            return None, Decimal(0)  # never started, so nothing was charged
         deadline = settings.indeed_wait_minutes * 60
         waited = 0
         while run.get("status") not in _FINISHED and waited < deadline:

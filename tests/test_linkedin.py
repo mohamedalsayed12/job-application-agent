@@ -170,6 +170,15 @@ async def test_a_failed_run_is_recorded_and_its_cost_still_counted(session: Sess
     assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal("0.0080")
 
 
+async def test_a_run_that_never_started_costs_nothing(session: Session) -> None:
+    _policy(session)
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    report = await _collect(session, _Apify([_li(1)], start_status=500))
+
+    assert report.failed == ["Backend Developer in Manchester: Apify answered 500"]
+    assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal(0)
+
+
 async def test_a_run_that_does_not_finish_in_time_is_stopped(session: Session) -> None:
     _policy(session)
     _applicant(session, roles=["Backend Developer"], locations=["Manchester"])

@@ -28,7 +28,10 @@ async def run_actor(
     sleep: Callable[[float], Any] = asyncio.sleep,
     memory_mb: int = 1024,
 ) -> tuple[list[dict[str, Any]] | None, Decimal | None, str]:
-    """Return (items, usage_usd, problem). ``items`` is None when the run failed."""
+    """Return (items, usage_usd, problem). ``items`` is None when the run failed.
+
+    A run that never started cost nothing, so its usage is 0, not unknown.
+    """
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     problem = ""
     actor_path = quote(actor.replace("/", "~"), safe="~")
@@ -40,12 +43,12 @@ async def run_actor(
         body=body,
     )
     if started is None:
-        return None, None, "Apify start failed"
+        return None, Decimal(0), "Apify start failed"
     if isinstance(started, str):
-        return None, None, started
+        return None, Decimal(0), started
     run = (started or {}).get("data") or {}
     if not run.get("id"):
-        return None, None, "Apify start failed"
+        return None, Decimal(0), "Apify start failed"
     deadline = wait_minutes * 60
     waited = 0
     while run.get("status") not in _FINISHED and waited < deadline:
