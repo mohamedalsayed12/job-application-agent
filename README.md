@@ -84,7 +84,7 @@ the key in an `X-Admin-Key` header instead. The key is not accepted in a URL.
 
 Before the site is public:
 
-- Run one web process only, because login limits are counted in that process.
+- Login and other attempt limits are counted in Postgres, so they survive restarts and are shared by every web process.
 - Behind a proxy, run uvicorn with `--proxy-headers` and `--forwarded-allow-ips` set to the
   proxy's address. Otherwise every visitor shares one IP limit.
 

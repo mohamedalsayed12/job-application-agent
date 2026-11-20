@@ -5,12 +5,14 @@ from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
     DateTime,
     Float,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     LargeBinary,
@@ -1001,4 +1003,18 @@ class InterviewJobPack(_UuidPk, Base):
     cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
     ready_at: Mapped[datetime] = mapped_column(TZ)
     expires_at: Mapped[datetime] = mapped_column(TZ)
+    created_at: Mapped[datetime] = _created()
+
+
+class RateLimitEvent(Base):
+    """One counted attempt for a throttle key. A moving window counts rows newer than now - window."""
+
+    __tablename__ = "rate_limit_event"
+    __table_args__ = (
+        Index("ix_rate_limit_event_key_created_at", "key", "created_at"),
+        Index("ix_rate_limit_event_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger(), Identity(), primary_key=True)
+    key: Mapped[str] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()

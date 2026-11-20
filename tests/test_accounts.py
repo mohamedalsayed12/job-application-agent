@@ -314,6 +314,21 @@ async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: h
     assert register.count('href="/privacy"') == 2
 
 
+def test_throttle_counts_come_from_the_database(client: httpx.AsyncClient) -> None:
+    """A fresh module state (a restart, or another process) still sees earlier attempts."""
+    import importlib
+
+    for _ in range(5):
+        throttle.record_failed_login(EMAIL, "203.0.113.9")
+    assert not throttle.login_allowed(EMAIL, "203.0.113.9")
+
+    fresh = importlib.reload(throttle)  # nothing carried over in memory
+    assert not fresh.login_allowed(EMAIL, "203.0.113.9")
+    assert fresh.login_allowed(EMAIL, "203.0.113.10")  # other IP has its own count
+    fresh.reset()
+    assert fresh.login_allowed(EMAIL, "203.0.113.9")
+
+
 STRONG_PASSPHRASE = "plum saddle tundra whistle"
 
 
