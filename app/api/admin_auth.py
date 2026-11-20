@@ -69,9 +69,10 @@ def _has_admin_session(request: Request) -> bool:
 
 
 def require_admin(request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
+    """Anyone who isn't an admin, signed in or not, gets the same Not Found as a page that doesn't exist.
+
+    So an applicant can't tell the admin pages are there, and nothing points them at the admin login.
+    """
     allowed = admin_key_header_ok(request, x_admin_key) if x_admin_key is not None else _has_admin_session(request)
     if not allowed:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Admin access needed. Log in at /admin/login.",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")

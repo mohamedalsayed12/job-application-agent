@@ -44,8 +44,8 @@ def _estimate(cost: str) -> SpendEstimate:
 
 
 async def test_the_budget_page_needs_the_admin_key(client: httpx.AsyncClient) -> None:
-    assert (await client.get("/admin/budget")).status_code in (401, 403)
-    assert (await client.post("/admin/budget", data={"money_cap": "10"})).status_code in (401, 403)
+    assert (await client.get("/admin/budget")).status_code == 404
+    assert (await client.post("/admin/budget", data={"money_cap": "10"})).status_code == 404
 
 
 async def test_with_no_cap_the_pages_say_paid_calls_are_waiting(client: httpx.AsyncClient) -> None:

@@ -279,13 +279,13 @@ async def test_registering_is_limited_per_address(client: httpx.AsyncClient) -> 
 async def test_a_login_gives_no_admin_access(client: httpx.AsyncClient) -> None:
     await _register(client)
     for path in ("/admin/applicants", "/admin/quality", "/admin/accounts/set-password-link"):
-        assert (await client.get(path)).status_code == 401
+        assert (await client.get(path)).status_code == 404
 
 
 async def test_only_an_admin_can_create_a_set_password_link(client: httpx.AsyncClient, session: Session) -> None:
     _admin_created(session)
     denied = await client.post("/admin/accounts/set-password-link", data={"email": EMAIL})
-    assert denied.status_code == 401
+    assert denied.status_code == 404
     missing = await client.post("/admin/accounts/set-password-link", data={"email": "no@example.com"}, headers={"X-Admin-Key": ADMIN})
     assert missing.status_code == 404
 
@@ -430,7 +430,7 @@ async def test_a_forged_admin_marker_is_not_made_valid_by_login(client: httpx.As
     await _register(client)
     await client.post("/logout")
     assert (await _login(client)).status_code == 303
-    assert (await client.get("/admin/applicants")).status_code == 401
+    assert (await client.get("/admin/applicants")).status_code == 404
 
 
 async def test_home_sends_a_visitor_to_login(client: httpx.AsyncClient) -> None:

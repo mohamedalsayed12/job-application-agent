@@ -145,12 +145,12 @@ async def test_a_wrong_admin_key_header_does_not_skip_the_token(client: httpx.As
 
 @pytest.mark.parametrize("path", ADMIN_PAGES)
 async def test_the_admin_key_is_no_longer_accepted_in_a_url(client: httpx.AsyncClient, path: str) -> None:
-    assert (await client.get(f"{path}?admin_key={ADMIN}")).status_code == 401
+    assert (await client.get(f"{path}?admin_key={ADMIN}")).status_code == 404
 
 
 @pytest.mark.parametrize("path", ADMIN_PAGES)
 async def test_admin_pages_open_after_admin_login_and_never_show_the_key(client: httpx.AsyncClient, path: str) -> None:
-    assert (await client.get(path)).status_code == 401
+    assert (await client.get(path)).status_code == 404
     await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})
     response = await client.get(path)
     assert response.status_code == 200
@@ -170,12 +170,12 @@ async def test_a_wrong_admin_key_is_refused_and_then_limited(client: httpx.Async
         response = await _post_from(client, "/admin/login", "/admin/login", {"admin_key": "wrong"})
         assert response.status_code == 401
     assert (await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})).status_code == 429
-    assert (await client.get("/admin/quality")).status_code == 401
+    assert (await client.get("/admin/quality")).status_code == 404
 
 
 async def test_wrong_admin_key_headers_are_limited_like_the_login_form(client: httpx.AsyncClient) -> None:
     for _ in range(10):
-        assert (await client.get("/admin/quality", headers={"X-Admin-Key": "wrong"})).status_code == 401
+        assert (await client.get("/admin/quality", headers={"X-Admin-Key": "wrong"})).status_code == 404
     assert (await client.get("/admin/quality", headers={"X-Admin-Key": ADMIN})).status_code == 429
     refused = await client.post(
         "/admin/accounts/set-password-link", data={"email": "no@example.com"}, headers={"X-Admin-Key": ADMIN}
@@ -199,23 +199,33 @@ async def test_a_script_with_the_right_key_is_not_limited(client: httpx.AsyncCli
 async def test_admin_log_out_ends_admin_access_but_not_the_applicant_session(client: httpx.AsyncClient) -> None:
     await _log_in_as_applicant_and_admin(client)
     assert (await _post_from(client, "/account", "/admin/logout", {})).status_code == 303
-    assert (await client.get("/admin/quality")).status_code == 401
+    assert (await client.get("/admin/quality")).status_code == 404
     assert (await client.get("/account")).status_code == 200
 
 
 async def test_an_admin_session_expires(client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(admin_auth, "ADMIN_SESSION_SECONDS", -1)
     await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})
-    assert (await client.get("/admin/quality")).status_code == 401
+    assert (await client.get("/admin/quality")).status_code == 404
 
 
 async def test_changing_the_admin_key_ends_admin_sessions(client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
     await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})
     monkeypatch.setenv("ADMIN_KEY", "a-different-key")
     get_settings.cache_clear()
-    assert (await client.get("/admin/quality")).status_code == 401
+    assert (await client.get("/admin/quality")).status_code == 404
 
 
 async def test_an_applicant_login_gives_no_admin_session(client: httpx.AsyncClient) -> None:
     await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})
-    assert (await client.get("/admin/quality")).status_code == 401
+    assert (await client.get("/admin/quality")).status_code == 404
+
+
+async def test_admin_pages_look_like_missing_pages_to_an_applicant(client: httpx.AsyncClient) -> None:
+    await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})
+    missing = await client.get("/no-such-page")
+    for path in ("/admin/quality", "/admin/budget", "/admin/applicants", "/admin/accounts/set-password-link"):
+        response = await client.get(path)
+        assert (response.status_code, response.text) == (missing.status_code, missing.text)
+    for path in ("/account", "/profile", "/listings", "/workflow", "/applications"):
+        assert "/admin" not in (await client.get(path)).text

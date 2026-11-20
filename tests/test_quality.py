@@ -278,8 +278,8 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def test_the_admin_page_needs_the_key(client: httpx.AsyncClient) -> None:
-    assert (await client.get("/admin/quality")).status_code in (401, 403, 422)
-    assert (await client.get("/admin/quality?admin_key=wrong")).status_code in (401, 403)
+    assert (await client.get("/admin/quality")).status_code == 404
+    assert (await client.get("/admin/quality?admin_key=wrong")).status_code == 404
 
 
 async def test_the_admin_page_shows_the_report_and_escapes_job_text(

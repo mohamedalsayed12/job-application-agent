@@ -53,7 +53,7 @@ async def client(session: Session, admin_env: None) -> AsyncIterator[httpx.Async
 @pytest.mark.asyncio
 async def test_admin_requires_key(client: httpx.AsyncClient) -> None:
     response = await client.get("/admin/applicants")
-    assert response.status_code == 401
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
