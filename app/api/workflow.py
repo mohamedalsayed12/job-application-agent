@@ -15,6 +15,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.core.db import get_db
+from app.matching.match import listed
 from app.models import (
     Applicant,
     ApplicantJobMatch,
@@ -61,6 +62,23 @@ def _latest_job_id(db: Session, model: type, applicant_id: uuid.UUID, *condition
     return db.scalar(statement)
 
 
+def _listed_count(db: Session, applicant_id: uuid.UUID) -> int:
+    """Matches on this person's listings: open, and in their locations (same as /listings)."""
+    rows = listed().where(ApplicantJobMatch.applicant_id == applicant_id).subquery()
+    return int(db.scalar(select(func.count()).select_from(rows)) or 0)
+
+
+def _latest_listed_job_id(db: Session, applicant_id: uuid.UUID) -> uuid.UUID | None:
+    statement = (
+        listed()
+        .where(ApplicantJobMatch.applicant_id == applicant_id)
+        .order_by(ApplicantJobMatch.updated_at.desc())
+        .limit(1)
+    )
+    row = db.execute(statement).first()
+    return row[1].id if row else None
+
+
 def _render_step(number: int, step: Step) -> str:
     state = "done" if step.done else ""
     badge = "Complete" if step.done else step.status
@@ -87,10 +105,10 @@ def workflow_page(
     has_cv = db.scalar(select(CvFile.id).where(CvFile.applicant_id == applicant_id)) is not None
     profile_ready = preference is not None and has_cv
 
-    matches = _count(db, ApplicantJobMatch, applicant_id)
+    matches = _listed_count(db, applicant_id)
     reports = _count(db, JobReport, applicant_id)
     tailored = _count(db, TailoredCv, applicant_id, TailoredCv.status == TailoredCvStatus.ready.value)
-    latest_match = _latest_job_id(db, ApplicantJobMatch, applicant_id)
+    latest_match = _latest_listed_job_id(db, applicant_id)
 
     has_answers = db.scalar(select(ApplicationAnswers.id).where(ApplicationAnswers.applicant_id == applicant_id)) is not None
     has_extension = db.scalar(select(ExtensionDevice.id).where(ExtensionDevice.applicant_id == applicant_id)) is not None
