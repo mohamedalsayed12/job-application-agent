@@ -232,8 +232,8 @@ def request_tailored_cv(
 def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     """Packages due now: requests oldest first, then every listed job scoring ADD_LINE or more, best score first.
 
-    A closed job is never tailored. A job hidden from the listings, or outside the person's tailoring scope, is
-    tailored only when the person asked and it is still open.
+    A closed job is never tailored. A job outside the person's tailoring scope is tailored only when
+    the person asked; a job that has left their listings is not tailored at all until it is back.
     """
     allowed = settings.ai_applicants()
     is_open = Job.freshness == JobFreshness.open
@@ -245,13 +245,20 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     )
     # Every listed job scoring ADD_LINE or more is tailored with no click, whatever its verdict, inside the
     # person's tailoring scope. `listed` is the same "on this person's listings" rule the listings page uses.
+    on_listings = list(session.execute(listed(everywhere=True).add_columns(AI_SCORE_SQL)))
     rank: dict[tuple[uuid.UUID, uuid.UUID], tuple[int, float, float]] = {
         (match.applicant_id, match.job_id): (1, -float(score), -job.first_seen_at.timestamp())
-        for match, job, score in session.execute(listed(everywhere=True).add_columns(AI_SCORE_SQL))
+        for match, job, score in on_listings
         if auto_tailored(score, location_fit=match.location_fit, outside_locations=match.applicant_id in outside)
     }
-    # A button press is demand of its own, for any open job the person opened: those go first, oldest first.
-    rank |= {pair: (0, row.requested_at.timestamp(), 0.0) for pair, row in rows.items() if row.requested_at is not None}
+    # A button press is demand of its own: those go first, oldest first. It counts only while the job is still on
+    # the person's listings; if it drops off, the request waits and resumes if the job comes back.
+    on_listings_pairs = {(match.applicant_id, match.job_id) for match, _, _ in on_listings}
+    rank |= {
+        pair: (0, row.requested_at.timestamp(), 0.0)
+        for pair, row in rows.items()
+        if row.requested_at is not None and pair in on_listings_pairs
+    }
     pairs = sorted((pair for pair in rank if allowed is None or pair[0] in allowed), key=rank.__getitem__)
     if not pairs:
         return []

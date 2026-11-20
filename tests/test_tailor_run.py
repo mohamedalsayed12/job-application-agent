@@ -10,7 +10,17 @@ from sqlalchemy.orm import Session
 
 from app.accounts.service import delete_account
 from app.applicants.cv import store_cv
-from app.models import Applicant, Job, SpendKind, SpendLedger, TailoredCv, TailoredCvStatus, TailorRun
+from app.matching.match import match_all
+from app.models import (
+    Applicant,
+    ApplicantJobMatch,
+    Job,
+    SpendKind,
+    SpendLedger,
+    TailoredCv,
+    TailoredCvStatus,
+    TailorRun,
+)
 from app.tailor import run as tailor
 from app.tailor.run import MAX_CRASHES, request_tailored_cv, write_tailored_cvs
 from tests.test_cv_read import _docx
@@ -96,6 +106,7 @@ async def test_a_run_resumed_from_stored_edits_writes_the_same_cv(
     assert resumed.status == TailoredCvStatus.ready.value
     other = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     store_cv(session, other, _docx(CV_LINES))
+    match_all(session, now=SOON)
     request_tailored_cv(session, other, resumed.job_id, now=SOON)
     await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.commit, now=SOON)
     assert _package(session, other).draft == resumed.draft
@@ -109,6 +120,7 @@ async def test_one_crashing_package_does_not_stop_the_others(
     job = session.scalars(select(Job)).one()
     other = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     store_cv(session, other, _docx(CV_LINES))
+    match_all(session, now=SOON)
     # A request goes first, so the crash comes before the listed Apply job in the same cycle.
     request_tailored_cv(session, other, job.id, now=SOON)
     _break_site_reading(monkeypatch, times=1)
@@ -188,3 +200,26 @@ async def test_stored_steps_go_with_the_package_and_the_account(
     session.expire_all()
     assert session.scalars(select(TailorRun)).first() is None
     assert session.scalars(select(TailoredCv)).first() is None
+
+
+async def test_a_request_for_a_job_that_left_my_listings_waits_until_it_is_back(session: Session) -> None:
+    ai = _TailorAi()
+    applicant, gateway, settings = await _prepare(session, ai)
+    match = session.scalars(select(ApplicantJobMatch)).one()
+    saved = (match.applicant_id, match.job_id)
+    session.delete(match)
+    session.flush()
+    request_tailored_cv(session, saved[0], saved[1], now=SOON)
+
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.commit, now=SOON)
+
+    assert ai.tailor_calls == []
+    assert not run.outcomes
+    row = _package(session, applicant)
+    assert row.status == TailoredCvStatus.pending.value
+    assert row.requested_at is not None
+
+    match_all(session, now=SOON)
+    run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.commit, now=SOON)
+
+    assert run.outcomes["ready"] == 1

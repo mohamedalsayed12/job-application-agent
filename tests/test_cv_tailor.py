@@ -851,7 +851,7 @@ async def test_only_listed_jobs_scoring_3_or_more_are_tailored(session: Session)
 
     request_tailored_cv(session, applicant, job.id, now=SOON)
     run = await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
-    assert run.outcomes["ready"] == 1
+    assert not run.outcomes
 
 
 async def test_a_listed_consider_job_is_queued_then_tailored(session: Session) -> None:
