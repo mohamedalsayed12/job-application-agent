@@ -121,14 +121,45 @@ _PATTERNS: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
+# Answers the person gave about the UK only. A question about another country's work rights or visas
+# must not get them: "Yes" to UK right to work is not "Yes" to working in the United States.
+_UK_ONLY_KEYS = frozenset({"right_to_work_uk", "needs_visa_sponsorship"})
+_UK = re.compile(r"\b(uk|u\.k\.|united kingdom|great britain|britain|british|england|scotland|wales|northern ireland)\b")
+_OTHER_COUNTRY = re.compile(
+    r"\b(united states|u\.s\.a?\.?|usa|america|american|canada|canadian|australia|australian|new zealand|"
+    r"ireland|irish|eu|e\.u\.|european union|eea|europe|european|schengen|germany|france|netherlands|spain|"
+    r"italy|switzerland|sweden|norway|denmark|poland|portugal|belgium|austria|india|singapore|hong kong|"
+    r"japan|china|uae|united arab emirates|dubai|israel|mexico|brazil|south africa)\b"
+)
+# "US" in capitals is the country; "us" in lower case is usually "work for us".
+_US_CAPS = re.compile(r"\bUS\b")
+
+
+def names_other_country(question: str) -> bool:
+    """True when the question asks about a country other than the UK and does not name the UK."""
+    lowered = question.casefold()
+    if _UK.search(lowered):
+        return False
+    return bool(_OTHER_COUNTRY.search(lowered) or _US_CAPS.search(question))
+
+
 def match_answer_key(label: str, name: str = "") -> str | None:
     hay = re.sub(r"\s+", " ", f"{label} {name}".lower())
     if "pronounc" in hay:
         return None  # no saved answer says how to pronounce a name
+    if re.search(r"(country|dial(l?ing)?|calling|area) code", hay):
+        return None  # a dialling code is not the phone number or the country
     for key, needles in _PATTERNS:
         if any(re.search(needle, hay) for needle in needles):
+            if key in _UK_ONLY_KEYS and names_other_country(f"{label} {name}"):
+                return None
             return key
     return None
+
+
+def _fact_fits_question(fact: Fact, form_field: FormField) -> bool:
+    key = fact.id.removeprefix("answers:")
+    return not (fact.source == "answers" and key in _UK_ONLY_KEYS and names_other_country(form_field.question))
 
 
 def answer_fact_id(key: str) -> str:
@@ -230,7 +261,7 @@ def _grounded(form_field: FormField, match: Match | None, facts: Mapping[str, Fa
     if match is None:
         return None
     fact = facts.get(match.fact_id)
-    if fact is not None and (value := _fit(form_field, fact.value)):
+    if fact is not None and _fact_fits_question(fact, form_field) and (value := _fit(form_field, fact.value)):
         return value, fact.source
     quote = _cv_span(match.cv_quote, cv_text)
     if quote is not None and (value := _fit(form_field, quote)):

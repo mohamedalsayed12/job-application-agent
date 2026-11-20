@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.accounts import throttle
 from app.api.applications import FLAGGED
 from app.api.forms import require_csrf
-from app.applicants.apply_answers import AnswersInput, save_answers
+from app.applicants.apply_answers import AnswersInput, SavedQuestion, save_answers
 from app.applications.extension_device import issue_token
 from app.applications.mapper import (
     FillPlan,
@@ -124,6 +124,45 @@ def test_mapper_does_not_false_match_common_traps() -> None:
     assert match_answer_key("Hotel preferences") is None
     assert match_answer_key("Intelligence") is None
     assert match_answer_key("Gender") == "gender"
+
+
+def test_uk_work_answers_are_not_used_for_another_country() -> None:
+    assert match_answer_key("Are you legally authorized to work in the United States?") is None
+    assert match_answer_key("Are you authorised to work in the US?") is None
+    assert match_answer_key("Will you require visa sponsorship to work in Canada?") is None
+    assert match_answer_key("Do you have the right to work in the EU?") is None
+    assert match_answer_key("Are you legally authorised to work in the UK?") == "right_to_work_uk"
+    assert match_answer_key("Do you have the right to work in the UK or the US?") == "right_to_work_uk"
+    assert match_answer_key("Are you legally authorized to work?") == "right_to_work_uk"
+    assert match_answer_key("Do you need sponsorship to work for us?") == "needs_visa_sponsorship"
+
+
+def test_a_us_work_question_is_asked_not_filled_from_the_uk_answer() -> None:
+    field = _field("us", "Are you legally authorized to work in the United States?", "us_auth", "select", True, ["Yes", "No"])
+    facts = facts_from_profile({"right_to_work_uk": True, "needs_visa_sponsorship": False}, [])
+    plan = build_fill_plan([field], facts)
+    assert plan.steps == []
+    assert plan.missing[0].label == "Are you legally authorized to work in the United States?"
+
+    # The model may not point at the UK answer either.
+    pointed = build_fill_plan([field], facts, matches={"us": Match(fact_id="answers:right_to_work_uk")})
+    assert pointed.steps == []
+
+    # Once the person answers that exact question, their saved answer is used.
+    saved = facts_from_profile(
+        {"right_to_work_uk": True},
+        [SavedQuestion(question="Are you legally authorized to work in the United States?", answer="No")],
+    )
+    answered = build_fill_plan([field], saved)
+    assert answered.steps[0].value == "No"
+    assert answered.steps[0].source == "saved"
+
+
+def test_a_dialling_code_is_not_the_phone_number_or_country() -> None:
+    assert match_answer_key("Phone country code") is None
+    assert match_answer_key("Dialling code") is None
+    assert match_answer_key("Phone number") == "phone"
+    assert match_answer_key("Country") == "country"
 
 
 def _field(field_id: str, label: str, name: str, field_type: str, required: bool = False, options: list[str] | None = None) -> FormField:
