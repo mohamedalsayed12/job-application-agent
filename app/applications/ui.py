@@ -63,8 +63,9 @@ def apply_step(job: Job, application: Application | None, csrf: str) -> str:
         note = (
             "Answer these before the form can be filled: "
             + "; ".join(application.missing_fields or ["more answers"])
-            + ". Add them on your apply answers page, then check again."
+            + ". Answer them on the application page, then check again."
         )
+        detail = f'<a href="/applications/{html.escape(str(application.id))}">Open the application page</a>'
         retry = prepare_button(csrf, job.id, "Check again")
     elif status == ApplicationStatus.failed.value:
         note = f"Preparing this application failed: {application.error or 'the form could not be read'}."

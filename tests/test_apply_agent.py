@@ -525,6 +525,9 @@ async def test_a_stuck_application_can_be_prepared_again(
     assert "in progress" not in job_page
     if status is ApplicationStatus.failed:
         assert "Could not read the application form" in job_page
+    if status is ApplicationStatus.needs_input:
+        assert "apply answers page" not in job_page
+        assert f'<a href="/applications/{row.id}">Open the application page</a>' in job_page
 
 
 async def test_the_person_can_say_they_are_not_applying(
