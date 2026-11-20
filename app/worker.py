@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -30,6 +30,8 @@ from app.skills.taxonomy import map_job_skills
 from app.summaries.generate import summarise_matches
 from app.tailor.run import write_tailored_cvs
 from app.verify import verify_jobs
+
+logger = logging.getLogger(__name__)
 
 # Searches run once a day; the short poll keeps AI work on the backlog moving.
 DEFAULT_POLL_SECONDS = 60
@@ -99,11 +101,12 @@ async def _main(once: bool, poll_seconds: int) -> None:
             try:
                 with SessionLocal() as session:
                     report = await run_cycle(session, gateway, persist=session.commit)
-            except SQLAlchemyError as exc:
-                # A database restart must not silently end daily collection.
+            except Exception:
+                # A database restart or a failed model download must not end daily collection.
+                # The session block has already rolled back; Ctrl-C and cancellation still stop us.
                 if once:
                     raise
-                print(f"cycle failed, will retry: {type(exc).__name__}", flush=True)
+                logger.exception("cycle failed, will retry")
             else:
                 linkedin, indeed = report.linkedin, report.indeed
                 print(
