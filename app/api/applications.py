@@ -220,9 +220,11 @@ def application_detail(
     flagged = retire_if_flagged(db, row)
     db.commit()
     card = _card(request, row, db.get(Job, row.job_id), flagged=flagged)
+    answer_error = request.query_params.get("answer_error")
+    banner = f'<p class="error">{_e(answer_error)}</p>' if answer_error else ""
     return page(
         "Application",
-        f'<p><a href="/applications">All applications</a></p>{card}',
+        f'<p><a href="/applications">All applications</a></p>{banner}{card}',
         header=applicant_bar(request, "applications"),
         narrow=True,
     )
@@ -251,7 +253,7 @@ async def save_missing_answers(
         save_question_answers(db, applicant.id, pairs)
     except AnswersRefused as exc:
         db.rollback()
-        return RedirectResponse(f"/applications/{application_id}?answer_error={exc.message}", status_code=_SEE_OTHER)
+        return RedirectResponse(f"/applications/{application_id}?answer_error={quote(exc.message)}", status_code=_SEE_OTHER)
     if _job_open(db.get(Job, row.job_id)):
         # The answers are kept either way; only an open job goes back in the fill queue.
         store_fill_outcome(row, None, reopen=True)

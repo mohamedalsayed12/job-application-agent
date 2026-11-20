@@ -879,3 +879,27 @@ async def test_d55_the_extension_is_not_handed_an_application_for_a_job_judged_f
     assert ready.json() == []
     session.refresh(row)
     assert (row.status, row.error) == (ApplicationStatus.failed.value, FLAGGED)
+
+
+async def test_a_refused_answer_shows_its_message_and_the_application_stays_needs_input(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    show_to(session, applicant.id, job.id)
+    row = _ready_application(session, applicant, job)
+    row.status = ApplicationStatus.needs_input.value
+    row.missing_fields = ["Why do you want to work here?"]
+    session.commit()  # the refusal rolls back, so keep the row
+
+    refused = await client.post(
+        f"/applications/{row.id}/answers",
+        data={"question_0": "Why do you want to work here?", "answer_0": "x" * 2500},
+    )
+
+    assert refused.status_code == 303
+    shown = await client.get(refused.headers["location"])
+    assert '<p class="error">Keep each question under 500 characters and each answer under 2000.</p>' in shown.text
+    session.refresh(row)
+    assert row.status == ApplicationStatus.needs_input.value
