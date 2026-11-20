@@ -306,6 +306,7 @@ def outreach_contact_page(
             research=research,
             connection_email=connection.email if connection else None,
             gmail_ready=gmail_configured(get_settings()),
+            gmail_sent=gmail_draft is not None and already_sent(db, gmail_draft),
             notice=notice,
         ),
         header=applicant_bar(request, "matches"),
@@ -323,6 +324,7 @@ def _draft_html(
     research: OutreachResearch | None,
     connection_email: str | None,
     gmail_ready: bool,
+    gmail_sent: bool,
     notice: str | None,
 ) -> str:
     library = load_patterns()
@@ -332,7 +334,16 @@ def _draft_html(
     if research and research.quotes:
         quotes = "<ul>" + "".join(f"<li>{html.escape(str(q.get('text') or '')[:200])}</li>" for q in research.quotes[:5]) + "</ul>"
     gmail_form = '<p class="muted">No Gmail draft yet.</p>'
-    if gmail_draft:
+    if gmail_draft and gmail_sent:
+        # Read-only: what was emailed stays on record.
+        gmail_form = f"""
+<p><b>Sent</b></p>
+<p class="muted">Subject</p>
+<p>{html.escape(gmail_draft.subject or "")}</p>
+<p class="muted">Body</p>
+<pre style="white-space:pre-wrap">{html.escape(current_body(gmail_draft))}</pre>
+"""
+    elif gmail_draft:
         body = html.escape(current_body(gmail_draft))
         subject = html.escape(gmail_draft.subject or "")
         send_disabled = "" if (connection_email and contact.email) else "disabled"
