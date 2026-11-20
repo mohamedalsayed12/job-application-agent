@@ -11,7 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.accounts import throttle
-from app.accounts.service import InvalidLinkError, set_password, set_password_token
+from app.accounts.service import (
+    AccountError,
+    InvalidLinkError,
+    set_password,
+    set_password_token,
+)
 from app.api.forms import require_csrf
 from app.applicants.service import create_applicant, parse_preference_input
 from app.core.config import Settings, get_settings
@@ -307,3 +312,50 @@ async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: h
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register
     assert register.count('href="/privacy"') == 2
+
+
+STRONG_PASSPHRASE = "plum saddle tundra whistle"
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["Password123456", "PASSWORD1234!", "qwertyuiop1234", "iloveyou12345", "1q2w3e4r5t6y", "letmein123456!"],
+)
+async def test_a_common_password_is_refused_whatever_its_case(client: httpx.AsyncClient, password: str) -> None:
+    response = await _register(client, password=password)
+    assert response.status_code == 400
+    assert "too common" in response.text
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["aaaaaaaaaaaa", "AAAAAAAAAAAA", "123456789012", "abcdefghijkl", "987654321098", "abababababab", "121212121212"],
+)
+async def test_a_repeated_or_sequential_password_is_refused(client: httpx.AsyncClient, password: str) -> None:
+    response = await _register(client, password=password)
+    assert response.status_code == 400
+    assert "too easy to guess" in response.text
+
+
+@pytest.mark.parametrize("password", ["person@example.com", "PERSON-is-my-name", "xx-Person-xx-1975"])
+async def test_a_password_with_the_email_in_it_is_refused(client: httpx.AsyncClient, password: str) -> None:
+    response = await _register(client, password=password)
+    assert response.status_code == 400
+    assert "email address" in response.text
+
+
+async def test_a_strong_passphrase_is_accepted(client: httpx.AsyncClient) -> None:
+    assert (await _register(client, password=STRONG_PASSPHRASE)).status_code == 303
+    await client.post("/logout")
+    assert (await _login(client, password=STRONG_PASSPHRASE)).status_code == 303
+
+
+async def test_set_password_applies_the_same_rules_using_the_applicant_email(session: Session) -> None:
+    applicant = _admin_created(session)
+    token = set_password_token(applicant)
+    for weak in ("person@example.com", "myperson123456", "aaaaaaaaaaaa", "qwertyuiop123"):
+        with pytest.raises(AccountError):
+            set_password(session, token=token, password=weak)
+    assert applicant.password_hash is None
+    set_password(session, token=token, password=STRONG_PASSPHRASE)
+    assert applicant.password_hash is not None
