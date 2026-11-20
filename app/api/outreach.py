@@ -74,6 +74,19 @@ def _draft_notice(problem: str) -> str:
     return _DRAFT_PROBLEMS.get(problem, _DRAFT_RETRY)
 
 
+_FIND_PROBLEMS = {
+    "budget": "The spending limit has been reached. Try again after the budget resets.",
+    "not_configured": "Finding people is not set up on this server yet.",
+}
+_FIND_RETRY = "We couldn't find anyone just now. Press Find people to try again."
+
+
+def _find_notice(problem: str) -> str:
+    """Readable text for a find failure; the raw code goes to the log for the operator."""
+    logger.warning("outreach find stopped: %s", problem)
+    return _FIND_PROBLEMS.get(problem, _FIND_RETRY)
+
+
 async def get_gateway() -> AsyncIterator[FetchGateway]:
     gateway = FetchGateway()
     try:
@@ -188,7 +201,10 @@ async def outreach_find(
         settings=settings,
         persist=db.commit,
     )
-    notice = report.stopped_by or report.problem or f"Found {report.added} new contact(s)."
+    if code := report.stopped_by or report.problem:
+        notice = _find_notice(code)
+    else:
+        notice = f"Found {report.added} new contact(s)."
     return RedirectResponse(f"/jobs/{job.id}/outreach?notice={quote(notice)}", status_code=_SEE_OTHER)
 
 

@@ -598,6 +598,52 @@ async def test_a_different_chosen_cv_does_not_reuse_the_previous_draft(
         await gateway.aclose()
 
 
+async def test_find_people_stopped_by_budget_shows_a_readable_notice(session: Session, monkeypatch) -> None:
+    from urllib.parse import unquote
+
+    from app.accounts import throttle
+    from app.api.forms import require_csrf
+    from app.api.outreach import get_gateway
+    from app.core.config import get_settings
+    from app.core.db import get_db
+    from app.main import app
+    from app.models import Applicant
+
+    monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+    get_settings.cache_clear()
+    throttle.reset()
+    apify = _Apify([])
+
+    async def _gateway():
+        gateway = apify.gateway()
+        try:
+            yield gateway
+        finally:
+            await gateway.aclose()
+
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[require_csrf] = lambda: None
+    app.dependency_overrides[get_gateway] = _gateway
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as client:
+            await client.post("/register", data={"email": "outreach@example.com", "password": "correct horse battery"})
+            applicant = session.scalar(select(Applicant).where(Applicant.email == "outreach@example.com"))
+            job = _matched_job(session, applicant.id)
+            assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
+
+            found = await client.post(f"/jobs/{job.id}/outreach/find")
+            assert found.status_code == 303
+            notice = unquote(found.headers["location"].split("notice=", 1)[1])
+            assert "spending limit" in notice
+            assert notice != "budget"
+            assert apify.requests == []
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        throttle.reset()
+
+
 async def test_a_rejected_draft_call_shows_a_readable_notice_and_a_retry_button(session: Session, monkeypatch) -> None:
     from urllib.parse import unquote
 
