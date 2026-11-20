@@ -786,6 +786,14 @@ async def test_a_sent_email_is_never_rewritten_by_a_later_edit_or_resend(session
                 OutreachDraftStatus.sent.value,
             )
             assert len(session.scalars(select(OutreachSend)).all()) == 1
+
+            page = (await client.get(base)).text
+            assert "<b>Sent</b>" in page
+            assert "What I actually sent." in page
+            assert 'value="send"' not in page
+            assert 'value="save"' not in page
+            assert f'action="{base}/send"' not in page
+            assert f'action="{base}/save"' not in page
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()

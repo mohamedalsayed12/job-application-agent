@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -100,6 +100,17 @@ def _own_contact(db: Session, applicant: Applicant, contact_id: uuid.UUID) -> Ou
     if contact is None or contact.applicant_id != applicant.id:
         raise HTTPException(status_code=404)
     return contact
+
+
+def _job_contact(
+    db: Session, applicant: Applicant, job_id: uuid.UUID, contact_id: uuid.UUID
+) -> tuple[Job, OutreachContact]:
+    """The job and contact for a URL; 404 unless the contact belongs to this job."""
+    job = visible_job(db, applicant.id, job_id)
+    contact = _own_contact(db, applicant, contact_id)
+    if contact.job_id != job.id:
+        raise HTTPException(status_code=404)
+    return job, contact
 
 
 def _apply_first(job: Job) -> RedirectResponse:
@@ -404,8 +415,9 @@ def outreach_save(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    job = visible_job(db, applicant.id, job_id)
-    contact = _own_contact(db, applicant, contact_id)
+    job, contact = _job_contact(db, applicant, job_id, contact_id)
+    if not has_applied(db, applicant.id, job.id):
+        return _apply_first(job)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
         raise HTTPException(status_code=404)
@@ -434,8 +446,9 @@ async def outreach_send(
     gateway: FetchGateway = Depends(get_gateway),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    job = visible_job(db, applicant.id, job_id)
-    contact = _own_contact(db, applicant, contact_id)
+    job, contact = _job_contact(db, applicant, job_id, contact_id)
+    if not has_applied(db, applicant.id, job.id):
+        return _apply_first(job)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
         raise HTTPException(status_code=404)
@@ -472,9 +485,10 @@ def outreach_copy(
     draft_id: uuid.UUID = Form(...),
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
-) -> HTMLResponse:
-    job = visible_job(db, applicant.id, job_id)
-    contact = _own_contact(db, applicant, contact_id)
+) -> Response:
+    job, contact = _job_contact(db, applicant, job_id, contact_id)
+    if not has_applied(db, applicant.id, job.id):
+        return _apply_first(job)
     draft = db.get(OutreachDraft, draft_id)
     if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
         raise HTTPException(status_code=404)
