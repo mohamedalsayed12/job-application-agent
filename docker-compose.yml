@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:16
     container_name: jaa-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: jaa
       POSTGRES_PASSWORD: jaa
