@@ -18,6 +18,10 @@ PolicyReason = Literal[
 ]
 
 BLOCKED_SUFFIXES = ("linkedin.com", "indeed.com", "glassdoor.com")
+# The same sites on any country domain: linkedin.cn, indeed.co.uk, glassdoor.com.au.
+_BLOCKED_NAMES = frozenset({"linkedin", "indeed", "glassdoor"})
+# Second-level labels that make a two-part suffix (co.uk, com.au, ...).
+_SECOND_LEVEL_LABELS = frozenset({"co", "com", "org", "net", "ac", "gov", "edu", "or", "ne"})
 # Reject bare public suffixes until a real PSL check exists (P2 / thermos).
 PUBLIC_SUFFIX_BLOCKLIST = frozenset(
     {
@@ -53,7 +57,14 @@ def host_matches_suffix(host: str, suffix: str) -> bool:
 
 
 def is_blocked_host(host: str) -> bool:
-    return any(host_matches_suffix(host, suffix) for suffix in BLOCKED_SUFFIXES)
+    if any(host_matches_suffix(host, suffix) for suffix in BLOCKED_SUFFIXES):
+        return True
+    labels = host.lower().rstrip(".").split(".")
+    if len(labels) < 2:
+        return False
+    if labels[-2] in _BLOCKED_NAMES:
+        return True
+    return len(labels) >= 3 and labels[-2] in _SECOND_LEVEL_LABELS and labels[-3] in _BLOCKED_NAMES
 
 
 def is_allowlisted_host(host: str, allowlist: frozenset[str]) -> bool:

@@ -171,6 +171,11 @@ async def test_t20_blocked_hosts_refused_before_connect() -> None:
         "https://www.linkedin.com/jobs/1",
         "https://indeed.com/viewjob",
         "https://www.glassdoor.com/Job/1.htm",
+        "https://www.glassdoor.co.uk/Job/1.htm",
+        "https://uk.indeed.com/viewjob",
+        "https://www.indeed.co.uk/viewjob",
+        "https://indeed.com.au/viewjob",
+        "https://www.linkedin.cn/jobs/1",
     ):
         result = await gateway.fetch(
             FetchRequest(url=url, kind="page", official_domain="linkedin.com"),
@@ -179,6 +184,20 @@ async def test_t20_blocked_hosts_refused_before_connect() -> None:
         assert result.reason == "blocked_host"
     assert seen == []
     await gateway.aclose()
+
+
+def test_t20_blocklist_ignores_lookalike_hosts() -> None:
+    from app.fetch.policy import is_blocked_host
+
+    for host in (
+        "notindeed.com",
+        "indeed-careers.example",
+        "indeed.example.com",
+        "linkedin.example.co.uk",
+        "acme.co.uk",
+        "glassdoorsolutions.com",
+    ):
+        assert not is_blocked_host(host)
 
 
 @pytest.mark.asyncio
