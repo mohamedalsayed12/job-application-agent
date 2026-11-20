@@ -76,7 +76,11 @@ async function fillActiveTab(applicationId) {
   if (!match) {
     return { ok: false, error: ready.length ? "Choose which application to fill." : "No application is ready to fill." };
   }
-  await inject(tab.id);
+  try {
+    await inject(tab.id);
+  } catch (_) {
+    return { ok: false, error: "Can't fill this page \u2014 open the employer's application form and try again." };
+  }
   let highlighted = "";
   let filledAny = false;
   let waitingForNext = false;

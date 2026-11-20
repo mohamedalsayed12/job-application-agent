@@ -132,5 +132,11 @@ def test_extension_fills_local_forms_and_never_submits(extension_app, tmp_path) 
                 if name == "multi.html":
                     assert page.evaluate("() => window.__next") == 1
                     assert page.is_visible("#step2")
+            # a page the extension cannot inject into gives a reason, not a throw
+            page.goto("chrome://version")
+            page.bring_to_front()
+            result = worker.evaluate("() => fillActiveTab()")
+            assert result["ok"] is False, result
+            assert "Can't fill this page" in result["error"], result
         finally:
             context.close()
