@@ -2,12 +2,13 @@ services:
   postgres:
     image: postgres:16
     container_name: jaa-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: jaa
       POSTGRES_PASSWORD: jaa
       POSTGRES_DB: jaa
     ports:
-      - "5432:5432"
+      - "5436:5432"
     volumes:
       - jaa_pgdata:/var/lib/postgresql/data
     healthcheck:
