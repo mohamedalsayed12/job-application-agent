@@ -187,10 +187,15 @@ def save_profile(session: Session, applicant_id: uuid.UUID, profile: ProfileInpu
     session.execute(delete(ApplicantSkill).where(ApplicantSkill.applicant_id == applicant_id))
     session.execute(delete(ApplicantCertification).where(ApplicantCertification.applicant_id == applicant_id))
     index = label_index(session)
-    session.add_all(
-        ApplicantSkill(applicant_id=applicant_id, text_as_typed=skill, skill_id=skill_for_text(index, skill))
-        for skill in profile.skills
-    )
+    # "Postgres" and "PostgreSQL" are one skill: keep the first label typed.
+    seen: set[uuid.UUID] = set()
+    for skill in profile.skills:
+        skill_id = skill_for_text(index, skill)
+        if skill_id is not None:
+            if skill_id in seen:
+                continue
+            seen.add(skill_id)
+        session.add(ApplicantSkill(applicant_id=applicant_id, text_as_typed=skill, skill_id=skill_id))
     session.add_all(
         ApplicantCertification(
             applicant_id=applicant_id,

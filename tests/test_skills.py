@@ -244,3 +244,31 @@ async def test_the_profile_page_offers_suggestions_and_credits_esco(client: http
     assert 'id="skill-suggestions"' in text
     assert "This service uses the ESCO classification of the European Commission." in text
     assert "adapted version" in text
+
+
+async def test_two_names_for_one_skill_save_one_row_and_free_text_still_dedupes(
+    client: httpx.AsyncClient, session: Session, loaded: dict[str, LabelEntry]
+) -> None:
+    await _register(client)
+    data = {
+        "target_roles": "Developer",
+        "locations": "Leeds",
+        "experience_levels": "mid",
+        "skills": "Postgres\nPostgreSQL\nKnitting patterns\nknitting PATTERNS",
+    }
+    assert (await client.post("/profile", data=data)).status_code == 303
+    names = list(session.scalars(select(ApplicantSkill.text_as_typed).order_by(ApplicantSkill.text_as_typed)))
+    assert names == ["Knitting patterns", "Postgres"]
+
+
+async def test_loading_the_list_later_leaves_one_row_per_skill(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    data = {"target_roles": "Developer", "locations": "Leeds", "experience_levels": "mid", "skills": "Postgres\nPostgreSQL"}
+    await client.post("/profile", data=data)
+    assert session.scalar(select(func.count()).select_from(ApplicantSkill)) == 2
+    load_taxonomy(session)
+    rows = list(session.scalars(select(ApplicantSkill)))
+    assert len(rows) == 1
+    assert _preferred(session, rows[0].skill_id) == "PostgreSQL"

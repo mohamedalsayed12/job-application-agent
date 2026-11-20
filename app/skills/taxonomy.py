@@ -134,8 +134,15 @@ def skill_for_text(index: dict[str, LabelEntry], typed: str) -> uuid.UUID | None
 
 def remap_applicant_skills(session: Session) -> None:
     index = label_index(session)
-    for row in session.scalars(select(ApplicantSkill)):
+    seen: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    for row in session.scalars(select(ApplicantSkill).order_by(ApplicantSkill.created_at, ApplicantSkill.text_as_typed)):
         row.skill_id = skill_for_text(index, row.text_as_typed)
+        if row.skill_id is None:
+            continue
+        # Two labels of one skill: keep the first saved, as when saving a profile.
+        if (row.applicant_id, row.skill_id) in seen:
+            session.delete(row)
+        seen.add((row.applicant_id, row.skill_id))
     session.flush()
 
 
