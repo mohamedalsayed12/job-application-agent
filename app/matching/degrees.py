@@ -76,7 +76,7 @@ _EXPERIENCE_INSTEAD = re.compile(
 _STOP = re.compile(
     r"\b(?:experience\w*|skills?|knowledge|ability|proven|drive|track record|fluen\w*|minimum|certifications?|"
     r"you|we|what|with|plus|including|from|where|who|which|that|is|are|will|must|strong|excellent|and \d|"
-    r"a good level)\b|[!?;]|(?<!\be\.g)(?<!\bi\.e)\.(?=\s)",
+    r"a good level|a[- ]levels?|gcses?|ucas|highers|ib)\b|[!?;•▪●]|(?<!\be\.g)(?<!\bi\.e)\.(?=\s)",
     re.IGNORECASE,
 )
 _WORDS_BEFORE = re.compile(r"(?:[\w'-]+\W+){0,3}$")

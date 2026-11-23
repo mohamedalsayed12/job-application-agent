@@ -17,5 +17,14 @@ services:
       timeout: 5s
       retries: 10
 
+  # Catches account emails (confirm, reset) locally and sends nothing on. Read them at http://localhost:8025.
+  mailpit:
+    image: axllent/mailpit:v1.21.0
+    container_name: jaa-mailpit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
 volumes:
   jaa_pgdata:

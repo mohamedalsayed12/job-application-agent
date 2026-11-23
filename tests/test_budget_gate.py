@@ -77,7 +77,7 @@ def test_t3_missing_policy_blocks_paid_calls(session: Session) -> None:
     gate = _gate(session, now)
     with pytest.raises(BudgetWait) as exc:
         gate.reserve(_paid(cost=Decimal("1.00")))
-    assert exc.value.cap == "monthly"
+    assert exc.value.cap == "unset"
 
 
 def test_t3_monthly_cap_refuses_and_leaves_no_ledger(session: Session) -> None:

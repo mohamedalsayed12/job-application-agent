@@ -14,6 +14,8 @@ from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchRes
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2026-10-21"
+# Long structured answers (fit reports, tailored CVs) take well over the gateway's 10 s default.
+AI_TIMEOUT_S = 150.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,7 @@ async def send_anthropic_request(
                 "Content-Type": "application/json",
             },
             body=json.dumps(body).encode("utf-8"),
+            timeout_s=AI_TIMEOUT_S,
         )
     )
     if isinstance(outcome, FetchRefusal):

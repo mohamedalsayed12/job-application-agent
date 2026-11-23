@@ -1,4 +1,4 @@
-"""Create and update applicants with preferences (Milestone 1 admin)."""
+"""Create and update applicants with preferences."""
 
 from __future__ import annotations
 
@@ -149,22 +149,3 @@ def update_applicant(
         raise ApplicantConflictError("email already exists") from exc
     return applicant
 
-
-def list_applicants(session: Session) -> list[tuple[Applicant, ApplicantPreference]]:
-    rows = session.execute(
-        select(Applicant, ApplicantPreference)
-        .join(ApplicantPreference, ApplicantPreference.applicant_id == Applicant.id)
-        .order_by(Applicant.created_at)
-    ).all()
-    return [(a, p) for a, p in rows]
-
-
-def get_applicant_with_preference(
-    session: Session, applicant_id: uuid.UUID
-) -> tuple[Applicant, ApplicantPreference] | None:
-    row = session.execute(
-        select(Applicant, ApplicantPreference)
-        .join(ApplicantPreference, ApplicantPreference.applicant_id == Applicant.id)
-        .where(Applicant.id == applicant_id)
-    ).one_or_none()
-    return (row[0], row[1]) if row else None
