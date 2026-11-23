@@ -3,7 +3,8 @@
 Ported from Resume-Matcher's final AI seam (srbhr/Resume-Matcher@959e458,
 apps/backend/app/services/resume_preservation.py) without custom sections, row styles or
 skill-row layouts. Identity fields and dates always come from the source. A rewritten row that adds
-a number, or drifts too far from every source row, goes back to the source wording.
+a number, drifts too far from every source row, or picks up a word from the job posting that the
+source CV never uses (such as "agile" in a CV that never mentions it), goes back to the source wording.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from typing import Any
 
-from app.tailor.resume import LIST_FIELDS
+from app.tailor.resume import LIST_FIELDS, all_text
 
 GROUNDING_THRESHOLD = 0.45
 
@@ -46,13 +47,16 @@ _BULLET_MARK = re.compile(r"^\s*(?:[-*•‣◦▪▫]+|\d+[.)])\s*")
 
 
 def finalize_ai_resume(
-    source: dict[str, Any], candidate: dict[str, Any], *, allow_review_claims: bool
+    source: dict[str, Any], candidate: dict[str, Any], *, allow_review_claims: bool, posting: str = ""
 ) -> dict[str, Any]:
     """The candidate CV, repaired so it claims nothing the source does not.
 
     With ``allow_review_claims`` a weakly grounded rewrite stays; without it, a rewrite less
     similar to its source row than ``GROUNDING_THRESHOLD`` goes back to the source wording.
+    With ``posting``, a rewrite that uses a posting word the source CV never uses goes back too:
+    tailoring may reword what the CV shows, not borrow the advert's claims.
     """
+    borrowed = frozenset(_tokens(posting) - _tokens(all_text(source))) if posting else frozenset()
     result = copy.deepcopy(candidate)
     result["personalInfo"] = copy.deepcopy(source.get("personalInfo", {}))
     source_summary = str(source.get("summary") or "")
@@ -61,19 +65,30 @@ def finalize_ai_resume(
         not isinstance(summary, str)
         or not summary.strip()
         or _novel_numbers(source_summary, summary)
+        or _borrows(summary, borrowed)
         or (not allow_review_claims and _similarity(source_summary, summary) < GROUNDING_THRESHOLD)
     ):
         result["summary"] = source_summary
     for section in _ENTRY_FIELDS:
         result[section] = _merge_entries(
-            source.get(section), result.get(section), section, allow_review_claims=allow_review_claims
+            source.get(section), result.get(section), section, allow_review_claims=allow_review_claims, borrowed=borrowed
         )
     result["additional"] = _merge_additional(source.get("additional"), result.get("additional"))
     return result
 
 
+def _borrows(candidate: str, borrowed: frozenset[str]) -> bool:
+    """Whether the rewrite uses a word from the posting that the source CV never uses."""
+    return bool(borrowed and _tokens(candidate) & borrowed)
+
+
 def _merge_entries(
-    source_entries: Any, candidate_entries: Any, section: str, *, allow_review_claims: bool
+    source_entries: Any,
+    candidate_entries: Any,
+    section: str,
+    *,
+    allow_review_claims: bool,
+    borrowed: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     sources = [entry for entry in source_entries or [] if isinstance(entry, dict)]
     available = set(range(len(sources)))
@@ -91,29 +106,34 @@ def _merge_entries(
             merged[field] = copy.deepcopy(source.get(field, ""))
         if section == "education":
             merged["description"] = _merged_text(
-                str(source.get("description") or ""), merged.get("description"), allow_review_claims
+                str(source.get("description") or ""), merged.get("description"), allow_review_claims, borrowed
             )
         else:
             merged["description"] = _merge_rows(
-                source.get("description"), merged.get("description"), allow_review_claims
+                source.get("description"), merged.get("description"), allow_review_claims, borrowed
             )
         merged_entries.append(merged)
     merged_entries += [copy.deepcopy(sources[index]) for index in sorted(available)]
     return merged_entries
 
 
-def _merged_text(source: str, candidate: Any, allow_review_claims: bool) -> str:
+def _merged_text(
+    source: str, candidate: Any, allow_review_claims: bool, borrowed: frozenset[str] = frozenset()
+) -> str:
     if (
         not isinstance(candidate, str)
         or not candidate.strip()
         or _novel_numbers(source, candidate)
+        or _borrows(candidate, borrowed)
         or (not allow_review_claims and _similarity(source, candidate) < GROUNDING_THRESHOLD)
     ):
         return source
     return candidate
 
 
-def _merge_rows(source_rows: Any, candidate_rows: Any, allow_review_claims: bool) -> list[str]:
+def _merge_rows(
+    source_rows: Any, candidate_rows: Any, allow_review_claims: bool, borrowed: frozenset[str] = frozenset()
+) -> list[str]:
     """One row per source row: each candidate row is matched to its closest unused source row."""
     sources = [str(row) for row in source_rows or []]
     source_text = " ".join(sources)
@@ -131,6 +151,7 @@ def _merge_rows(source_rows: Any, candidate_rows: Any, allow_review_claims: bool
         restore = (
             not candidate.strip()
             or _novel_numbers(source_text, candidate)
+            or _borrows(candidate, borrowed)
             or (not allow_review_claims and score < GROUNDING_THRESHOLD)
         )
         merged.append(sources[index] if restore else candidate)

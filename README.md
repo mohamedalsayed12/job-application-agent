@@ -2,9 +2,7 @@
 
 Step 0 scaffold: FastAPI + SQLAlchemy 2 + PostgreSQL 16 + Alembic + uv.
 
-Source of truth for product scope: [`MVP.md`](./MVP.md) and [`PROMPTS.md`](./PROMPTS.md).
-
-Always-on agent quality stack (ponytail + pstack + thermos): [`docs/quality-stack.md`](./docs/quality-stack.md) · gate checklist [`docs/code-quality-gate.md`](./docs/code-quality-gate.md).
+Source of truth for product scope: [`MVP.md`](./MVP.md).
 
 ## Prerequisites
 
@@ -68,11 +66,16 @@ least 32 characters. See `.env.example`. For plain http on localhost, also set
 
 ## Accounts
 
-People register at `/register`, log in at `/login` and see their account at `/account`.
-Logging out ends the session on every device. Admin-created applicants have no password, so
-they cannot log in until an admin makes them a one-time link at
-`/admin/accounts/set-password-link`. The same link is the way back from a forgotten password,
-because the app sends no email. The rules are in `MVP.md` decision D37.
+The home page `/` is the register form, with a link to log in underneath. People register at
+`/register`, log in at `/login` and see their account at `/account`.
+
+Registering starts a sign-up wizard at `/onboarding`: upload a CV, check the contact details read
+from it, choose the jobs wanted, then availability and optional diversity questions. Each step is
+saved when the person presses Continue, so someone who leaves halfway carries on from the same step
+at their next login. Every contact detail the CV read suggests must appear in the CV text, and right
+to work, sponsorship and diversity answers are never taken from it. Finishing opens `/listings`.
+Accounts made before the wizard existed skip it.
+Logging out ends the session on every device. There is no password reset: the app sends no email.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
 certifications and licences, experience level and optional travel distance. They can upload one
@@ -237,4 +240,4 @@ European Commission. Our list is an adapted version of it.
 - Monthly budget is unset until B1; paid calls, including Apify searches, stay blocked (stubs in `.env.example`).
 - Milestone 1 tables land in revision `0002_milestone1_schema` (`app/models.py`). Unique-key proofs are in `tests/test_unique_keys.py`.
 - Tests assume an empty database. Once jobs have been collected, point tests at a separate one: `DATABASE_URL=postgresql+psycopg://…/job_app_agent_test uv run pytest`.
-- Admin applicants (Milestone 1): set `ADMIN_KEY`, log in at `/admin/login`, then open `/admin/applicants` (or send header `X-Admin-Key`). Expected salary is a matching preference only (D3).
+- Admin: set `ADMIN_KEY`, log in at `/admin/login` (or send header `X-Admin-Key` on GETs) to open `/admin/quality`. Expected salary is a matching preference only (D3).
