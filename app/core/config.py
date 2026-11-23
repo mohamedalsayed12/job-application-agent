@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     )
     api_allowlist: str = (
         "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
-        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com"
+        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,serpapi.com"
     )
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
@@ -58,6 +58,20 @@ class Settings(BaseSettings):
     indeed_country: str = "uk"  # actor enum uses uk, not ISO gb
     indeed_unit_price: Decimal = Decimal("0.0002")
     indeed_run_price: Decimal = Decimal("0.01")
+
+    # D69: jobs on employers' own sites, found through Google search on SerpAPI. Blank key = off.
+    serpapi_api_key: str = ""
+    careers_every_hours: int = 24
+    # Google pages read per role and location; the next page is read only while too few jobs were found.
+    careers_max_pages: int = 3
+    careers_enough_jobs: int = 5
+    # Company pages opened per role and location, and job links followed from one careers page.
+    careers_max_visits: int = 20
+    careers_links_per_site: int = 3
+    careers_max_age_days: int = 30
+    careers_stale_days: int = 14
+    # SerpAPI's plans are about $0.01-0.025 a search; this ceiling is per Google page.
+    careers_search_price: Decimal = Decimal("0.02")
     # Post-MVP apply agent: Greenhouse boards API first, else Apify form-schema actor.
     apply_form_actor: str = ""
     apply_form_unit_price: Decimal = Decimal("0.01")
@@ -161,6 +175,7 @@ class Settings(BaseSettings):
         "linkedin_run_price",
         "indeed_unit_price",
         "indeed_run_price",
+        "careers_search_price",
         "usd_to_gbp",
         "apply_form_unit_price",
         "apply_form_run_price",

@@ -113,6 +113,33 @@ stopped.
 Set `APIFY_API_TOKEN` first. Each run is reserved against the monthly money cap before it
 starts, and the recorded cost is what Apify reports.
 
+### Jobs on company websites (D69)
+
+Not every employer posts on LinkedIn or Indeed, so once a day the worker also searches
+Google through [SerpAPI](https://serpapi.com) the way a person would. For each target role
+and location it:
+
+1. Googles the role (not in quotes, so similar titles come up too) at entry level in that place with "careers", leaving LinkedIn, Indeed
+   and the big job boards out of the query.
+2. Skips any result that is still a job board, and opens the rest on the company's own site
+   through the fetch gateway (robots.txt, rate limit and domain checks still apply).
+3. Keeps a page only when it describes a job in schema.org `JobPosting` data. A careers
+   page that only lists jobs is followed into up to 3 of its links that look like the role.
+4. Keeps the job only when it fits: the same or a similar title (a Python or Software
+   Engineer for a Backend Developer), or a different title whose advert asks for your
+   skillset (at least 3 of your profile skills, and at least half of the skills it names).
+   It must also be still open and
+   posted in the last 30 days, it is on the employer's own site or tracking system
+   (Greenhouse, Lever, Workable and similar), and **nothing in it leads back to LinkedIn or
+   Indeed**: no LinkedIn or Indeed job links and no "posted on / apply via" wording.
+5. Reads the next page of Google results while fewer than 5 jobs were found, up to 3 pages
+   and 20 company pages per search.
+
+Kept jobs go through the same cleaning, de-duplication, matching and AI judging as the
+other sources, and show as "Company website" on the listings page. Set `SERPAPI_API_KEY`
+to turn it on. Each Google page is one SerpAPI search, reserved against the monthly money
+cap at £0.02.
+
 ```bash
 uv run python -m app.worker          # runs until stopped
 uv run python -m app.worker --once   # one cycle
