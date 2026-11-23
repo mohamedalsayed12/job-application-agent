@@ -97,6 +97,7 @@ class SpendKind(StrEnum):
     ai_cv_tailor = "ai_cv_tailor"
     linkedin_jobs = "linkedin_jobs"
     indeed_jobs = "indeed_jobs"
+    careers_search = "careers_search"
     apply_form = "apply_form"
     ai_apply_map = "ai_apply_map"
     linkedin_people = "linkedin_people"
