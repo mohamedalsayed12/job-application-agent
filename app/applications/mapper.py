@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.applicants.questions import EXTRA_BY_KEY, EXTRA_QUESTIONS
 from app.applications.schema import FormField, FormSchema
 from app.models import PREFER_NOT
 
@@ -43,8 +44,21 @@ class FillPlan:
         }
 
 
+# Extra questions whose labels contain another one's words, so they are tried first.
+_EXTRA_FIRST = ("gender_same_as_birth", "parents_university", "adjustments_details", "visa_expiry_date")
+# An extra question that fills an answer the mapper already knows by another key.
+_EXTRA_ALIAS = {"heard_about_source": "heard_about"}
+
+
+def _extra_patterns() -> list[tuple[str, tuple[str, ...]]]:
+    """The extra questions (D73), more specific than the generic names, address and gender patterns below."""
+    ordered = sorted(EXTRA_QUESTIONS, key=lambda q: _EXTRA_FIRST.index(q.key) if q.key in _EXTRA_FIRST else len(_EXTRA_FIRST))
+    return [(_EXTRA_ALIAS.get(q.key, q.key), q.patterns) for q in ordered if q.patterns]
+
+
 # Longer / more specific patterns first. Short tokens use word boundaries.
 _PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    *_extra_patterns(),
     ("needs_visa_sponsorship", (r"visa sponsorship", r"require sponsorship", r"need sponsorship", r"\bsponsorship\b")),
     ("right_to_work_uk", (r"right to work", r"authorized to work", r"authorised to work", r"work authorization", r"work authorisation", r"legally authorized")),
     ("previously_employed", (r"previously employed", r"worked for .{0,20}(us|company|organisation|organization)", r"former employee", r"previously worked")),
@@ -115,11 +129,79 @@ _SYNONYMS: dict[str, tuple[str, ...]] = {
     "hybrid": ("hybrid working", "flexible hybrid"),
     "remote": ("fully remote", "remote only", "work from home", "home based"),
     "any": ("no preference", "any", "flexible", "open to all", "open to any"),
+    # 2021 Census wording, and the older wording answers were saved in before it.
+    "female": ("woman", "f", "female including trans woman"),
+    "male": ("man", "m", "male including trans man"),
+    "woman": ("female",),
+    "man": ("male",),
+    "non binary": ("nonbinary",),
+    "i describe myself another way": (
+        "prefer to self describe", "self describe", "i use another term", "in another way", "other",
+    ),
+    "straight or heterosexual": ("heterosexual", "straight", "heterosexual or straight"),
+    "gay or lesbian": ("lesbian or gay", "gay", "gay woman or lesbian"),
+    "another sexual orientation": (
+        "other sexual orientation", "another orientation", "other", "prefer to self describe", "i use another term",
+    ),
 }
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[-_]", " ", text.lower())).strip(" .")
+    """Lower case, hyphens as spaces and "Gay/Lesbian" as "gay or lesbian"."""
+    return re.sub(r"\s+", " ", re.sub(r"\s*/\s*", " or ", re.sub(r"[-_]", " ", text.lower()))).strip(" .")
+
+
+def _loose(text: str) -> str:
+    """Only the words that carry meaning, so "Asian/Asian British - Indian" matches "Asian or Asian British: Indian"."""
+    return " ".join(word for word in re.findall(r"[a-z0-9]+", text.lower()) if word not in ("or", "and", "the"))
+
+
+def _pick_ethnicity(options: list[str], desired: str) -> str | None:
+    """A Census group ("White: Irish") as the form words it, else its broad group ("White")."""
+    group, _, detail = desired.partition(": ")
+    if not detail:
+        return None
+    first = group.split()[0].rstrip(",")
+    wanted = [f"{group} {detail}", detail, f"{first} {detail}"]
+    if detail.lower().startswith("any other"):
+        wanted += [f"{first} other", f"other {first}", f"any other {first}"]
+    if "British" in detail and first == "White":
+        wanted += ["White British", "British", "White English Welsh Scottish Northern Irish British"]
+    loose = {_loose(option): option for option in options}
+    for text in wanted:
+        if (found := loose.get(_loose(text))) is not None:
+            return found
+    return loose.get(_loose(group))
+
+
+def _month_value(text: str, form_field: FormField) -> str | None:
+    """A saved "YYYY-MM" as the form wants it: as is in a month box, "06/2027" typed, or a matching option."""
+    match = re.fullmatch(r"(\d{4})-(\d{2})", text)
+    if match is None:
+        return None
+    year, month = match.group(1), int(match.group(2))
+    if form_field.field_type == "month":
+        return text
+    if form_field.options:
+        names = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+                 "November", "December")
+        for candidate in (f"{names[month - 1]} {year}", f"{names[month - 1][:3]} {year}", f"{month:02d}/{year}", year):
+            if (found := _pick_option(form_field.options, candidate)) is not None:
+                return found
+        return None
+    return f"{month:02d}/{year}"
+
+
+def _date_value(text: str, form_field: FormField) -> str | None:
+    """A saved ISO date: as is in a date box, the UK's day/month/year when typed."""
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if match is None:
+        return None
+    if form_field.options:
+        return _pick_option(form_field.options, text)
+    if form_field.field_type == "date":
+        return text
+    return f"{match.group(3)}/{match.group(2)}/{match.group(1)}"
 
 
 def _pick_option(options: list[str], desired: str) -> str | None:
@@ -153,8 +235,16 @@ def _format_value(key: str, raw: object, form_field: FormField) -> str | None:
         text = str(raw)
     if text == PREFER_NOT and form_field.options:
         return _pick_option(form_field.options, PREFER_NOT)
+    question = EXTRA_BY_KEY.get(key)
+    if question is not None and question.kind == "month":
+        return _month_value(text, form_field)
+    if question is not None and question.kind == "date":
+        return _date_value(text, form_field)
     if form_field.options:
-        return _pick_option(form_field.options, text)
+        picked = _pick_option(form_field.options, text)
+        if picked is None and key == "ethnicity":
+            picked = _pick_ethnicity(form_field.options, text)
+        return picked
     if form_field.field_type in ("yes_no", "radio", "checkbox") and isinstance(raw, bool):
         return _YES_NO[raw]
     return text

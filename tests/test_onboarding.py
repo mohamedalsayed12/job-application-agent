@@ -66,6 +66,7 @@ DETAILS = {
     "right_to_work_uk": "yes",
     "needs_visa_sponsorship": "no",
     "nationality": "British",
+    "extra_right_to_work_type": "British or Irish citizen",
 }
 PREFERENCES = {
     "target_roles": "Junior Python Developer",
@@ -144,6 +145,7 @@ async def _finish(client: httpx.AsyncClient, session: Session) -> httpx.Response
     await _through_cv(client, session)
     assert (await client.post("/onboarding/details", data=DETAILS)).status_code == 303
     assert (await client.post("/onboarding/preferences", data=PREFERENCES)).status_code == 303
+    assert (await client.post("/onboarding/education", data={})).status_code == 303
     assert (await client.post("/onboarding/availability", data=AVAILABILITY)).status_code == 303
     return await client.post("/onboarding/diversity", data={"religion": "No religion"})
 
@@ -175,7 +177,7 @@ async def test_registering_starts_the_wizard_at_the_cv_step(client: httpx.AsyncC
     assert (await client.get("/")).headers["location"] == "/onboarding/cv"
     assert _applicant(session).onboarding_step == "cv"
     page = await client.get("/onboarding/cv")
-    assert "Step 2 of 6" in page.text and "Upload your CV" in page.text
+    assert "Step 2 of 7" in page.text and "Upload your CV" in page.text
 
 
 async def test_accounts_made_before_the_wizard_never_see_it(client: httpx.AsyncClient, session: Session) -> None:
@@ -221,12 +223,14 @@ async def test_the_whole_wizard_saves_every_step_then_opens_the_matches(client: 
     assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in preferences_page.text
     assert "From your CV we filled in" in preferences_page.text
     preferences = await client.post("/onboarding/preferences", data=PREFERENCES)
-    assert preferences.headers["location"] == "/onboarding/availability"
+    assert preferences.headers["location"] == "/onboarding/education"
+    education = await client.post("/onboarding/education", data={"extra_degree_grade": "Upper second class (2:1)"})
+    assert education.headers["location"] == "/onboarding/availability"
 
     availability = await client.post("/onboarding/availability", data=AVAILABILITY)
     assert availability.headers["location"] == "/onboarding/diversity"
     diversity_page = await client.get("/onboarding/diversity")
-    assert diversity_page.text.count('value="prefer_not_to_say" selected') == 10
+    assert diversity_page.text.count('value="prefer_not_to_say" selected') == 14
 
     done = await client.post("/onboarding/diversity", data={"religion": "No religion"})
     assert done.headers["location"] == "/listings"
@@ -270,7 +274,7 @@ async def test_a_finished_person_goes_to_their_matches_not_back_into_the_wizard(
 
 async def test_later_steps_stay_shut_until_reached(client: httpx.AsyncClient, session: Session) -> None:
     await _register(client)
-    for step in ("details", "preferences", "availability", "diversity"):
+    for step in ("details", "preferences", "education", "availability", "diversity"):
         assert (await client.get(f"/onboarding/{step}")).headers["location"] == "/onboarding/cv", step
     skipped = await client.post("/onboarding/availability", data=AVAILABILITY)
     assert skipped.headers["location"] == "/onboarding/cv"
@@ -298,10 +302,10 @@ async def test_going_back_shows_what_was_saved_and_keeps_the_place_reached(clien
     assert 'class="from-cv"' not in back.text
     resaved = await client.post("/onboarding/details", data={**DETAILS, "phone": "07700 900999"})
     assert resaved.headers["location"] == "/onboarding/preferences"
-    assert _applicant(session).onboarding_step == "availability"
+    assert _applicant(session).onboarding_step == "education"
     assert _answers(session).phone == "07700 900999"
-    progress = (await client.get("/onboarding/availability")).text
-    assert '<a href="/onboarding/details">' in progress and 'aria-current="step">5. Availability' in progress
+    progress = (await client.get("/onboarding/education")).text
+    assert '<a href="/onboarding/details">' in progress and 'aria-current="step">5. Education and work' in progress
 
 
 async def test_a_cv_already_uploaded_can_be_kept(client: httpx.AsyncClient, session: Session, claude: _Claude) -> None:
@@ -431,6 +435,7 @@ async def test_bad_availability_is_refused(
     await _through_cv(client, session)
     await client.post("/onboarding/details", data=DETAILS)
     await client.post("/onboarding/preferences", data=PREFERENCES)
+    await client.post("/onboarding/education", data={})
     refused = await client.post("/onboarding/availability", data={**AVAILABILITY, **change})
     assert refused.status_code == 400 and message in refused.text
     assert _answers(session).notice_period is None
@@ -441,6 +446,7 @@ async def test_a_start_date_is_optional(client: httpx.AsyncClient, session: Sess
     await _through_cv(client, session)
     await client.post("/onboarding/details", data=DETAILS)
     await client.post("/onboarding/preferences", data=PREFERENCES)
+    await client.post("/onboarding/education", data={})
     saved = await client.post("/onboarding/availability", data={**AVAILABILITY, "earliest_start_date": ""})
     assert saved.headers["location"] == "/onboarding/diversity"
     assert _answers(session).earliest_start_date is None

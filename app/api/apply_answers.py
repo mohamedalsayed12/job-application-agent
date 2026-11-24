@@ -1,4 +1,4 @@
-"""Apply-answers profile: contact, work auth, availability, optional diversity questions."""
+"""Apply-answers profile: every answer the sign-up wizard asked, on one page to change any time."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from app.api.answer_fields import (
     availability_fields,
     diversity_fields,
     esc,
+    extra_fields,
+    extra_keys,
     yes_no_select,
 )
 from app.api.chrome import applicant_bar
@@ -27,12 +29,20 @@ from app.applicants.apply_answers import (
     load_answers,
     save_answers,
 )
+from app.applicants.questions import GROUP_TITLES
 from app.core.db import get_db
 from app.models import Applicant
 
 router = APIRouter(prefix="/profile/apply-answers", tags=["apply-answers"])
 _CSRF = [Depends(require_csrf)]
 _SEE_OTHER = status.HTTP_303_SEE_OTHER
+# The old free-text "how did you hear" answer is kept only as a fallback; the extra questions ask it as a choice.
+_FIELDS = tuple(name for name in ANSWER_FIELDS if name != "heard_about")
+_EXTRAS = extra_keys(*GROUP_TITLES)
+
+
+def _group(answers: AnswersInput, group: str) -> str:
+    return f'<section class="card"><h2>{esc(GROUP_TITLES[group])}</h2>{extra_fields(answers, group)}</section>'
 
 
 def _page(request: Request, answers: AnswersInput, *, message: str = "", status_code: int = 200) -> HTMLResponse:
@@ -63,6 +73,7 @@ def _page(request: Request, answers: AnswersInput, *, message: str = "", status_
     <label>GitHub URL <input name="github_url" value="{esc(answers.github_url)}"/></label>
     <label>Portfolio URL <input name="portfolio_url" value="{esc(answers.portfolio_url)}"/></label>
   </section>
+  {_group(answers, "details")}
   <section class="card">
     <h2>Work authorisation</h2>
     <div class="row">
@@ -70,18 +81,22 @@ def _page(request: Request, answers: AnswersInput, *, message: str = "", status_
       <label>Need visa sponsorship {yes_no_select("needs_visa_sponsorship", answers.needs_visa_sponsorship)}</label>
     </div>
     <label>Nationality <input name="nationality" value="{esc(answers.nationality)}"/></label>
-    <label>How you usually heard about the role <input name="heard_about" value="{esc(answers.heard_about or 'Job board')}"/></label>
+    {extra_fields(answers, "right_to_work")}
     <label>Previously employed by the company {yes_no_select("previously_employed", answers.previously_employed or "no")}</label>
   </section>
+  {_group(answers, "education")}
+  {_group(answers, "work")}
   <section class="card">
     <h2>Availability</h2>
     {availability_fields(answers, required=False)}
   </section>
+  {_group(answers, "screening")}
   <section class="card">
     <h2>Optional diversity questions</h2>
     <p class="hint">Many UK employers ask these to monitor fairness. Every one defaults to prefer not to say,
     and none is ever guessed from your CV.</p>
     {diversity_fields(answers)}
+    {extra_fields(answers, "diversity")}
   </section>
   <div class="form-foot">
     <a class="button" href="/profile">Back to profile</a>
@@ -103,7 +118,7 @@ def show_answers(request: Request, applicant: Applicant = Depends(require_login)
 @router.post("", response_model=None, dependencies=_CSRF)
 async def save(request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
     form = await request.form()
-    answers = answers_from_form(form, input_from_row(load_answers(db, applicant.id)), ANSWER_FIELDS)
+    answers = answers_from_form(form, input_from_row(load_answers(db, applicant.id)), _FIELDS, _EXTRAS)
     try:
         save_answers(db, applicant.id, answers)
         db.commit()

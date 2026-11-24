@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import re
 import uuid
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.applicants.questions import EXTRA_BY_KEY, EXTRA_QUESTIONS
 from app.models import PREFER_NOT, ApplicationAnswers
 
 MAX_FIELD = 200
+# Extra questions such as A-level grades or the adjustments someone needs can run longer.
+MAX_EXTRA_TEXT = 500
+_MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
 MAX_URL = 500
 
 # Choices the forms offer. A stored answer outside these lists (typed before they existed) still shows.
@@ -20,21 +25,38 @@ WORK_HOURS = ("Full-time", "Part-time", "Either")
 WORK_LOCATIONS = ("On-site", "Hybrid", "Remote", "Any")
 
 # Diversity monitoring questions UK employers ask. Each list ends with prefer not to say, the default.
-# School type and parental occupation follow the Social Mobility Commission's wording.
+# Gender, ethnic group, sexual orientation and religion follow the 2021 Census wording (D73); school type
+# and parental occupation follow the Social Mobility Commission's.
+GENDERS = ("Female", "Male", "Non-binary", "I describe myself another way", PREFER_NOT)
+# The Census's 19 groups, each as "Broad group: group" so a form offering only the broad groups still matches.
+ETHNIC_GROUPS = (
+    "Asian or Asian British: Indian",
+    "Asian or Asian British: Pakistani",
+    "Asian or Asian British: Bangladeshi",
+    "Asian or Asian British: Chinese",
+    "Asian or Asian British: Any other Asian background",
+    "Black, Black British, Caribbean or African: Caribbean",
+    "Black, Black British, Caribbean or African: African",
+    "Black, Black British, Caribbean or African: Any other Black, Black British or Caribbean background",
+    "Mixed or multiple ethnic groups: White and Black Caribbean",
+    "Mixed or multiple ethnic groups: White and Black African",
+    "Mixed or multiple ethnic groups: White and Asian",
+    "Mixed or multiple ethnic groups: Any other Mixed or multiple ethnic background",
+    "White: English, Welsh, Scottish, Northern Irish or British",
+    "White: Irish",
+    "White: Gypsy or Irish Traveller",
+    "White: Roma",
+    "White: Any other White background",
+    "Other ethnic group: Arab",
+    "Other ethnic group: Any other ethnic group",
+)
 DIVERSITY_CHOICES: dict[str, tuple[str, ...]] = {
-    "gender": ("Woman", "Man", "Non-binary", "I describe myself another way", PREFER_NOT),
-    "ethnicity": (
-        "Asian or Asian British",
-        "Black, Black British, Caribbean or African",
-        "Mixed or multiple ethnic groups",
-        "White",
-        "Another ethnic group",
-        PREFER_NOT,
-    ),
+    "gender": GENDERS,
+    "ethnicity": (*ETHNIC_GROUPS, PREFER_NOT),
     "disability": ("Yes", "No", PREFER_NOT),
     "veteran": ("Yes", "No", PREFER_NOT),
     "free_school_meals": ("Yes", "No", "Not applicable (finished school outside the UK)", "I don't know", PREFER_NOT),
-    "sexual_orientation": ("Bisexual", "Gay or lesbian", "Heterosexual or straight", "Another orientation", PREFER_NOT),
+    "sexual_orientation": ("Straight or heterosexual", "Gay or lesbian", "Bisexual", "Another sexual orientation", PREFER_NOT),
     "religion": (
         "No religion",
         "Buddhist",
@@ -110,9 +132,11 @@ class AnswersInput:
     caring_responsibilities: str = PREFER_NOT
     school_type: str = PREFER_NOT
     parental_occupation: str = PREFER_NOT
+    # The extra questions (D73) as form text, keyed by question: "yes"/"no", ISO dates, "YYYY-MM" months.
+    extra: dict[str, str] = field(default_factory=dict)
 
 
-ANSWER_FIELDS = tuple(item.name for item in fields(AnswersInput))
+ANSWER_FIELDS = tuple(item.name for item in fields(AnswersInput) if item.name != "extra")
 _BOOL_FIELDS = frozenset({"right_to_work_uk", "needs_visa_sponsorship", "previously_employed", "willing_to_relocate"})
 
 
@@ -179,6 +203,47 @@ def _bool_text(value: bool | None) -> str:
     return "unset" if value is None else "yes" if value else "no"
 
 
+def _extra(values: dict[str, str]) -> dict[str, str]:
+    """The extra answers checked against each question. Blank ones and unknown questions are left out."""
+    checked: dict[str, str] = {}
+    for key, value in values.items():
+        question = EXTRA_BY_KEY.get(key)
+        cleaned = (value or "").strip()
+        if question is None or not cleaned:
+            continue
+        if question.kind == "choice":
+            if cleaned not in question.choices:
+                raise AnswersRefused(f"Choose one of the options for '{question.label}'.")
+        elif question.kind == "yes_no":
+            cleaned = cleaned.lower()
+            if cleaned not in ("yes", "no"):
+                raise AnswersRefused(f"Choose yes or no for '{question.label}'.")
+        elif question.kind == "date":
+            parsed = _date(cleaned, label=f"'{question.label}'")
+            if key == "date_of_birth" and parsed is not None and parsed >= date.today():
+                raise AnswersRefused("Enter your date of birth as a past date.")
+            cleaned = parsed.isoformat() if parsed else ""
+        elif question.kind == "month":
+            if not _MONTH.fullmatch(cleaned):
+                raise AnswersRefused(f"Enter '{question.label}' as a month and year.")
+        elif len(cleaned) > MAX_EXTRA_TEXT:
+            raise AnswersRefused(f"Keep '{question.label}' under {MAX_EXTRA_TEXT} characters.")
+        if cleaned:
+            checked[key] = cleaned
+    return checked
+
+
+def _extra_value(key: str, stored: object) -> str | bool | None:
+    """One extra answer as the field mapper wants it: yes/no as a bool, diversity ones default to prefer not to say."""
+    question = EXTRA_BY_KEY[key]
+    text = stored if isinstance(stored, str) and stored else None
+    if question.kind == "yes_no":
+        return None if text is None else text == "yes"
+    if question.prefer_not:
+        return text or PREFER_NOT
+    return text
+
+
 def load_answers(session: Session, applicant_id: uuid.UUID) -> ApplicationAnswers | None:
     return session.scalar(select(ApplicationAnswers).where(ApplicationAnswers.applicant_id == applicant_id))
 
@@ -196,7 +261,8 @@ def input_from_row(row: ApplicationAnswers | None) -> AnswersInput:
             values[name] = value.isoformat()
         else:
             values[name] = "" if value is None else str(value)
-    return AnswersInput(**values)
+    extra = {key: str(value) for key, value in (row.extra or {}).items() if key in EXTRA_BY_KEY}
+    return AnswersInput(**values, extra=extra)
 
 
 
@@ -226,6 +292,7 @@ def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -
         "work_hours": _choice(raw.work_hours, WORK_HOURS, label="full-time or part-time"),
         "work_location": _choice(raw.work_location, WORK_LOCATIONS, label="where you want to work"),
         **{key: _demo(getattr(raw, key)) for key in _DEMO_KEYS},
+        "extra": _extra(raw.extra),
     }
     row = load_answers(session, applicant_id)
     if row is None:
@@ -264,6 +331,7 @@ def answers_as_map(row: ApplicationAnswers | None, *, email: str) -> dict[str, s
         "work_location": None,
         "cv": "upload_cv",
         **{key: PREFER_NOT for key in _DEMO_KEYS},
+        **{question.key: _extra_value(question.key, None) for question in EXTRA_QUESTIONS},
     }
     if row is None:
         return base
@@ -293,6 +361,9 @@ def answers_as_map(row: ApplicationAnswers | None, *, email: str) -> dict[str, s
             "work_hours": row.work_hours,
             "work_location": row.work_location,
             **{key: getattr(row, key) for key in _DEMO_KEYS},
+            **{question.key: _extra_value(question.key, (row.extra or {}).get(question.key)) for question in EXTRA_QUESTIONS},
         }
     )
+    # The choice made once in the extra questions wins over the older free-text answer.
+    base["heard_about"] = base["heard_about_source"] or row.heard_about
     return base

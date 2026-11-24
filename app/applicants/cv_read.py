@@ -23,7 +23,12 @@ from enum import StrEnum
 
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallFailure, anthropic_api_key, messages_body, send_anthropic_request
+from app.ai.anthropic import (
+    AiCallFailure,
+    anthropic_api_key,
+    messages_body,
+    send_anthropic_request,
+)
 from app.applicants.profile import (
     MAX_CERTIFICATIONS,
     MAX_DEGREES,
@@ -31,6 +36,7 @@ from app.applicants.profile import (
     MAX_LOCATIONS,
     MAX_SKILLS,
 )
+from app.applicants.questions import DEGREE_GRADES
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
@@ -61,9 +67,33 @@ Rules:
 - contact: the person's own details exactly as the CV writes them: first_name, last_name, phone, city, postcode,
   linkedin_url, github_url, portfolio_url (a personal website, not an employer's). Use "" for anything the CV
   doesn't show. Never build a link or a name from other parts of the CV.
+- education: copied from the CV, "" for anything it doesn't show. university: the university or college of the
+  highest degree. degree_title: that degree as written, such as "BSc (Hons) Business Management". degree_grade:
+  one of the listed grades only when the CV states it, achieved or predicted. graduation_date: YYYY-MM only when the CV
+  gives both the month and the year, past or expected. a_levels: A levels or equivalent with their
+  grades, as the CV writes them. current_job_title and current_employer: the most recent job's title and employer.
 - Leave a list empty rather than guess.
 """
 _CONTACT_KEYS = ("first_name", "last_name", "phone", "city", "postcode", "linkedin_url", "github_url", "portfolio_url")
+_EDUCATION_KEYS = (
+    "university",
+    "degree_title",
+    "degree_grade",
+    "graduation_date",
+    "a_levels",
+    "current_job_title",
+    "current_employer",
+)
+# What the CV must say before a degree grade is kept.
+_GRADE_EVIDENCE = {
+    "First class (1st)": r"\bfirst[- ]class\b|\b1st\b",
+    "Upper second class (2:1)": r"\b2[:.]1\b|upper second",
+    "Lower second class (2:2)": r"\b2[:.]2\b|lower second",
+    "Third class (3rd)": r"\bthird\b|\b3rd\b",
+    "Pass": r"\bpass\b",
+    "Distinction": r"\bdistinction\b",
+    "Merit": r"\bmerit\b",
+}
 CV_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -93,8 +123,19 @@ CV_SCHEMA = {
             "properties": {key: {"type": "string"} for key in _CONTACT_KEYS},
             "required": list(_CONTACT_KEYS),
         },
+        "education": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                **{key: {"type": "string"} for key in _EDUCATION_KEYS},
+                "degree_grade": {"type": "string", "enum": ["", *_GRADE_EVIDENCE]},
+            },
+            "required": list(_EDUCATION_KEYS),
+        },
     },
-    "required": ["target_roles", "locations", "experience_level", "skills", "certifications", "degrees", "contact"],
+    "required": [
+        "target_roles", "locations", "experience_level", "skills", "certifications", "degrees", "contact", "education",
+    ],
 }
 
 
@@ -133,6 +174,19 @@ class ContactSuggestions:
 
 
 @dataclass(frozen=True, slots=True)
+class EducationSuggestions:
+    """Education and current job for employer forms (D73). Every one is copied from the CV text, or left blank."""
+
+    university: str = ""
+    degree_title: str = ""
+    degree_grade: str = ""
+    graduation_date: str = ""
+    a_levels: str = ""
+    current_job_title: str = ""
+    current_employer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class CvSuggestions:
     target_roles: list[str] = field(default_factory=list)
     locations: list[str] = field(default_factory=list)
@@ -141,6 +195,7 @@ class CvSuggestions:
     certifications: list[Certification] = field(default_factory=list)
     degrees: list[str] = field(default_factory=list)
     contact: ContactSuggestions = field(default_factory=ContactSuggestions)
+    education: EducationSuggestions = field(default_factory=EducationSuggestions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +276,7 @@ def grounded(payload: dict, text: str) -> CvSuggestions:
         certifications=certifications[:MAX_CERTIFICATIONS],
         degrees=[degree for degree in _strings(payload.get("degrees"), MAX_DEGREES) if _words_in_cv(degree, text)],
         contact=grounded_contact(payload.get("contact"), text),
+        education=grounded_education(payload.get("education"), text),
     )
 
 
@@ -270,6 +326,44 @@ def grounded_contact(payload: object, text: str) -> ContactSuggestions:
         else:
             found[key] = cleaned if _key(cleaned) in haystack else ""
     return ContactSuggestions(**found)
+
+
+def grounded_education(payload: object, text: str) -> EducationSuggestions:
+    """Keeps an education or job detail only when the CV text has it. A grade needs the CV to state it."""
+    if not isinstance(payload, dict):
+        return EducationSuggestions()
+    haystack = _key(text)
+    found: dict[str, str] = {}
+    for key in _EDUCATION_KEYS:
+        value = payload.get(key)
+        if not isinstance(value, str) or not (cleaned := " ".join(value.split())) or len(cleaned) > _MAX_CONTACT_LENGTH:
+            continue
+        if key == "degree_grade":
+            evidence = _GRADE_EVIDENCE.get(cleaned)
+            found[key] = cleaned if cleaned in DEGREE_GRADES and evidence and re.search(evidence, haystack) else ""
+        elif key == "graduation_date":
+            found[key] = cleaned if _month_in_cv(cleaned, haystack) else ""
+        elif key in ("degree_title", "a_levels"):
+            found[key] = cleaned if _words_in_cv(cleaned, text) else ""
+        else:
+            found[key] = cleaned if _key(cleaned) in haystack else ""
+    return EducationSuggestions(**found)
+
+
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
+
+def _month_in_cv(value: str, haystack: str) -> bool:
+    """A YYYY-MM month the CV writes as "June 2027", "Jun 2027" or "06/2027"."""
+    month = re.fullmatch(r"(\d{4})-(0[1-9]|1[0-2])", value)
+    if month is None:
+        return False
+    year, number = month.group(1), int(month.group(2))
+    name = _MONTHS[number - 1]
+    return bool(
+        re.search(rf"\b{name}[a-z]*\.?,? {year}\b", haystack)
+        or re.search(rf"\b0?{number}[/.-]{year}\b", haystack)
+    )
 
 
 def _words_in_cv(value: str, text: str) -> bool:
@@ -357,6 +451,7 @@ def suggestions_from_json(data: object) -> CvSuggestions | None:
             certifications=[Certification(**item) for item in data.get("certifications") or []],
             degrees=[str(item) for item in data.get("degrees") or []],
             contact=ContactSuggestions(**(data.get("contact") or {})),
+            education=EducationSuggestions(**(data.get("education") or {})),
         )
     except TypeError:
         return None

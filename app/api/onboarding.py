@@ -1,4 +1,4 @@
-"""The sign-up wizard: CV, details read from it, job preferences, availability, diversity.
+"""The sign-up wizard: CV, details read from it, job preferences, education and work, availability, diversity.
 
 Each step saves when the person presses Continue, so leaving halfway loses nothing: logging in
 again opens the step they reached. What the CV read suggests is kept on the CV row only until the
@@ -8,20 +8,28 @@ person has checked it, and every suggestion is copied from the CV text (D43), ne
 from __future__ import annotations
 
 import html
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.accounts import after_login_url, current_applicant, register_form, require_login
+from app.api.accounts import (
+    after_login_url,
+    current_applicant,
+    register_form,
+    require_login,
+)
 from app.api.admin_html import page
 from app.api.answer_fields import (
     answers_from_form,
     availability_fields,
     diversity_fields,
     esc,
+    extra_fields,
+    extra_keys,
     yes_no_select,
 )
 from app.api.chrome import onboarding_bar
@@ -60,7 +68,13 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.matching.match import match_all
-from app.models import Applicant, CvFileType, OnboardingStep
+from app.models import (
+    Applicant,
+    ApplicantPreference,
+    ApplicantProfile,
+    CvFileType,
+    OnboardingStep,
+)
 
 router = APIRouter(tags=["onboarding"])
 
@@ -72,6 +86,7 @@ _TITLES = {
     OnboardingStep.cv: "Your CV",
     OnboardingStep.details: "Your details",
     OnboardingStep.preferences: "Jobs you want",
+    OnboardingStep.education: "Education and work",
     OnboardingStep.availability: "Availability",
     OnboardingStep.diversity: "Diversity questions",
 }
@@ -90,7 +105,11 @@ _DETAIL_FIELDS = (
     "needs_visa_sponsorship",
     "nationality",
 )
+_DETAIL_EXTRAS = extra_keys("details", "right_to_work")
+_EDUCATION_EXTRAS = extra_keys("education", "work")
 _AVAILABILITY_FIELDS = ("notice_period", "earliest_start_date", "willing_to_relocate", "work_hours", "work_location")
+_AVAILABILITY_EXTRAS = extra_keys("screening")
+_DIVERSITY_EXTRAS = extra_keys("diversity")
 _DIVERSITY_FIELDS = (
     "gender",
     "ethnicity",
@@ -360,6 +379,11 @@ def _details_body(request: Request, answers: AnswersInput, from_cv: set[str]) ->
     {text("portfolio_url", "Portfolio or personal website", kind="url", hint="optional")}
   </section>
   <section class="card">
+    <h2>More about you</h2>
+    <p class="hint">Optional. Some forms ask these, so answering once saves typing them each time.</p>
+    {extra_fields(answers, "details")}
+  </section>
+  <section class="card">
     <h2>Right to work</h2>
     <p class="hint">We never work these out from your CV. Answer them yourself.</p>
     <div class="row">
@@ -367,6 +391,7 @@ def _details_body(request: Request, answers: AnswersInput, from_cv: set[str]) ->
       <label>Will you need visa sponsorship? {yes_no_select("needs_visa_sponsorship", answers.needs_visa_sponsorship, required=True)}</label>
     </div>
     {text("nationality", "Nationality", hint="optional")}
+    {extra_fields(answers, "right_to_work")}
   </section>
   <div class="wizard-foot">{_back(OnboardingStep.details)}<button type="submit" class="primary">Continue</button></div>
 </form>
@@ -383,6 +408,8 @@ def _required_details(answers: AnswersInput) -> None:
         raise AnswersRefused("Enter your town or city.")
     if answers.right_to_work_uk not in ("yes", "no") or answers.needs_visa_sponsorship not in ("yes", "no"):
         raise AnswersRefused("Answer both right-to-work questions.")
+    if not answers.extra.get("right_to_work_type", "").strip():
+        raise AnswersRefused("Choose what gives you the right to work in the UK.")
 
 
 @router.get("/onboarding/details", response_model=None)
@@ -412,7 +439,9 @@ def details_step(
 async def details_save(request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
     if redirect := _guard(applicant, OnboardingStep.details):
         return redirect
-    answers = answers_from_form(await request.form(), input_from_row(load_answers(db, applicant.id)), _DETAIL_FIELDS)
+    answers = answers_from_form(
+        await request.form(), input_from_row(load_answers(db, applicant.id)), _DETAIL_FIELDS, _DETAIL_EXTRAS
+    )
     try:
         _required_details(answers)
         save_answers(db, applicant.id, answers)
@@ -481,7 +510,80 @@ def preferences_save(
     return RedirectResponse(next_url, status_code=_SEE_OTHER)
 
 
-# Step 5: availability.
+# Step 5: education and work.
+
+
+def _prefilled_education(db: Session, applicant: Applicant, saved: AnswersInput) -> tuple[AnswersInput, set[str]]:
+    """Until any of this step is saved, blanks take the CV's education and job and the profile's degree and salary.
+
+    Returns the answers and the keys copied from the CV, which are marked so the person checks them.
+    """
+    if any(key in saved.extra for key in _EDUCATION_EXTRAS):
+        return saved, set()
+    filled: dict[str, str] = {}
+    from_cv: set[str] = set()
+    if (found := _suggestions(db, applicant)) is not None:
+        for key, value in asdict(found.education).items():
+            if value:
+                filled[key] = value
+                from_cv.add(key)
+    profile = db.scalar(select(ApplicantProfile).where(ApplicantProfile.applicant_id == applicant.id))
+    if "degree_title" not in filled and profile is not None and profile.degrees:
+        filled["degree_title"] = profile.degrees[0]
+    preference = db.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant.id))
+    if preference is not None and preference.salary_amount and preference.salary_period in (None, "", "year"):
+        filled["salary_expectation"] = format(preference.salary_amount.normalize(), "f")
+    return replace(saved, extra={**filled, **saved.extra}), from_cv
+
+
+def _education_body(request: Request, answers: AnswersInput, from_cv: set[str]) -> str:
+    return f"""
+<form method="post" action="/onboarding/education">
+  {csrf_field(request)}
+  <section class="card">
+    <h1>Education and work</h1>
+    <p class="muted">Graduate and junior application forms ask these almost every time. Every one is optional:
+    anything you leave blank is left for you to answer on the employer's form.</p>
+    {extra_fields(answers, "education", from_cv=from_cv)}
+  </section>
+  <section class="card">
+    <h2>Work experience and pay</h2>
+    {extra_fields(answers, "work", from_cv=from_cv)}
+  </section>
+  <div class="wizard-foot">{_back(OnboardingStep.education)}<button type="submit" class="primary">Continue</button></div>
+</form>
+"""
+
+
+@router.get("/onboarding/education", response_model=None)
+def education_step(request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
+    if redirect := _guard(applicant, OnboardingStep.education):
+        return redirect
+    answers, from_cv = _prefilled_education(db, applicant, input_from_row(load_answers(db, applicant.id)))
+    notice = "We filled in what your CV shows. Check each answer marked 'from your CV'." if from_cv else None
+    return _wizard_page(
+        request, applicant, OnboardingStep.education, _education_body(request, answers, from_cv), notice=notice
+    )
+
+
+@router.post("/onboarding/education", response_model=None, dependencies=_CSRF)
+async def education_save(request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
+    if redirect := _guard(applicant, OnboardingStep.education):
+        return redirect
+    answers = answers_from_form(await request.form(), input_from_row(load_answers(db, applicant.id)), (), _EDUCATION_EXTRAS)
+    try:
+        save_answers(db, applicant.id, answers)
+    except AnswersRefused as exc:
+        db.rollback()
+        return _wizard_page(
+            request, applicant, OnboardingStep.education, _education_body(request, answers, set()), error=exc.message, status_code=400
+        )
+    next_url = _advance(applicant, OnboardingStep.education)
+    db.commit()
+    return RedirectResponse(next_url, status_code=_SEE_OTHER)
+
+
+# Step 6: availability and the questions most forms ask.
 
 
 def _availability_body(request: Request, answers: AnswersInput) -> str:
@@ -492,6 +594,11 @@ def _availability_body(request: Request, answers: AnswersInput) -> str:
     <h1>Availability</h1>
     <p class="muted">Application forms usually ask when you could start and how you want to work.</p>
     {availability_fields(answers, required=True)}
+  </section>
+  <section class="card">
+    <h2>Questions most forms ask</h2>
+    <p class="hint">Optional. A blank one is left for you on the employer's form.</p>
+    {extra_fields(answers, "screening")}
   </section>
   <div class="wizard-foot">{_back(OnboardingStep.availability)}<button type="submit" class="primary">Continue</button></div>
 </form>
@@ -510,7 +617,9 @@ def availability_step(request: Request, applicant: Applicant = Depends(require_l
 async def availability_save(request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
     if redirect := _guard(applicant, OnboardingStep.availability):
         return redirect
-    answers = answers_from_form(await request.form(), input_from_row(load_answers(db, applicant.id)), _AVAILABILITY_FIELDS)
+    answers = answers_from_form(
+        await request.form(), input_from_row(load_answers(db, applicant.id)), _AVAILABILITY_FIELDS, _AVAILABILITY_EXTRAS
+    )
     try:
         if not (answers.notice_period and answers.work_hours and answers.work_location) or answers.willing_to_relocate not in ("yes", "no"):
             raise AnswersRefused("Answer each question. Only the start date is optional.")
@@ -525,7 +634,7 @@ async def availability_save(request: Request, applicant: Applicant = Depends(req
     return RedirectResponse(next_url, status_code=_SEE_OTHER)
 
 
-# Step 6: diversity questions, then finish.
+# Step 7: diversity questions, then finish.
 
 
 def _diversity_body(request: Request, answers: AnswersInput) -> str:
@@ -538,6 +647,7 @@ def _diversity_body(request: Request, answers: AnswersInput) -> str:
     don't affect your application. Each starts at prefer not to say, so you can leave any you'd rather not answer.
     We use them only to answer the same questions on employers' forms, and you can change them any time.</p>
     {diversity_fields(answers)}
+    {extra_fields(answers, "diversity")}
   </section>
   <div class="wizard-foot">{_back(OnboardingStep.diversity)}<button type="submit" class="primary">Finish and find my jobs</button></div>
 </form>
@@ -556,7 +666,9 @@ def diversity_step(request: Request, applicant: Applicant = Depends(require_logi
 async def diversity_save(request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
     if redirect := _guard(applicant, OnboardingStep.diversity):
         return redirect
-    answers = answers_from_form(await request.form(), input_from_row(load_answers(db, applicant.id)), _DIVERSITY_FIELDS)
+    answers = answers_from_form(
+        await request.form(), input_from_row(load_answers(db, applicant.id)), _DIVERSITY_FIELDS, _DIVERSITY_EXTRAS
+    )
     try:
         save_answers(db, applicant.id, answers)
     except AnswersRefused as exc:

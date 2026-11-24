@@ -13,7 +13,7 @@ from app.models import AtsKind
 class FormField:
     label: str
     name: str
-    field_type: str  # text, textarea, select, radio, checkbox, file, yes_no
+    field_type: str  # text, textarea, select, radio, checkbox, file, yes_no, date, month
     required: bool
     options: list[str] = field(default_factory=list)
 
@@ -36,7 +36,7 @@ def classify_ats(apply_url: str) -> AtsKind:
 
 # Field types the extension reports, mapped onto the mapper's types.
 _SCAN_TYPES = {
-    "text": "text", "email": "text", "tel": "text", "url": "text", "number": "text", "date": "text",
+    "text": "text", "email": "text", "tel": "text", "url": "text", "number": "text", "date": "date", "month": "month",
     "search": "text", "textarea": "textarea", "select": "select", "select-one": "select",
     "select-multiple": "select", "radio": "radio", "checkbox": "checkbox", "file": "file",
 }
