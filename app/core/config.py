@@ -43,8 +43,8 @@ class Settings(BaseSettings):
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
     api_allowlist: str = (
-        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,serpapi.com,"
-        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com"
+        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
+        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,serpapi.com"
     )
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
@@ -81,6 +81,18 @@ class Settings(BaseSettings):
     # SerpAPI bills per search (~$0.015); settle the ceiling because the response has no cost field.
     google_jobs_unit_price: Decimal = Decimal("0")
     google_jobs_run_price: Decimal = Decimal("0.012")
+    # D69: jobs on employers' own sites, found through Google search on SerpAPI. Same key as Google Jobs.
+    careers_every_hours: int = 24
+    # Google pages read per role and location; the next page is read only while too few jobs were found.
+    careers_max_pages: int = 3
+    careers_enough_jobs: int = 5
+    # Company pages opened per role and location, and job links followed from one careers page.
+    careers_max_visits: int = 20
+    careers_links_per_site: int = 3
+    careers_max_age_days: int = 30
+    careers_stale_days: int = 14
+    # SerpAPI's plans are about $0.01-0.025 a search; this ceiling is per Google page.
+    careers_search_price: Decimal = Decimal("0.02")
 
     # Outreach: people discovery and profile research through Apify (still never fetch linkedin.com here).
     apify_outreach_hm_actor: str = "automation_studio/linkedin-job-hiring-manager-finder"
@@ -186,6 +198,7 @@ class Settings(BaseSettings):
         "indeed_run_price",
         "google_jobs_unit_price",
         "google_jobs_run_price",
+        "careers_search_price",
         "usd_to_gbp",
         "interview_collect_unit_price",
         "interview_collect_run_price",

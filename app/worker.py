@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.careers import CareersReport, collect_careers
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
@@ -40,6 +41,7 @@ class CycleReport:
     linkedin: LinkedinReport
     indeed: IndeedReport
     google_jobs: GoogleJobsReport
+    careers: CareersReport
 
 
 async def run_cycle(
@@ -57,14 +59,10 @@ async def run_cycle(
     linkedin = await collect_linkedin(session, gateway=gateway, settings=settings, persist=save, now=clock)
     indeed = await collect_indeed(session, gateway=gateway, settings=settings, persist=save, now=clock)
     google = await collect_google_jobs(session, gateway=gateway, settings=settings, persist=save, now=clock)
-    if (
-        linkedin.searches
-        or linkedin.closed
-        or indeed.searches
-        or indeed.closed
-        or google.searches
-        or google.closed
-    ):
+    # D69: jobs on employers' own sites, found through Google, that LinkedIn and Indeed may not have.
+    careers = await collect_careers(session, gateway=gateway, settings=settings, persist=save, now=clock)
+    collected = (linkedin, indeed, google, careers)
+    if any(report.searches or report.closed for report in collected):
         now = datetime.now(UTC)
         store_results(session, now=now)
         map_job_skills(session)
@@ -89,7 +87,7 @@ async def run_cycle(
     save()
     await process_requests(session, gateway=gateway, settings=get_settings(), persist=save)
     save()
-    return CycleReport(linkedin=linkedin, indeed=indeed, google_jobs=google)
+    return CycleReport(linkedin=linkedin, indeed=indeed, google_jobs=google, careers=careers)
 
 
 async def _main(once: bool, poll_seconds: int) -> None:
@@ -106,14 +104,18 @@ async def _main(once: bool, poll_seconds: int) -> None:
                 detail = getattr(exc, "orig", None) or exc
                 print(f"cycle failed, will retry: {type(exc).__name__}: {detail}", flush=True)
             else:
-                linkedin, indeed, google = report.linkedin, report.indeed, report.google_jobs
+                linkedin, indeed, google, careers = report.linkedin, report.indeed, report.google_jobs, report.careers
                 print(
                     f"linkedin searches {linkedin.searches}, jobs {linkedin.jobs}, new {linkedin.postings_new}, "
                     f"closed {linkedin.closed}, failed {linkedin.failed}, stopped by {linkedin.stopped_by}; "
                     f"indeed searches {indeed.searches}, jobs {indeed.jobs}, new {indeed.postings_new}, "
                     f"closed {indeed.closed}, failed {indeed.failed}, stopped by {indeed.stopped_by}; "
                     f"google_jobs searches {google.searches}, jobs {google.jobs}, new {google.postings_new}, "
-                    f"closed {google.closed}, failed {google.failed}, stopped by {google.stopped_by}",
+                    f"closed {google.closed}, failed {google.failed}, stopped by {google.stopped_by}; "
+                    f"company sites searches {careers.searches}, google pages {careers.google_pages}, "
+                    f"sites opened {careers.sites_opened}, jobs {careers.jobs}, new {careers.postings_new}, "
+                    f"closed {careers.closed}, skipped {careers.skipped}, failed {careers.failed}, "
+                    f"stopped by {careers.stopped_by}",
                     flush=True,
                 )
             if once:

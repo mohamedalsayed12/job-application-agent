@@ -9,6 +9,7 @@ _PRICE = {
     SpendKind.linkedin_jobs: "linkedin_unit_price",
     SpendKind.indeed_jobs: "indeed_unit_price",
     SpendKind.google_jobs: "google_jobs_unit_price",
+    SpendKind.careers_search: "careers_search_price",
     SpendKind.linkedin_people: "outreach_people_unit_price",
     SpendKind.linkedin_profile: "outreach_profile_unit_price",
     SpendKind.ai_outreach: "outreach_ai_unit_price",

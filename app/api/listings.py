@@ -48,7 +48,12 @@ router = APIRouter(prefix="/listings", tags=["listings"])
 PAGE_SIZE = 25
 _CURRENCY = {"GBP": "£", "USD": "$", "EUR": "€"}
 _PERIOD = {"year": "a year", "month": "a month", "week": "a week", "day": "a day", "hour": "an hour"}
-_SOURCE_LABEL = {"linkedin": "LinkedIn", "indeed": "Indeed", "google_jobs": "Google Jobs"}
+_SOURCE_LABEL = {
+    "linkedin": "LinkedIn",
+    "indeed": "Indeed",
+    "google_jobs": "Google Jobs",
+    "careers": "Company website",
+}
 Sort = Literal["score", "newest"]
 # D44: matches on a target role, matches on skills alone, or both.
 Show = Literal["roles", "skills", "all"]
