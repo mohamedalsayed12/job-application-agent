@@ -24,5 +24,5 @@ RUN uv sync --frozen --no-dev
 
 EXPOSE 8000
 
-# Web default. Worker service overrides the start command.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Railway sets RAILWAY_SERVICE_NAME per service (web vs worker).
+CMD ["sh", "-c", "if [ \"$RAILWAY_SERVICE_NAME\" = \"worker\" ]; then exec python -m app.worker; else alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}; fi"]
