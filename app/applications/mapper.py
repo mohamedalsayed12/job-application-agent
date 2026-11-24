@@ -21,6 +21,10 @@ class FillStep:
     action: str  # fill | select | check | upload_cv
     value: str
     required: bool
+    # saved: the person's saved answers; bank: an answer they gave to this question on an earlier form;
+    # ai: drafted from their CV and the advert and checked (D74), shown highlighted for them to review.
+    source: str = "saved"
+    note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +41,8 @@ class FillPlan:
                     "action": s.action,
                     "value": s.value,
                     "required": s.required,
+                    "source": s.source,
+                    "note": s.note,
                 }
                 for s in self.steps
             ],

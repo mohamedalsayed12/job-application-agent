@@ -39,6 +39,8 @@ _SCAN_TYPES = {
     "text": "text", "email": "text", "tel": "text", "url": "text", "number": "text", "date": "date", "month": "month",
     "search": "text", "textarea": "textarea", "select": "select", "select-one": "select",
     "select-multiple": "select", "radio": "radio", "checkbox": "checkbox", "file": "file",
+    # Custom dropdowns (Workday, Greenhouse, Ashby): their options are only read once opened (D74).
+    "combobox": "select",
 }
 
 

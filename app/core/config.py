@@ -155,6 +155,11 @@ class Settings(BaseSettings):
     ai_report_unit_price: Decimal = Decimal("0.0015")
     # D55: keyword extract / tailor / ATS revise each reserve this ceiling once.
     ai_tailor_unit_price: Decimal = Decimal("0.003")
+    # D74: drafting a form's unanswered questions, then checking the drafts, each reserve this once.
+    # About 8k tokens in (CV, advert, saved answers, questions) and 1.5k out on Haiku 5.5; this is a ceiling.
+    ai_apply_unit_price: Decimal = Decimal("0.004")
+    ai_apply_max_output_tokens: int = 2500
+    ai_apply_model: str = ""
 
     # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
     ai_summary_model: str = ""
@@ -220,6 +225,7 @@ class Settings(BaseSettings):
         "ai_judge_unit_price",
         "ai_report_unit_price",
         "ai_tailor_unit_price",
+        "ai_apply_unit_price",
         "outreach_people_unit_price",
         "outreach_profile_unit_price",
         "outreach_ai_unit_price",

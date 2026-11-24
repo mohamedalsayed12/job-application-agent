@@ -9,8 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.applicants.apply_answers import answers_as_map, load_answers
+from app.applications.drafts import fill_from_bank, remember_unanswered
 from app.applications.mapper import FillPlan, build_fill_plan
-from app.applications.schema import classify_ats, fields_from_scan, schema_to_json
+from app.applications.schema import (
+    FormSchema,
+    classify_ats,
+    fields_from_scan,
+    schema_to_json,
+)
 from app.models import Applicant, Application, ApplicationStatus, Job
 
 
@@ -85,14 +91,30 @@ def plan_for_scanned_form(
     *,
     page_url: str,
     fields: list[dict[str, Any]],
-) -> FillPlan:
-    """Map the fields the extension read to the person's saved answers; unanswered required ones are listed."""
+) -> tuple[FormSchema, FillPlan, dict[str, object]]:
+    """Map the fields the extension read to the person's saved answers, then to answers they gave on earlier forms.
+
+    Returns the form, the plan and the saved answers. Nothing is kept until record_plan.
+    """
     schema = fields_from_scan(fields, ats=classify_ats(page_url))
     answers = answers_as_map(load_answers(session, applicant.id), email=applicant.email)
-    plan = build_fill_plan(schema, answers)
+    plan = fill_from_bank(session, applicant.id, schema, build_fill_plan(schema, answers))
     application.ats_kind = schema.ats_kind.value
     application.schema_json = {**schema_to_json(schema), "page_url": page_url}
-    application.fill_plan_json = plan.to_json()
+    return schema, plan, answers
+
+
+def record_plan(
+    session: Session,
+    application: Application,
+    applicant: Applicant,
+    schema: FormSchema,
+    plan: FillPlan,
+    drafts: dict[str, dict] | None = None,
+) -> None:
+    """Keeps the plan on the application, with every page's AI drafts (D74), and banks the required questions still open."""
+    remember_unanswered(session, applicant.id, schema, plan)
+    application.fill_plan_json = {**plan.to_json(), "drafts": drafts or {}}
     application.missing_fields = plan.missing
     if plan.missing:
         application.status = ApplicationStatus.needs_input.value
@@ -101,7 +123,6 @@ def plan_for_scanned_form(
         application.status = ApplicationStatus.ready_to_fill.value
         application.error = None
     session.flush()
-    return plan
 
 
 def set_application_status(

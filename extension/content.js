@@ -1,4 +1,9 @@
-/* Reads the open apply form and fills it from a fill plan. Never clicks Submit. */
+/* Reads the open apply form and fills it from a fill plan. Never clicks Submit.
+
+   Custom dropdowns (Workday, Greenhouse, Lever, Ashby) are opened and the matching option is clicked.
+   Answers the AI drafted are outlined so the person reads them first. After a fill, new questions that
+   appear (the next page of a multi-step form) are reported to the background worker, which fills them
+   too, without touching anything already answered. */
 (() => {
   if (window.__jaaContentLoaded) return;
   window.__jaaContentLoaded = true;
@@ -6,6 +11,8 @@
   const ALLOWED_ACTIONS = new Set(["fill", "select", "check", "upload_cv"]);
   const SKIP_TYPES = new Set(["hidden", "submit", "button", "reset", "image", "password"]);
   const MAX_TEXT = 300;
+  const DRAFT_OUTLINE = "2px solid #e8a317";
+  const PLACEHOLDER = /^(select|choose|please select|please choose|--|select one|select\.\.\.)?$/i;
 
   function isSubmitControl(el) {
     if (!el) return true;
@@ -71,6 +78,10 @@
     return style.display !== "none" && style.visibility !== "hidden" && (el.offsetParent !== null || style.position === "fixed");
   }
 
+  function isCombo(el) {
+    return el.getAttribute?.("role") === "combobox" || el.getAttribute?.("aria-haspopup") === "listbox";
+  }
+
   let counter = 0;
   function keyFor(el) {
     if (el.dataset.jaaKey) return el.dataset.jaaKey;
@@ -99,9 +110,65 @@
       const options = type.startsWith("select")
         ? [...el.options].map((o) => clean(o.text)).filter((t) => t && !/^(select|choose|please select|--)/i.test(t))
         : [];
-      fields.push({ label, name: keyFor(el), type, required: isRequired(el, label), options });
+      // A typing box that opens a list (react-select, Ashby) is filled like a dropdown.
+      fields.push({ label, name: keyFor(el), type: isCombo(el) ? "combobox" : type, required: isRequired(el, label), options });
+    }
+    // Dropdowns built from buttons or divs: their options exist only once opened.
+    for (const el of document.querySelectorAll("[role=combobox], [aria-haspopup=listbox]")) {
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) || el.disabled || isSubmitControl(el) || !visible(el)) continue;
+      const label = questionFor(el);
+      if (!label) continue;
+      fields.push({ label, name: keyFor(el), type: "combobox", required: isRequired(el, label), options: [] });
     }
     return fields;
+  }
+
+  /** Whether the field holds an answer now. A refill leaves anything already answered alone. */
+  function hasAnswer(el) {
+    if (el.tagName === "SELECT") return el.selectedIndex > 0 || Boolean(el.value && !PLACEHOLDER.test(clean(el.options[el.selectedIndex]?.text)));
+    if (el.type === "radio") return [...document.querySelectorAll(`input[type=radio][name="${CSS.escape(el.name)}"]`)].some((r) => r.checked);
+    if (el.type === "checkbox") return el.checked;
+    if (el.type === "file") return el.files?.length > 0;
+    if (/^(INPUT|TEXTAREA)$/.test(el.tagName)) return Boolean(el.value && el.value.trim());
+    return !PLACEHOLDER.test(clean(el.innerText));
+  }
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const norm = (text) => clean(text).toLowerCase();
+
+  function listOptions(el) {
+    const id = el.getAttribute("aria-controls") || el.getAttribute("aria-owns");
+    const scope = (id && document.getElementById(id)) || document;
+    return [...scope.querySelectorAll("[role=option], [data-automation-id=promptOption]")].filter(
+      (option) => option.offsetParent !== null && !isSubmitControl(option),
+    );
+  }
+
+  /** Opens a custom dropdown (or types into a searchable one) and clicks the option that matches. */
+  async function pickFromList(el, value) {
+    const want = norm(value);
+    if (el.tagName === "INPUT") {
+      el.focus();
+      setNative(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      el.click();
+    }
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      await sleep(100);
+      const options = listOptions(el);
+      const hit = options.find((o) => norm(o.innerText) === want) || options.find((o) => norm(o.innerText).startsWith(want));
+      if (hit) {
+        hit.click();
+        return true;
+      }
+    }
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    if (el.tagName === "INPUT") {
+      setNative(el, "");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    return false;
   }
 
   function findField(step) {
@@ -138,8 +205,9 @@
     else el.value = value;
   }
 
-  function setValue(el, value) {
+  async function setValue(el, value) {
     if (isSubmitControl(el)) return false;
+    if (isCombo(el)) return pickFromList(el, value);
     const tag = el.tagName.toLowerCase();
     const want = clean(value).toLowerCase();
     if (tag === "select") {
@@ -183,8 +251,17 @@
     return true;
   }
 
-  function applyPlan(plan, cv) {
+  function markDraft(el, note) {
+    const target = el.type === "radio" ? el.closest("fieldset, [role=radiogroup]") || el : el;
+    target.style.outline = DRAFT_OUTLINE;
+    target.style.outlineOffset = "2px";
+    target.title = note || "Drafted by Job Agent. Read it before you submit.";
+  }
+
+  /** Fills the plan. With onlyEmpty (an automatic refill), fields that already hold an answer are left alone. */
+  async function applyPlan(plan, cv, onlyEmpty) {
     let filled = 0;
+    let drafted = 0;
     const skipped = [];
     for (const step of plan.steps || []) {
       if (!ALLOWED_ACTIONS.has(step.action)) continue;
@@ -193,14 +270,20 @@
         skipped.push(step.label);
         continue;
       }
+      if (onlyEmpty && hasAnswer(el)) continue;
       let done = false;
       try {
-        done = step.action === "upload_cv" ? attachCv(el, cv) : setValue(el, String(step.value || ""));
+        done = step.action === "upload_cv" ? attachCv(el, cv) : await setValue(el, String(step.value || ""));
       } catch (_) {
         done = false; // One awkward field must not stop the rest of the form.
       }
-      if (done) filled += 1;
-      else skipped.push(step.label);
+      if (done) {
+        filled += 1;
+        if (step.source === "ai") {
+          drafted += 1;
+          markDraft(el, step.note);
+        }
+      } else skipped.push(step.label);
     }
     for (const el of document.querySelectorAll("button, input[type=submit], a")) {
       if (isSubmitControl(el)) {
@@ -208,7 +291,31 @@
         break;
       }
     }
-    return { filled, skipped };
+    watchForNewQuestions();
+    return { filled, drafted, skipped };
+  }
+
+  function fieldKeys() {
+    return new Set(scanForm().map((field) => `${field.name}|${field.label}`));
+  }
+
+  /** After a fill, questions that appear later (the next step of the form) are reported once they settle. */
+  let known = null;
+  let observer = null;
+  let timer = null;
+  function watchForNewQuestions() {
+    known = fieldKeys();
+    if (observer) return;
+    observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const now = fieldKeys();
+        const added = [...now].filter((key) => !known.has(key));
+        known = now;
+        if (added.length) chrome.runtime.sendMessage({ type: "jaa-page-changed", added: added.length }).catch(() => {});
+      }, 1500);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -221,11 +328,9 @@
       return false;
     }
     if (message?.type !== "jaa-fill") return false;
-    try {
-      sendResponse({ ok: true, ...applyPlan(message.plan, message.cv) });
-    } catch (err) {
-      sendResponse({ ok: false, error: String(err) });
-    }
-    return false;
+    applyPlan(message.plan, message.cv, Boolean(message.onlyEmpty))
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
   });
 })();
