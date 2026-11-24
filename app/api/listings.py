@@ -26,6 +26,8 @@ from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field
 from app.cleaning.linking import is_primary
 from app.core.db import get_db
+from app.fetch.due import never_searched
+from app.linkedin import searches
 from app.matching import semantic
 from app.matching.semantic import Embedder, closeness, vectors_for
 from app.models import (
@@ -531,7 +533,8 @@ def listings_page(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
     page_number: int = Query(1, alias="page", ge=1),
-    everywhere: bool = Query(False),
+    # D72: every match shows unless the person narrows to their own locations.
+    everywhere: bool = Query(True),
     role: str = Query("", max_length=200),
     sort: Sort = Query("newest"),
     show: Show = Query("roles"),
@@ -553,6 +556,13 @@ def listings_page(
         db.commit()
     preference = db.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant.id))
     where = "in every location" if everywhere else "in your locations"
+    pending = never_searched(db, searches(db, {applicant.id})) if preference is not None else 0
+    searching = (
+        f'<div class="card discover">We are searching for {pending} of your job titles now. '
+        "New jobs usually appear here within a few minutes: reload the page to see them.</div>"
+        if pending
+        else ""
+    )
     hint = _discover_hint(db, applicant, preference, everywhere=everywhere, sort=sort) if show == "roles" else ""
     if listings:
         csrf = csrf_field(request)
@@ -569,7 +579,7 @@ def listings_page(
   <p class="muted">{total} open jobs {where}. {_order(search, sort)}</p>
 </div></div>
 {_filters(preference, role=role, everywhere=everywhere, sort=sort, show=show, search=search)}
-{hint}
+{searching}{hint}
 {body}
 {_nav(page_number, total, everywhere=everywhere, role=role, sort=sort, show=show, search=search)}""",
         header=applicant_bar(request, "matches"),

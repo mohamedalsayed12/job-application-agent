@@ -34,13 +34,14 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.cleaning.clean import clean_run, close_stale
 from app.cleaning.normalize import _iso_date
 from app.core.config import Settings
+from app.fetch.due import due_searches
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 from app.fetch.policy import host_matches_suffix
 from app.indeed import _core_role
@@ -113,11 +114,6 @@ class CareersReport:
     skipped: dict[str, int] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)
     stopped_by: str | None = None
-
-
-def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
-    last = session.scalar(select(func.max(FetchRun.started_at)).where(FetchRun.source == SOURCE))
-    return last is None or now - last >= timedelta(hours=settings.careers_every_hours)
 
 
 def google_query(search: Search) -> str:
@@ -384,13 +380,22 @@ async def collect_careers(
     if not key:
         report.stopped_by = "not_configured"
         return report
-    if not is_due(session, now=now(), settings=settings):
-        return report
     gate = BudgetGate(session, clock=now)
     skipped: Counter[str] = Counter()
     applicants = settings.ai_applicants()
     wanted = wanted_by_search(session, applicants)
-    for search in searches(session, applicants):
+    due = due_searches(
+        session,
+        SOURCE,
+        searches(session, applicants),
+        now=now(),
+        every_hours=settings.careers_every_hours,
+        settings=settings,
+    )
+    if not due:
+        return report
+    for item in due:
+        search = item.search
         started = now()
         hunt = _Hunt(gateway, key, settings, now, wanted.get((search.role.lower(), search.location.lower())))
         await hunt.run(search, gate, persist)
@@ -406,7 +411,7 @@ async def collect_careers(
             report.failed.append(f"{search.role} in {search.location}: {hunt.problem}")
         stored = store_items(
             session, hunt.items, started_at=started, finished_at=now(), ok=ok,
-            requests=hunt.google_pages + hunt.visits,
+            requests=hunt.google_pages + hunt.visits, search_key=item.key,
         )
         report.jobs += len(hunt.items)
         report.postings_new += stored
@@ -428,6 +433,7 @@ def store_items(
     finished_at: datetime,
     ok: bool = True,
     requests: int = 1,
+    search_key: str | None = None,
 ) -> int:
     """Keep one search's jobs as raw payloads and clean them into jobs. Returns how many postings were new."""
     rows = [item for item in items if isinstance(item, dict) and job_id(item)]
@@ -439,6 +445,7 @@ def store_items(
         request_count=max(requests, 1),
         started_at=started_at,
         finished_at=finished_at,
+        search_key=search_key,
     )
     session.add(run)
     session.flush()

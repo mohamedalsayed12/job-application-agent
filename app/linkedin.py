@@ -20,13 +20,14 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
 from app.fetch.apify import run_actor, settle_cost
+from app.fetch.due import due_searches, failed_run
 from app.fetch.gateway import FetchGateway
 from app.models import (
     ApplicantPreference,
@@ -37,7 +38,7 @@ from app.models import (
 )
 
 SOURCE = "linkedin"
-ENTRY_LEVEL = "2"
+ENTRY_LEVEL = "2"  # LinkedIn f_E code for entry level; 3 is associate.
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,11 +46,11 @@ class Search:
     role: str
     location: str
 
-    def url(self, *, posted_within_days: int) -> str:
+    def url(self, *, posted_within_days: int, levels: str = ENTRY_LEVEL) -> str:
         query = {
             "keywords": self.role,
             "location": self.location,
-            "f_E": ENTRY_LEVEL,
+            "f_E": ",".join(part.strip() for part in levels.split(",") if part.strip()) or ENTRY_LEVEL,
             "f_TPR": f"r{posted_within_days * 86400}",
             "sortBy": "DD",
         }
@@ -80,11 +81,6 @@ def searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Sea
     return sorted(found.values(), key=lambda search: (search.role.lower(), search.location.lower()))
 
 
-def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
-    last = session.scalar(select(func.max(FetchRun.started_at)).where(FetchRun.source == SOURCE))
-    return last is None or now - last >= timedelta(hours=settings.linkedin_every_hours)
-
-
 async def collect_linkedin(
     session: Session,
     *,
@@ -99,10 +95,20 @@ async def collect_linkedin(
     if not token:
         report.stopped_by = "not_configured"
         return report
-    if not is_due(session, now=now(), settings=settings):
+    due = due_searches(
+        session,
+        SOURCE,
+        searches(session, settings.ai_applicants()),
+        now=now(),
+        every_hours=settings.linkedin_every_hours,
+        settings=settings,
+    )
+    if not due:
         return report
     gate = BudgetGate(session, clock=now)
-    for search in searches(session, settings.ai_applicants()):
+    for item in due:
+        search = item.search
+        days = settings.search_first_posted_within_days if item.first else settings.linkedin_posted_within_days
         estimate = settings.linkedin_max_results * settings.linkedin_unit_price + settings.linkedin_run_price
         try:
             reservation = gate.reserve(
@@ -125,7 +131,7 @@ async def collect_linkedin(
             token=token,
             actor=settings.linkedin_actor,
             body={
-                "startUrls": [{"url": search.url(posted_within_days=settings.linkedin_posted_within_days)}],
+                "startUrls": [{"url": search.url(posted_within_days=days, levels=settings.linkedin_levels)}],
                 "maxResults": settings.linkedin_max_results,
                 "includeDetails": True,
                 "enrichDetails": True,
@@ -137,9 +143,10 @@ async def collect_linkedin(
         )
         report.searches += 1
         if items is None and cost_usd is None:
-            # No Apify run id: do not charge the ceiling or write a FetchRun that blocks the next day.
+            # No Apify run id: nothing is charged, and the search is tried again after search_retry_hours.
             gate.settle(reservation, consumed=False)
             report.failed.append(f"{search.role} in {search.location}: {problem or 'did not start'}")
+            failed_run(session, SOURCE, item.key, started_at=started, finished_at=now())
             persist()
             continue
         gate.settle(
@@ -148,7 +155,9 @@ async def collect_linkedin(
         )
         if items is None:
             report.failed.append(f"{search.role} in {search.location}: {problem}")
-        stored = store_items(session, items or [], started_at=started, finished_at=now(), ok=items is not None)
+        stored = store_items(
+            session, items or [], started_at=started, finished_at=now(), ok=items is not None, search_key=item.key
+        )
         report.jobs += len(items or [])
         report.postings_new += stored
         persist()
@@ -158,7 +167,13 @@ async def collect_linkedin(
 
 
 def store_items(
-    session: Session, items: list[dict[str, Any]], *, started_at: datetime, finished_at: datetime, ok: bool = True
+    session: Session,
+    items: list[dict[str, Any]],
+    *,
+    started_at: datetime,
+    finished_at: datetime,
+    ok: bool = True,
+    search_key: str | None = None,
 ) -> int:
     """Keep one search's raw results and clean them into jobs. Returns how many postings were new."""
     rows = [item for item in items if isinstance(item, dict) and _job_id(item)]
@@ -170,6 +185,7 @@ def store_items(
         request_count=1,
         started_at=started_at,
         finished_at=finished_at,
+        search_key=search_key,
     )
     session.add(run)
     session.flush()

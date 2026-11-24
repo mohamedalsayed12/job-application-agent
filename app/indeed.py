@@ -20,12 +20,12 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservation
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
+from app.fetch.due import due_searches
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest
 from app.linkedin import Search, searches
 from app.matching.titles import LEADING_ENTRY_LEVEL
@@ -47,11 +47,6 @@ class IndeedReport:
     closed: int = 0
     failed: list[str] = field(default_factory=list)
     stopped_by: str | None = None
-
-
-def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
-    last = session.scalar(select(func.max(FetchRun.started_at)).where(FetchRun.source == SOURCE))
-    return last is None or now - last >= timedelta(hours=settings.indeed_every_hours)
 
 
 def _core_role(role: str) -> str:
@@ -112,10 +107,20 @@ async def collect_indeed(
     if not token:
         report.stopped_by = "not_configured"
         return report
-    if not is_due(session, now=now(), settings=settings):
+    due = due_searches(
+        session,
+        SOURCE,
+        indeed_searches(session, settings.ai_applicants()),
+        now=now(),
+        every_hours=settings.indeed_every_hours,
+        settings=settings,
+    )
+    if not due:
         return report
     gate = BudgetGate(session, clock=now)
-    for search in indeed_searches(session, settings.ai_applicants()):
+    for item in due:
+        search = item.search
+        days = settings.search_first_posted_within_days if item.first else settings.indeed_posted_within_days
         estimate = settings.indeed_max_results * settings.indeed_unit_price + settings.indeed_run_price
         try:
             reservation = gate.reserve(
@@ -133,12 +138,14 @@ async def collect_indeed(
         persist()
         started = now()
         run = _Run(gateway, token, settings, sleep)
-        items, cost_usd = await run.search(search)
+        items, cost_usd = await run.search(search, posted_within_days=days)
         gate.settle(reservation, **_actual(reservation, cost_usd, settings))
         report.searches += 1
         if items is None:
             report.failed.append(f"{search.role} in {search.location}: {run.problem}")
-        stored = store_items(session, items or [], started_at=started, finished_at=now(), ok=items is not None)
+        stored = store_items(
+            session, items or [], started_at=started, finished_at=now(), ok=items is not None, search_key=item.key
+        )
         report.jobs += len(items or [])
         report.postings_new += stored
         persist()
@@ -154,7 +161,13 @@ def _actual(reservation: SpendReservation, cost_usd: Decimal | None, settings: S
 
 
 def store_items(
-    session: Session, items: list[dict[str, Any]], *, started_at: datetime, finished_at: datetime, ok: bool = True
+    session: Session,
+    items: list[dict[str, Any]],
+    *,
+    started_at: datetime,
+    finished_at: datetime,
+    ok: bool = True,
+    search_key: str | None = None,
 ) -> int:
     """Keep one search's raw results and clean them into jobs. Returns how many postings were new."""
     rows = [item for item in items if isinstance(item, dict) and _job_id(item)]
@@ -166,6 +179,7 @@ def store_items(
         request_count=1,
         started_at=started_at,
         finished_at=finished_at,
+        search_key=search_key,
     )
     session.add(run)
     session.flush()
@@ -207,7 +221,9 @@ class _Run:
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         self.problem = ""
 
-    async def search(self, search: Search) -> tuple[list[dict[str, Any]] | None, Decimal | None]:
+    async def search(
+        self, search: Search, *, posted_within_days: int
+    ) -> tuple[list[dict[str, Any]] | None, Decimal | None]:
         settings = self.settings
         max_charge = (settings.indeed_max_results * settings.indeed_unit_price) / settings.usd_to_gbp
         actor = quote(settings.indeed_actor.replace("/", "~"), safe="~")
@@ -219,7 +235,7 @@ class _Run:
                 "title": search.role,
                 "location": search.location,
                 "limit": settings.indeed_max_results,
-                "datePosted": str(settings.indeed_posted_within_days),
+                "datePosted": str(posted_within_days),
             },
         )
         run = (started or {}).get("data") or {}

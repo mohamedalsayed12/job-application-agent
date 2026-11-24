@@ -208,7 +208,7 @@ The rules are in `MVP.md` decision D42.
 The first time a logged-in person opens a job at `/jobs/{id}`, the app asks Claude for a short
 summary of the posting. Code rejects it if it contains a number, date or name the posting doesn't,
 and saves one per job for everyone. Summaries spend from the AI budget, so nothing is called until
-a monthly `money_cap` is set in `budget_policy` and `ANTHROPIC_API_KEY` is in `.env`. Until then,
+a monthly `money_cap` is set in `budget_policy` (`uv run python -m app.budget recommended`, or `set apify 15`) and `ANTHROPIC_API_KEY` is in `.env`. Until then,
 and whenever a summary is rejected, the page shows the description. The rules are in `MVP.md`
 decision D41.
 

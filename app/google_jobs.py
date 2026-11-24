@@ -17,12 +17,12 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
+from app.fetch.due import due_searches, failed_run
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest
 from app.indeed import indeed_searches
 from app.linkedin import Search
@@ -42,11 +42,6 @@ class GoogleJobsReport:
     stopped_by: str | None = None
 
 
-def is_due(session: Session, *, now: datetime, settings: Settings) -> bool:
-    last = session.scalar(select(func.max(FetchRun.started_at)).where(FetchRun.source == SOURCE))
-    return last is None or now - last >= timedelta(hours=settings.google_jobs_every_hours)
-
-
 async def collect_google_jobs(
     session: Session,
     *,
@@ -60,11 +55,20 @@ async def collect_google_jobs(
     if not key:
         report.stopped_by = "not_configured"
         return report
-    if not is_due(session, now=now(), settings=settings):
+    due = due_searches(
+        session,
+        SOURCE,
+        indeed_searches(session, settings.ai_applicants()),
+        now=now(),
+        every_hours=settings.google_jobs_every_hours,
+        settings=settings,
+    )
+    if not due:
         return report
     gate = BudgetGate(session, clock=now)
     estimate = settings.google_jobs_max_results * settings.google_jobs_unit_price + settings.google_jobs_run_price
-    for search in indeed_searches(session, settings.ai_applicants()):
+    for item in due:
+        search = item.search
         try:
             reservation = gate.reserve(
                 SpendEstimate(
@@ -82,14 +86,15 @@ async def collect_google_jobs(
         started = now()
         items, problem = await _search(gateway, settings=settings, api_key=key, search=search)
         if items is None:
-            # No billable body: do not charge the ceiling or write a FetchRun that blocks the next day.
+            # No billable body: nothing is charged, and the search is tried again after search_retry_hours.
             gate.settle(reservation, consumed=False)
             report.failed.append(f"{search.role} in {search.location}: {problem}")
+            failed_run(session, SOURCE, item.key, started_at=started, finished_at=now())
             persist()
             continue
         gate.settle(reservation, actual_cost=reservation.estimated_cost)
         report.searches += 1
-        stored = store_items(session, items, started_at=started, finished_at=now())
+        stored = store_items(session, items, started_at=started, finished_at=now(), search_key=item.key)
         report.jobs += len(items)
         report.postings_new += stored
         persist()
@@ -144,7 +149,13 @@ async def _search(
 
 
 def store_items(
-    session: Session, items: list[dict[str, Any]], *, started_at: datetime, finished_at: datetime, ok: bool = True
+    session: Session,
+    items: list[dict[str, Any]],
+    *,
+    started_at: datetime,
+    finished_at: datetime,
+    ok: bool = True,
+    search_key: str | None = None,
 ) -> int:
     """Keep one search's raw results and clean them into jobs. Returns how many postings were new."""
     rows = [item for item in items if isinstance(item, dict) and _job_id(item)]
@@ -156,6 +167,7 @@ def store_items(
         request_count=1,
         started_at=started_at,
         finished_at=finished_at,
+        search_key=search_key,
     )
     session.add(run)
     session.flush()

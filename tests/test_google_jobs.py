@@ -163,7 +163,7 @@ async def test_a_failed_search_is_not_charged_and_does_not_block_the_day(session
     report = await _collect(session, _SerpApi([], status=500), applicant_id=applicant_id)
 
     assert report.failed == [f"{search.role} in Manchester: SerpAPI answered 500" for search in _ENTRY_BACKEND]
-    assert list(session.scalars(select(FetchRun))) == []
+    assert {run.outcome for run in session.scalars(select(FetchRun))} == {FetchOutcome.failed}
     # Reservation rows stay for the audit trail, but the actual cost is zero so the cap is free.
     assert {row.actual_cost for row in session.scalars(select(SpendLedger))} == {Decimal("0")}
 
@@ -178,7 +178,7 @@ async def test_an_api_error_message_is_recorded_without_a_fetch_run(session: Ses
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     report = await _collect(session, _SerpApi([], error="Invalid API key."), applicant_id=applicant_id)
     assert report.failed == [f"{search.role} in Manchester: Invalid API key." for search in _ENTRY_BACKEND]
-    assert list(session.scalars(select(FetchRun))) == []
+    assert {(run.outcome, run.jobs_returned) for run in session.scalars(select(FetchRun))} == {(FetchOutcome.failed, 0)}
 
 
 async def test_empty_results_are_a_successful_empty_run(session: Session) -> None:

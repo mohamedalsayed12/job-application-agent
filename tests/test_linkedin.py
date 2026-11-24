@@ -78,8 +78,10 @@ async def test_a_search_starts_a_run_waits_for_it_and_stores_what_it_found(sessi
     assert started.headers["Authorization"] == "Bearer test-token"
     assert "test-token" not in str(started.url)
     body = apify.bodies()[0]
-    assert body["maxResults"] == 50
-    assert "f_E=2" in body["startUrls"][0]["url"]
+    assert body["maxResults"] == 100
+    # D72: entry level and associate, and two weeks back the first time a search runs.
+    assert "f_E=2%2C3" in body["startUrls"][0]["url"]
+    assert f"f_TPR=r{14 * 86400}" in body["startUrls"][0]["url"]
     assert apify.checks == 2
     assert _job(session, 2).title == "Python Developer"
     spent = session.scalars(select(SpendLedger)).one()
@@ -95,8 +97,28 @@ async def test_searches_run_once_a_day(session: Session) -> None:
     report = await _collect(session, later, at=DAY_1 + timedelta(hours=23))
     assert (report.searches, later.requests) == (0, [])
 
-    report = await _collect(session, _Apify([_li(2)]), at=DAY_1 + timedelta(hours=24))
+    again = _Apify([_li(2)])
+    report = await _collect(session, again, at=DAY_1 + timedelta(hours=24))
     assert report.searches == 1
+    # A repeat search only needs the last few days: the first one already went two weeks back.
+    assert f"f_TPR=r{3 * 86400}" in again.bodies()[0]["startUrls"][0]["url"]
+
+
+async def test_d72_a_title_added_today_is_searched_on_the_next_cycle_without_repeating_the_others(
+    session: Session,
+) -> None:
+    _policy(session)
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    await _collect(session, _Apify([_li(1)]))
+
+    _applicant(session, roles=["Backend Developer", "Data Analyst"], locations=["Manchester"])
+    later = _Apify([_li(2)])
+    report = await _collect(session, later, at=DAY_1 + timedelta(minutes=5))
+
+    assert report.searches == 1
+    assert "keywords=Data%20Analyst" in later.bodies()[0]["startUrls"][0]["url"]
+    keys = {run.search_key for run in session.scalars(select(FetchRun))}
+    assert keys == {"backend developer|manchester", "data analyst|manchester"}
 
 
 async def test_without_an_apify_token_nothing_is_searched(session: Session) -> None:
@@ -125,14 +147,20 @@ async def test_a_failed_run_is_recorded_and_its_cost_still_counted(session: Sess
     assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal("0.0080")
 
 
-async def test_a_start_that_never_gets_a_run_id_is_free_and_does_not_block_tomorrow(session: Session) -> None:
+async def test_a_start_that_never_gets_a_run_id_is_free_and_is_tried_again_after_an_hour(session: Session) -> None:
     _policy(session)
     _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     report = await _collect(session, _Apify([_li(1)], start=False))
 
     assert report.failed == ["Backend Developer in Manchester: did not start"]
-    assert list(session.scalars(select(FetchRun))) == []
+    assert [run.outcome for run in session.scalars(select(FetchRun))] == [FetchOutcome.failed]
     assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal("0")
+
+    # D72: not every cycle, so a broken token is not hammered, and not a whole day later either.
+    soon = _Apify([_li(1)])
+    assert (await _collect(session, soon, at=DAY_1 + timedelta(minutes=30))).searches == 0
+    assert soon.requests == []
+    assert (await _collect(session, _Apify([_li(1)]), at=DAY_1 + timedelta(hours=1))).searches == 1
 
 
 async def test_a_run_that_does_not_finish_in_time_is_stopped(session: Session) -> None:

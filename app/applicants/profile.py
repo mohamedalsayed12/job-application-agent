@@ -34,7 +34,7 @@ EXPERIENCE_LABELS = {
 MIN_TRAVEL_MILES = 1
 MAX_TRAVEL_MILES = 500
 # Roles and locations become search queries, so these also bound what one profile can ask for.
-MAX_ROLES = 10
+MAX_ROLES = 15
 MAX_LOCATIONS = 10
 MAX_SKILLS = 50
 MAX_CERTIFICATIONS = 20

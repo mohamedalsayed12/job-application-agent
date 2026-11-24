@@ -95,6 +95,7 @@ class SpendKind(StrEnum):
     ai_job_judge = "ai_job_judge"
     ai_fit_report = "ai_fit_report"
     ai_cv_tailor = "ai_cv_tailor"
+    ai_related_titles = "ai_related_titles"
     linkedin_jobs = "linkedin_jobs"
     indeed_jobs = "indeed_jobs"
     google_jobs = "google_jobs"
@@ -476,6 +477,20 @@ class FetchRun(_UuidPk, Base):
     request_count: Mapped[int] = mapped_column(Integer())
     started_at: Mapped[datetime] = mapped_column(TZ)
     finished_at: Mapped[datetime] = mapped_column(TZ)
+    # D72: which search this run was ("role|location", lower case), so each search is due on its own.
+    search_key: Mapped[str | None] = mapped_column(Text())
+
+
+class RelatedTitle(Base):
+    """D72: other job titles employers use for one title, asked once and shared by everyone."""
+
+    __tablename__ = "related_title"
+
+    title_key: Mapped[str] = mapped_column(Text(), primary_key=True)
+    titles: Mapped[list[str]] = mapped_column(ARRAY(Text()))
+    model: Mapped[str] = mapped_column(Text())
+    prompt_version: Mapped[str] = mapped_column(Text())
+    created_at: Mapped[datetime] = _created()
 
 
 class RawPayload(_UuidPk, Base):

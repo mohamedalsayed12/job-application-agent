@@ -50,10 +50,16 @@ class Settings(BaseSettings):
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
     apify_api_token: str = ""
     linkedin_actor: str = "blackfalcondata/linkedin-job-scraper"
-    linkedin_max_results: int = 50
+    linkedin_max_results: int = 100
     linkedin_every_hours: int = 24
     # Daily searches cover the last 3 days, so a missed day or two is caught up.
     linkedin_posted_within_days: int = 3
+    # D72: LinkedIn experience levels searched (2 entry level, 3 associate). The AI judge still decides the level.
+    linkedin_levels: str = "2,3"
+    # D72: the first time a role and location is searched, on any source, it looks this far back.
+    search_first_posted_within_days: int = 14
+    # D72: a search that failed is tried again after this long, not after a whole day.
+    search_retry_hours: int = 1
     linkedin_stale_days: int = 14
     linkedin_wait_minutes: int = 15
     # The scraper charges $0.00027 a job and $0.0005 a run, and Apify adds compute; these ceilings cover all three.
@@ -140,6 +146,9 @@ class Settings(BaseSettings):
     ai_summary_unit_price: Decimal = Decimal("0.001")
     # D43: about 6k tokens in and 0.5k out on Haiku 5.5 is under £0.002; this is a ceiling.
     ai_cv_unit_price: Decimal = Decimal("0.005")
+    # D72: one job title in, up to 9 related titles out; a few hundred tokens on Haiku.
+    ai_related_titles_unit_price: Decimal = Decimal("0.001")
+    ai_related_titles_max_output_tokens: int = 300
     # D51: about 3.5k tokens in and 0.2k out on Haiku 5.5, ~$0.00045 at the prices above; this is a ceiling.
     ai_judge_unit_price: Decimal = Decimal("0.0005")
     # D52: about 6k tokens in (advert and CV) and 1.5k out, ~$0.0014 at the prices above; this is a ceiling.
@@ -207,6 +216,7 @@ class Settings(BaseSettings):
         "interview_tailor_unit_price",
         "ai_summary_unit_price",
         "ai_cv_unit_price",
+        "ai_related_titles_unit_price",
         "ai_judge_unit_price",
         "ai_report_unit_price",
         "ai_tailor_unit_price",

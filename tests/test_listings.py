@@ -96,14 +96,15 @@ async def test_saving_a_profile_matches_at_once_and_lists_the_best_first(
 ) -> None:
     await _jobs(session)
     await _register_with_profile(client)
-    page = (await client.get("/listings", params={"sort": "score"})).text
+    page = (await client.get("/listings", params={"sort": "score", "everywhere": "0"})).text
     assert sorted(_titles(page)) == ["Graduate Backend Developer", "Junior Backend Developer"]
     # D53: only the AI's score out of 5 is shown; jobs it has not scored yet say so.
     assert "/100" not in page
     assert page.count("Not scored yet") == 2
     assert "Sales Manager" not in page
 
-    everywhere = _titles((await client.get("/listings", params={"everywhere": "1", "sort": "score"})).text)
+    # D72: with no location filter chosen, every match shows, the ones outside the person's locations last.
+    everywhere = _titles((await client.get("/listings", params={"sort": "score"})).text)
     assert sorted(everywhere[:2]) == ["Graduate Backend Developer", "Junior Backend Developer"]
     assert everywhere[2:] == ["Backend Developer, Early Careers"]
 
@@ -241,7 +242,7 @@ async def test_d48_a_search_puts_the_jobs_closest_in_meaning_first(client: httpx
         assert f'value="{words}"' in page
         assert "Closest in meaning to" in page
     # A search orders the person's matches; it never adds a job the filters leave out.
-    assert "Backend Developer, Early Careers" not in _titles((await client.get("/listings", params={"q": "games"})).text)
+    assert "Backend Developer, Early Careers" not in _titles((await client.get("/listings", params={"q": "games", "everywhere": "0"})).text)
 
 
 async def test_d48_a_vector_is_made_once_and_again_when_the_job_text_changes(session: Session) -> None:

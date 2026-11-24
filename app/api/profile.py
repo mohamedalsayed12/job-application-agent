@@ -31,6 +31,8 @@ from app.applicants.cv_read import CvRead, CvSuggestions, ReadOutcome, read_cv
 from app.applicants.profile import (
     EXPERIENCE_LABELS,
     MAX_ITEM_LENGTH,
+    MAX_LOCATIONS,
+    MAX_ROLES,
     CertificationInput,
     load_profile,
     parse_certification,
@@ -42,6 +44,11 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.matching.match import match_all
+from app.matching.related_titles import (
+    MAX_TITLES_PER_REQUEST,
+    expand_titles,
+    related_to,
+)
 from app.models import Applicant, CvFile, CvFileType
 from app.skills.taxonomy import suggest_skills
 
@@ -73,6 +80,97 @@ document.getElementById("skill-add").addEventListener("click", () => {
   search.focus();
 });
 </script>"""
+
+# D72: job titles and locations as pick-lists. Without scripts the plain boxes stay and work as before.
+CHIP_PICKER_SCRIPT = """<script>
+function chipPicker(box, onChange) {
+  const field = box.querySelector("textarea");
+  const chips = box.querySelector(".chips");
+  const input = box.querySelector(".chip-input");
+  const limit = Number(box.dataset.limit || 15);
+  const items = () => field.value.split("\\n").map((line) => line.trim()).filter(Boolean);
+  const has = (name) => items().some((item) => item.toLowerCase() === name.toLowerCase());
+  function draw() {
+    chips.replaceChildren(...items().map((name) => {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.setAttribute("aria-label", "Remove " + name);
+      remove.textContent = "\\u00d7";
+      remove.addEventListener("click", () => {
+        field.value = items().filter((item) => item !== name).join("\\n");
+        draw();
+        if (onChange) onChange();
+      });
+      chip.append(remove);
+      return chip;
+    }));
+  }
+  function add(name) {
+    name = name.trim();
+    if (!name || has(name) || items().length >= limit) return false;
+    field.value = [...items(), name].join("\\n");
+    draw();
+    if (onChange) onChange();
+    return true;
+  }
+  function addTyped() {
+    add(input.value);
+    input.value = "";
+    input.focus();
+  }
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); addTyped(); }
+  });
+  // Something typed but not added still counts when the form is sent.
+  input.form.addEventListener("submit", () => input.value.split(",").forEach(add));
+  box.querySelector(".chip-add").addEventListener("click", addTyped);
+  field.hidden = true;
+  field.required = false;
+  box.querySelector(".chip-entry").hidden = false;
+  draw();
+  return { add, has, items };
+}
+document.querySelectorAll(".chip-picker:not(#title-picker)").forEach((box) => chipPicker(box));
+const titleBox = document.getElementById("title-picker");
+if (titleBox) {
+  const offers = document.getElementById("title-offers");
+  const options = document.getElementById("title-options");
+  let offered = [];
+  let timer = null;
+  function drawOffers() {
+    const open = offered.filter((name) => !titles.has(name));
+    options.replaceChildren(...open.map((name) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chip offer";
+      button.textContent = "+ " + name;
+      button.addEventListener("click", () => titles.add(name));
+      return button;
+    }));
+    offers.hidden = open.length === 0;
+  }
+  async function fetchOffers() {
+    const body = new FormData();
+    body.append("csrf_token", titleBox.closest("form").querySelector("[name=csrf_token]").value);
+    titles.items().forEach((name) => body.append("title", name));
+    try {
+      const response = await fetch("/profile/titles/related", { method: "POST", body });
+      if (response.ok) offered = await response.json();
+    } catch (_) { /* suggestions are optional */ }
+    drawOffers();
+  }
+  const titles = chipPicker(titleBox, () => {
+    drawOffers();
+    clearTimeout(timer);
+    timer = setTimeout(fetchOffers, 600);
+  });
+  if (titles.items().length) fetchOffers();
+}
+</script>"""
+SKILL_SEARCH_SCRIPT += CHIP_PICKER_SCRIPT
 
 
 class ProfileFields:
@@ -200,6 +298,15 @@ PROFILE_STYLE = """<style>
 .skill-find label { flex: 1; }
 .certs td { padding: 0.3rem; }
 .certs input, .certs select { margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.4rem 0; }
+.chip { display: inline-flex; align-items: center; gap: 0.35rem; background: var(--primary-soft); color: var(--text);
+  border: 1px solid transparent; border-radius: 999px; padding: 0.25rem 0.7rem; font-size: 0.9rem; }
+.chip button { all: unset; cursor: pointer; color: var(--muted); font-size: 1.05rem; line-height: 1; padding: 0 0.15rem; }
+.chip button:hover, .chip button:focus-visible { color: var(--text); }
+button.chip.offer { background: var(--card); border: 1px dashed #c7ccd4; cursor: pointer; font: inherit; font-size: 0.9rem; }
+button.chip.offer:hover, button.chip.offer:focus-visible { border-color: var(--primary); color: var(--primary); }
+.chip-entry { display: flex; gap: 0.5rem; align-items: end; }
+.chip-entry input { flex: 1; margin: 0; }
 .form-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.25rem; }
 </style>"""
 
@@ -216,12 +323,28 @@ def preference_sections(fields: ProfileFields, *, first_number: int) -> str:
     return f"""
   <section class="card">
     <h2>{first_number}. What you're looking for</h2>
-    <label>Target roles <span class="hint">one per line</span>
-      <textarea name="target_roles" rows="3" required placeholder="Junior Software Engineer">{html.escape(fields.target_roles)}</textarea>
-    </label>
-    <label>Locations <span class="hint">one per line</span>
-      <textarea name="locations" rows="2" required placeholder="Manchester">{html.escape(fields.locations)}</textarea>
-    </label>
+    <div class="chip-picker" id="title-picker" data-limit="{MAX_ROLES}">
+      <label for="target_roles">Job titles you want <span class="hint">add up to {MAX_ROLES}; we search for every one</span></label>
+      <div class="chips" aria-live="polite"></div>
+      <div class="chip-entry" hidden>
+        <input class="chip-input" aria-label="Add a job title" autocomplete="off" placeholder="Type a title, then press Enter"/>
+        <button type="button" class="chip-add">Add</button>
+      </div>
+      <textarea id="target_roles" name="target_roles" rows="3" required placeholder="Junior Software Engineer">{html.escape(fields.target_roles)}</textarea>
+      <div id="title-offers" hidden>
+        <p class="hint">Employers also use these titles for the same work. Pick any you want searched too:</p>
+        <div class="chips" id="title-options"></div>
+      </div>
+    </div>
+    <div class="chip-picker" data-limit="{MAX_LOCATIONS}">
+      <label for="locations">Locations <span class="hint">towns, cities, a country or Remote</span></label>
+      <div class="chips" aria-live="polite"></div>
+      <div class="chip-entry" hidden>
+        <input class="chip-input" aria-label="Add a location" autocomplete="off" placeholder="Type a place, then press Enter"/>
+        <button type="button" class="chip-add">Add</button>
+      </div>
+      <textarea id="locations" name="locations" rows="2" required placeholder="Manchester">{html.escape(fields.locations)}</textarea>
+    </div>
     <div class="row">
       <label>Experience level
         <select name="experience_level" required>{levels}</select>
@@ -341,6 +464,21 @@ def skill_suggestions(
     db: Session = Depends(get_db),
 ) -> list[str]:
     return suggest_skills(db, q)
+
+
+@router.post("/titles/related", dependencies=_CSRF)
+async def related_titles(
+    request: Request,
+    _applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
+) -> list[str]:
+    """Titles employers use for the same work as the ones sent, for the picker's tick-boxes (D72)."""
+    form = await request.form()
+    titles = [text for value in form.getlist("title") if isinstance(value, str) and (text := value.strip())]
+    titles = [title for title in titles if len(title) <= MAX_ITEM_LENGTH][:MAX_TITLES_PER_REQUEST]
+    await expand_titles(db, titles, gateway=gateway, settings=get_settings(), persist=db.commit)
+    return related_to(db, titles)
 
 
 @router.get("", response_class=HTMLResponse)

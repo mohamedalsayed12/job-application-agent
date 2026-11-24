@@ -124,7 +124,8 @@ async def test_a_search_starts_a_run_waits_for_it_and_stores_what_it_found(sessi
         "title": "Graduate Backend Developer",
         "location": "Manchester",
         "limit": 50,
-        "datePosted": "3",
+        # D72: two weeks back the first time a search runs, then the last few days.
+        "datePosted": "14",
     }
     assert _job(session, 2).title == "Python Developer"
     spent = list(session.scalars(select(SpendLedger)))

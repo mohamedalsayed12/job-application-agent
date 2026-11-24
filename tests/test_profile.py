@@ -183,7 +183,7 @@ async def test_t30_salary_and_travel_are_optional(client: httpx.AsyncClient, ses
         ({"salary_amount": "-1"}, "salary amount"),
         ({"cert_name": ["", "x"], "cert_issuer": ["Someone", ""]}, "needs a name"),
         ({"cert_expiry": ["soon", "", ""]}, "valid date"),
-        ({"target_roles": "\n".join(f"Role {n}" for n in range(11))}, "at most 10"),
+        ({"target_roles": "\n".join(f"Role {n}" for n in range(16))}, "at most 15"),
         ({"locations": "\n".join(f"Town {n}" for n in range(11))}, "at most 10"),
         ({"skills": "\n".join(f"Skill {n}" for n in range(51))}, "at most 50"),
         ({"target_roles": "x" * 201}, "under 200"),

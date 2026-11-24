@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -179,3 +179,13 @@ def test_every_spend_kind_can_be_recorded_after_all_migrations(session: Session,
         )
     )
     session.flush()
+
+
+def test_d72_the_newest_cap_set_from_the_command_line_is_the_one_shown(session: Session) -> None:
+    from app.budget.__main__ import caps, set_cap
+
+    now = datetime.now(UTC)
+    set_cap(session, "apify", Decimal("5"), now=now - timedelta(days=1))
+    set_cap(session, "apify", Decimal("15"), now=now)
+
+    assert caps(session, now=now) == [("apify", Decimal("15"), Decimal("0"))]

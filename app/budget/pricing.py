@@ -18,6 +18,7 @@ _PRICE = {
     SpendKind.ai_interview_plan: "interview_plan_unit_price",
     SpendKind.ai_interview_tailor: "interview_tailor_unit_price",
     SpendKind.ai_cv_read: "ai_cv_unit_price",
+    SpendKind.ai_related_titles: "ai_related_titles_unit_price",
     SpendKind.ai_job_judge: "ai_judge_unit_price",
     SpendKind.ai_fit_report: "ai_report_unit_price",
     SpendKind.ai_cv_tailor: "ai_tailor_unit_price",
