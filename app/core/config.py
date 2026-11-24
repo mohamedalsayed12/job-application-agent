@@ -160,6 +160,14 @@ class Settings(BaseSettings):
     ai_tailor_cv_chars: int = 12000
     ai_tailor_per_cycle: int = 5
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _psycopg_url(cls, value: object) -> object:
+        # Hosts such as Railway hand out postgresql://; SQLAlchemy needs the psycopg driver name.
+        if isinstance(value, str) and value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value.removeprefix("postgresql://")
+        return value
+
     @field_validator(
         "linkedin_unit_price",
         "linkedin_run_price",
