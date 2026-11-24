@@ -208,12 +208,13 @@ async def _process_one(
         persist=persist,
         now=now(),
     )
-    if analysed.stopped_by and analysed.labelled == 0 and analysed.skipped_suspicious == 0:
-        if _halt(request, analysed.stopped_by, persist, report):
-            return
-    elif analysed.stopped_by in {"budget", "daily token cap", "not_configured"}:
-        if _halt(request, analysed.stopped_by, persist, report):
-            return
+    nothing_labelled = analysed.labelled == 0 and analysed.skipped_suspicious == 0
+    if (
+        analysed.stopped_by
+        and (nothing_labelled or analysed.stopped_by in {"budget", "daily token cap", "not_configured"})
+        and _halt(request, analysed.stopped_by, persist, report)
+    ):
+        return
 
     planned = await write_pack(
         session,

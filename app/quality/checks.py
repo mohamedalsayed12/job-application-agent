@@ -130,10 +130,7 @@ def check_recent(job: JobFacts, now: datetime) -> NotRecent | None:
 
 
 def check_real(job: JobFacts) -> tuple[Confidence, tuple[str, ...]]:
-    """The confidence is the lowest any signal allows. Companies House is not connected yet.
-
-    LinkedIn checks who posts, but anyone can post there, so a job starts at medium.
-    """
+    """The confidence is the lowest any signal allows. LinkedIn starts at medium: anyone can post there."""
     signals = [(Confidence.medium, f"listed on {job.source}")]
     if _NOT_A_ROLE.search(job.title):
         signals.append((Confidence.medium, "a general sign-up, not a specific role"))

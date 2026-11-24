@@ -22,9 +22,16 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallFailure, AiCallResponse, send_anthropic_request
+from app.ai.anthropic import (
+    AiCallFailure,
+    AiCallResponse,
+    anthropic_api_key,
+    messages_body,
+    send_anthropic_request,
+)
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
+from app.budget.tokens import tokens_used_today
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.models import (
@@ -92,26 +99,15 @@ def estimated_tokens(posting: str, settings: Settings) -> int:
     return len(posting) // _CHARS_PER_TOKEN + _PROMPT_OVERHEAD_TOKENS + settings.ai_summary_max_output_tokens
 
 
-def tokens_used_today(session: Session, now: datetime) -> int:
-    day_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
-    used = session.scalar(
-        select(func.coalesce(func.sum(JobSummary.prompt_tokens + JobSummary.completion_tokens), 0)).where(
-            JobSummary.updated_at >= day_start
-        )
-    )
-    return int(used or 0)
-
-
 def build_body(posting: str, *, model: str, max_tokens: int) -> dict:
     data = json.dumps({"job_posting": posting}, ensure_ascii=False)
-    return {
-        "model": model,
-        "max_tokens": max_tokens,
-        "thinking": {"type": "disabled"},
-        "system": SYSTEM_INSTRUCTIONS,
-        "messages": [{"role": "user", "content": f"<JOB_POSTING_DATA>\n{data}\n</JOB_POSTING_DATA>"}],
-        "output_config": {"format": {"type": "json_schema", "schema": SUMMARY_SCHEMA}},
-    }
+    return messages_body(
+        system=SYSTEM_INSTRUCTIONS,
+        user=f"<JOB_POSTING_DATA>\n{data}\n</JOB_POSTING_DATA>",
+        schema=SUMMARY_SCHEMA,
+        model=model,
+        max_tokens=max_tokens,
+    )
 
 
 async def summary_for_view(
@@ -141,16 +137,16 @@ async def summary_for_view(
     tokens = estimated_tokens(posting, settings)
     if tokens > settings.ai_summary_per_item_token_cap:
         return Shown(None, Reason.token_cap)
-    if tokens_used_today(session, now) + tokens > settings.ai_summary_daily_token_cap:
+    if tokens_used_today(session, JobSummary, now) + tokens > settings.ai_summary_daily_token_cap:
         return Shown(None, Reason.token_cap)
 
-    model = settings.resolved_ai_summary_model()
+    model = settings.resolved_model(settings.ai_summary_model)
     row = _claim(session, job, row, digest=digest, model=model, now=now)
     if row is None:
         return Shown(None, Reason.in_progress)
 
     gate = BudgetGate(session, clock=lambda: now)
-    cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_summary, units=Decimal(1), settings=settings)
+    cost = estimate_cost(kind=SpendKind.ai_summary, units=Decimal(1), settings=settings)
     try:
         reservation = gate.reserve(
             SpendEstimate(
@@ -210,7 +206,7 @@ async def summarise_matches(
     Stops at the money cap or the day's token cap. The next run carries on from there.
     """
     report = BatchReport()
-    if settings.ai_provider.strip().lower() != "anthropic" or not settings.anthropic_api_key.strip():
+    if anthropic_api_key(settings) is None:
         report.stopped_by = "not_configured"
         return report
     done = select(JobSummary.job_id).where(
@@ -272,10 +268,8 @@ def _pending(row: JobSummary, *, digest: str, model: str, now: datetime) -> None
 async def _call(
     gateway: FetchGateway, posting: str, *, settings: Settings, model: str
 ) -> AiCallResponse | AiCallFailure:
-    if settings.ai_provider.strip().lower() != "anthropic":
-        return AiCallFailure(reason="summaries_need_anthropic")
-    api_key = settings.anthropic_api_key.strip()
-    if not api_key:
-        return AiCallFailure(reason="anthropic_missing_api_key")
+    api_key = anthropic_api_key(settings)
+    if api_key is None:
+        return AiCallFailure(reason="not_configured")
     body = build_body(posting, model=model, max_tokens=settings.ai_summary_max_output_tokens)
     return await send_anthropic_request(gateway, body, api_key=api_key, fallback_model=model)

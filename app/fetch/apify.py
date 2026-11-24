@@ -45,7 +45,7 @@ async def run_actor(
         return None, None, started
     run = (started or {}).get("data") or {}
     if not run.get("id"):
-        return None, None, "Apify start failed"
+        return None, None, "did not start"
     deadline = wait_minutes * 60
     waited = 0
     while run.get("status") not in _FINISHED and waited < deadline:

@@ -135,11 +135,17 @@ async def collect_linkedin(
             wait_minutes=settings.linkedin_wait_minutes,
             sleep=sleep,
         )
+        report.searches += 1
+        if items is None and cost_usd is None:
+            # No Apify run id: do not charge the ceiling or write a FetchRun that blocks the next day.
+            gate.settle(reservation, consumed=False)
+            report.failed.append(f"{search.role} in {search.location}: {problem or 'did not start'}")
+            persist()
+            continue
         gate.settle(
             reservation,
             actual_cost=settle_cost(reservation.estimated_cost, cost_usd, settings.usd_to_gbp),
         )
-        report.searches += 1
         if items is None:
             report.failed.append(f"{search.role} in {search.location}: {problem}")
         stored = store_items(session, items or [], started_at=started, finished_at=now(), ok=items is not None)

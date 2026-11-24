@@ -10,11 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.listings import load_listings, render_listing
-from app.applicants.cv import store_cv
+from app.applicants.cv import delete_cv, store_cv
 from app.fetch.gateway import FetchGateway
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
-from app.matching.report import write_reports
+from app.matching.report import Reader, checked_report, write_reports
 from app.models import JobReport, SpendLedger
 from tests.jobs import _public_resolve
 from tests.test_cv_read import _docx
@@ -193,3 +193,31 @@ async def test_d52_a_report_is_reused_until_the_cv_changes(session: Session) -> 
     assert len(ai.reported) == 2
     assert "Django" in ai.reported[1]
     assert _job(session, 1).id in _matches(session, applicant)
+
+
+async def test_d52_a_stale_report_stops_hiding_jobs_as_soon_as_the_cv_changes(session: Session) -> None:
+    """Matching ignores a report whose input_hash no longer matches, even before a rewrite."""
+    applicant = await _person_with_a_cv(session)
+    await _run(session, _Ai(report=_report(score=2.6, verdict="Skip")))
+    assert _matches(session, applicant) == {}
+
+    delete_cv(session, applicant)
+    match_all(session, now=SOON)
+
+    assert _job(session, 1).id in _matches(session, applicant)
+    assert session.scalars(select(JobReport)).all() == []
+
+
+def test_d52_checked_report_drops_pay_the_advert_never_stated() -> None:
+    import uuid
+
+    reader = Reader(applicant_id=uuid.uuid4(), profile="Target roles: Backend", cv="Python")
+    posting = "Title: Backend Developer\nEmployer: Acme\n\nBuild APIs in Python."
+    report = checked_report(
+        _report(advertised_pay="£55,000 a year", market_estimate="around £50k locally"),
+        posting=posting,
+        reader=reader,
+    )
+    assert report is not None
+    assert report["advertised_pay"] == "not stated"
+    assert report["market_estimate"] == "around £50k locally"

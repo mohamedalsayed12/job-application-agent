@@ -8,10 +8,10 @@ import zipfile
 import zlib
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import CvFile, CvFileType
+from app.models import CvFile, CvFileType, JobReport
 
 MAX_CV_BYTES = 5 * 1024 * 1024
 # Room for the form's token and part headers around a file of the largest size.
@@ -98,4 +98,6 @@ def delete_cv(session: Session, applicant_id: uuid.UUID) -> None:
     row = cv_for(session, applicant_id)
     if row is not None:
         session.delete(row)
-        session.flush()
+    # Fit reports hash the CV text; drop them so matching does not keep quoting a deleted file.
+    session.execute(delete(JobReport).where(JobReport.applicant_id == applicant_id))
+    session.flush()

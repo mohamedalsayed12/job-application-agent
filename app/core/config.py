@@ -12,8 +12,6 @@ MIN_SESSION_SECRET_LENGTH = 32
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment / .env."""
-
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -206,11 +204,8 @@ class Settings(BaseSettings):
             problems.append("PUBLIC_BASE_URL must use https:// when SESSION_COOKIE_SECURE is true")
         return problems
 
-    def resolved_ai_summary_model(self) -> str:
-        return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
-
-    def resolved_ai_judge_model(self) -> str:
-        return self.ai_judge_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+    def resolved_model(self, override: str) -> str:
+        return override.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def ai_applicants(self) -> set[uuid.UUID] | None:
         """The people the AI works for, or None for everyone."""
@@ -218,25 +213,25 @@ class Settings(BaseSettings):
         return ids or None
 
     def resolved_ai_report_model(self) -> str:
-        return self.ai_report_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+        return self.resolved_model(self.ai_report_model)
 
     def resolved_ai_cv_model(self) -> str:
-        return self.ai_cv_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+        return self.resolved_model(self.ai_cv_model)
 
     def resolved_ai_tailor_model(self) -> str:
-        return self.ai_tailor_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+        return self.resolved_model(self.ai_tailor_model)
 
     def resolved_ai_outreach_model(self) -> str:
-        return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+        return self.resolved_model(self.ai_summary_model)
 
     def gmail_seal_secret(self) -> str:
         return (self.gmail_token_key or self.session_secret).strip()
 
     def resolved_interview_analyse_model(self) -> str:
-        return self.interview_analyse_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+        return self.resolved_model(self.interview_analyse_model)
 
     def resolved_interview_plan_model(self) -> str:
-        return self.interview_plan_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+        return self.resolved_model(self.interview_plan_model)
 
     def api_allowlist_hosts(self) -> frozenset[str]:
         return frozenset(

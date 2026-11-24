@@ -11,10 +11,22 @@ UK_PLACE = re.compile(
     r"oxford|edinburgh|glasgow|cardiff|belfast|newcastle|nottingham|reading|hatfield)\b",
     re.IGNORECASE,
 )
+_TRAINING = (
+    r"intern|interns|internship|internships|placement|placements|"
+    r"apprentice|apprentices|apprenticeship|apprenticeships"
+)
+TRAINING_TITLE = re.compile(rf"\b({_TRAINING})\b", re.IGNORECASE)
+INTERNSHIP_TITLE = re.compile(
+    r"\b(intern|interns|internship|internships|placement|placements)\b",
+    re.IGNORECASE,
+)
+APPRENTICE_TITLE = re.compile(
+    r"\b(apprentice|apprentices|apprenticeship|apprenticeships)\b",
+    re.IGNORECASE,
+)
 NOT_ENTRY_TITLE = re.compile(
-    r"\b(senior|snr|sr\.?|staff|principal|lead|manager|head|director|architect|vp|"
-    r"intermediate|mid|experienced|ii|iii|iv|"
-    r"intern|interns|internship|placement|apprentice|apprenticeship)\b",
+    rf"\b(senior|snr|sr\.?|staff|principal|lead|manager|head|director|architect|vp|"
+    rf"intermediate|mid|experienced|ii|iii|iv|{_TRAINING})\b",
     re.IGNORECASE,
 )
 # Shared entry-level wording. Bare "entry" is strip-only: matching must not treat

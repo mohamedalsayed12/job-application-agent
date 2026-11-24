@@ -125,6 +125,16 @@ async def test_a_failed_run_is_recorded_and_its_cost_still_counted(session: Sess
     assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal("0.0080")
 
 
+async def test_a_start_that_never_gets_a_run_id_is_free_and_does_not_block_tomorrow(session: Session) -> None:
+    _policy(session)
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    report = await _collect(session, _Apify([_li(1)], start=False))
+
+    assert report.failed == ["Backend Developer in Manchester: did not start"]
+    assert list(session.scalars(select(FetchRun))) == []
+    assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal("0")
+
+
 async def test_a_run_that_does_not_finish_in_time_is_stopped(session: Session) -> None:
     _policy(session)
     _applicant(session, roles=["Backend Developer"], locations=["Manchester"])

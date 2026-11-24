@@ -23,7 +23,7 @@ from enum import StrEnum
 
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallFailure, send_anthropic_request
+from app.ai.anthropic import AiCallFailure, anthropic_api_key, messages_body, send_anthropic_request
 from app.applicants.profile import (
     MAX_CERTIFICATIONS,
     MAX_DEGREES,
@@ -280,14 +280,13 @@ def _words_in_cv(value: str, text: str) -> bool:
 
 def build_body(text: str, *, model: str, max_tokens: int) -> dict:
     data = json.dumps({"cv": text}, ensure_ascii=False)
-    return {
-        "model": model,
-        "max_tokens": max_tokens,
-        "thinking": {"type": "disabled"},
-        "system": SYSTEM_INSTRUCTIONS,
-        "messages": [{"role": "user", "content": f"<CV_DATA>\n{data}\n</CV_DATA>"}],
-        "output_config": {"format": {"type": "json_schema", "schema": CV_SCHEMA}},
-    }
+    return messages_body(
+        system=SYSTEM_INSTRUCTIONS,
+        user=f"<CV_DATA>\n{data}\n</CV_DATA>",
+        schema=CV_SCHEMA,
+        model=model,
+        max_tokens=max_tokens,
+    )
 
 
 async def read_cv(
@@ -301,8 +300,8 @@ async def read_cv(
     now: datetime | None = None,
 ) -> CvRead:
     now = now or datetime.now(UTC)
-    api_key = settings.anthropic_api_key.strip()
-    if settings.ai_provider.strip().lower() != "anthropic" or not api_key:
+    api_key = anthropic_api_key(settings)
+    if api_key is None:
         return CvRead(ReadOutcome.not_configured)
     try:
         text = cv_text(content, file_type, max_chars=settings.ai_cv_max_chars)
@@ -311,7 +310,7 @@ async def read_cv(
         return CvRead(ReadOutcome.unreadable)
 
     gate = BudgetGate(session, clock=lambda: now)
-    cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_cv_read, units=Decimal(1), settings=settings)
+    cost = estimate_cost(kind=SpendKind.ai_cv_read, units=Decimal(1), settings=settings)
     try:
         reservation = gate.reserve(
             SpendEstimate(
@@ -328,7 +327,7 @@ async def read_cv(
         return CvRead(ReadOutcome.not_configured if wait.cap == "unset" else ReadOutcome.budget)
     session.commit()
 
-    model = settings.resolved_ai_cv_model()
+    model = settings.resolved_model(settings.ai_cv_model)
     body = build_body(text, model=model, max_tokens=settings.ai_cv_max_output_tokens)
     call = await send_anthropic_request(gateway, body, api_key=api_key, fallback_model=model)
     if isinstance(call, AiCallFailure):
