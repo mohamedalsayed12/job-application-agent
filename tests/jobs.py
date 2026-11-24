@@ -77,6 +77,33 @@ def _indeed(
     }
 
 
+def _google_jobs(
+    job_id: int | str,
+    *,
+    title: str = "Backend Developer",
+    city: str = "Manchester, England",
+    content: str = "Build APIs in Python.",
+    company: str = "Acme",
+    apply_url: str | None = None,
+    schedule: str = "Full-time",
+    **extra: Any,
+) -> dict[str, Any]:
+    """One result as SerpAPI's Google Jobs engine returns it."""
+    key = str(job_id)
+    link = apply_url if apply_url is not None else f"https://acme.example/careers/{key}"
+    return {
+        "job_id": key,
+        "title": title,
+        "company_name": company,
+        "location": city,
+        "description": content,
+        "share_link": f"https://www.google.com/search?q=job+{key}",
+        "apply_options": [{"title": "Apply", "link": link}],
+        "detected_extensions": {"schedule_type": schedule},
+        **extra,
+    }
+
+
 class _Apify:
     """Answers like Apify: a run starts, is still running at the first check, then succeeds with ``items``."""
 

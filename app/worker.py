@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
+from app.google_jobs import GoogleJobsReport, collect_google_jobs
 from app.indeed import IndeedReport, collect_indeed
 from app.interview.service import process_requests
 from app.linkedin import LinkedinReport, collect_linkedin
@@ -38,6 +39,7 @@ DEFAULT_POLL_SECONDS = 60
 class CycleReport:
     linkedin: LinkedinReport
     indeed: IndeedReport
+    google_jobs: GoogleJobsReport
 
 
 async def run_cycle(
@@ -54,7 +56,15 @@ async def run_cycle(
 
     linkedin = await collect_linkedin(session, gateway=gateway, settings=settings, persist=save, now=clock)
     indeed = await collect_indeed(session, gateway=gateway, settings=settings, persist=save, now=clock)
-    if linkedin.searches or linkedin.closed or indeed.searches or indeed.closed:
+    google = await collect_google_jobs(session, gateway=gateway, settings=settings, persist=save, now=clock)
+    if (
+        linkedin.searches
+        or linkedin.closed
+        or indeed.searches
+        or indeed.closed
+        or google.searches
+        or google.closed
+    ):
         now = datetime.now(UTC)
         store_results(session, now=now)
         map_job_skills(session)
@@ -79,7 +89,7 @@ async def run_cycle(
     save()
     await process_requests(session, gateway=gateway, settings=get_settings(), persist=save)
     save()
-    return CycleReport(linkedin=linkedin, indeed=indeed)
+    return CycleReport(linkedin=linkedin, indeed=indeed, google_jobs=google)
 
 
 async def _main(once: bool, poll_seconds: int) -> None:
@@ -93,14 +103,17 @@ async def _main(once: bool, poll_seconds: int) -> None:
                 # A database restart must not silently end daily collection.
                 if once:
                     raise
-                print(f"cycle failed, will retry: {type(exc).__name__}", flush=True)
+                detail = getattr(exc, "orig", None) or exc
+                print(f"cycle failed, will retry: {type(exc).__name__}: {detail}", flush=True)
             else:
-                linkedin, indeed = report.linkedin, report.indeed
+                linkedin, indeed, google = report.linkedin, report.indeed, report.google_jobs
                 print(
                     f"linkedin searches {linkedin.searches}, jobs {linkedin.jobs}, new {linkedin.postings_new}, "
                     f"closed {linkedin.closed}, failed {linkedin.failed}, stopped by {linkedin.stopped_by}; "
                     f"indeed searches {indeed.searches}, jobs {indeed.jobs}, new {indeed.postings_new}, "
-                    f"closed {indeed.closed}, failed {indeed.failed}, stopped by {indeed.stopped_by}",
+                    f"closed {indeed.closed}, failed {indeed.failed}, stopped by {indeed.stopped_by}; "
+                    f"google_jobs searches {google.searches}, jobs {google.jobs}, new {google.postings_new}, "
+                    f"closed {google.closed}, failed {google.failed}, stopped by {google.stopped_by}",
                     flush=True,
                 )
             if once:

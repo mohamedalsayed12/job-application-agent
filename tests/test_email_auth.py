@@ -422,5 +422,47 @@ def test_a_failed_send_logs_nothing_from_the_message(monkeypatch: pytest.MonkeyP
     assert mail.outbox == []
 
 
+def test_resend_backend_posts_to_the_https_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MAIL_BACKEND", "resend")
+    monkeypatch.setenv("SMTP_PASSWORD", "re_test_key")
+    monkeypatch.setenv("MAIL_FROM", "Job Agent <onboarding@resend.dev>")
+    get_settings.cache_clear()
+    calls: list[dict[str, object]] = []
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+    class _Client:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def __enter__(self) -> "_Client":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def post(self, url: str, **kwargs: object) -> _Resp:
+            calls.append({"url": url, **kwargs})
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    try:
+        mail.send(mail.verify_email(EMAIL, "SECRETVALUE", 24))
+    finally:
+        get_settings.cache_clear()
+    assert len(calls) == 1
+    assert calls[0]["url"] == "https://api.resend.com/emails"
+    headers = calls[0]["headers"]
+    assert isinstance(headers, dict)
+    assert headers["Authorization"] == "Bearer re_test_key"
+    body = calls[0]["json"]
+    assert isinstance(body, dict)
+    assert body["to"] == [EMAIL]
+    assert "SECRETVALUE" in str(body["text"])
+    assert mail.outbox == []
+
+
 def test_links_use_the_configured_address_not_the_request_host() -> None:
     assert mail.link("/reset-password", "abc") == "https://testserver/reset-password?token=abc"

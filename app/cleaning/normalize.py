@@ -199,6 +199,8 @@ def normalize_job(source: str, raw: dict[str, Any]) -> NormalizedJob | None:
             parsed = _linkedin(raw)
         elif source == "indeed":
             parsed = _indeed(raw)
+        elif source == "google_jobs":
+            parsed = _google_jobs(raw)
         else:
             parsed = None
     except (AttributeError, TypeError, ValueError):
@@ -235,6 +237,49 @@ def _linkedin(raw: dict[str, Any]) -> NormalizedJob:
         hours=_hours(employment),
         contract_type=_contract_type(employment),
         posted_at=_iso_date(raw.get("postedAt")),
+        closes_at=None,
+    )
+
+
+def _google_jobs(raw: dict[str, Any]) -> NormalizedJob:
+    """One item from SerpAPI's Google Jobs engine. Prefer the first http(s) apply option."""
+    where = clean_html(raw.get("location"))
+    extensions = raw.get("detected_extensions") if isinstance(raw.get("detected_extensions"), dict) else {}
+    schedule = (
+        extensions.get("schedule_type").lower()
+        if isinstance(extensions.get("schedule_type"), str)
+        else ""
+    )
+    apply_url = ""
+    options = raw.get("apply_options")
+    if isinstance(options, list):
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            link = option.get("link")
+            if isinstance(link, str) and link.startswith(("http://", "https://")):
+                apply_url = link
+                break
+    if not apply_url:
+        share = raw.get("share_link")
+        if isinstance(share, str) and share.startswith(("http://", "https://")):
+            apply_url = share
+    remote_type = None
+    if where and _REMOTE.search(where):
+        remote_type = "remote"
+    elif where and _HYBRID.search(where):
+        remote_type = "hybrid"
+    return NormalizedJob(
+        title=clean_html(raw.get("title")),
+        company=clean_html(raw.get("company_name")),
+        apply_url=apply_url,
+        location=parse_location(where, workplace=remote_type),
+        places=parse_places(where),
+        salary=Salary(),
+        description=clean_html(raw.get("description")) or None,
+        hours=_hours(schedule),
+        contract_type=_contract_type(schedule),
+        posted_at=None,
         closes_at=None,
     )
 

@@ -22,7 +22,7 @@ from app.models import (
     JobPosting,
     RawPayload,
 )
-from tests.jobs import DAY_1, _indeed, _job, _li, _store
+from tests.jobs import DAY_1, _google_jobs, _indeed, _job, _li, _store
 
 ADVERT = "Build APIs in Python for our payments platform. " * 10
 
@@ -42,6 +42,30 @@ def test_a_linkedin_result_is_cleaned_into_the_common_format() -> None:
     assert job.apply_url == "https://acme.example/careers/7"
     assert (job.hours, job.posted_at) == ("full_time", datetime(2026, 11, 5, tzinfo=UTC))
     assert not job.salary.known
+
+
+def test_a_google_jobs_result_is_cleaned_into_the_common_format() -> None:
+    raw = _google_jobs(
+        "gj7",
+        title="Graduate Software Engineer",
+        company="Monzo",
+        city="Manchester, England",
+        content="Build APIs in Python.",
+        apply_url="https://monzo.example/jobs/gj7",
+        schedule="Full-time",
+    )
+    job = normalize_job("google_jobs", raw)
+    assert (job.title, job.company, job.description) == ("Graduate Software Engineer", "Monzo", "Build APIs in Python.")
+    assert (job.location.city, job.location.country) == ("Manchester", "GB")
+    assert job.apply_url == "https://monzo.example/jobs/gj7"
+    assert (job.hours, job.salary.known) == ("full_time", False)
+
+
+def test_a_google_jobs_listing_without_apply_options_keeps_the_share_link() -> None:
+    raw = _google_jobs(8, apply_url="")
+    raw["apply_options"] = []
+    job = normalize_job("google_jobs", raw)
+    assert job.apply_url == "https://www.google.com/search?q=job+8"
 
 
 def test_an_indeed_result_is_cleaned_into_the_common_format() -> None:

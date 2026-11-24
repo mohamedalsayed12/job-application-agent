@@ -81,8 +81,10 @@ it already appears in your uploaded CV.</p>
 <p>When you prepare an application, the service may call Greenhouse's public boards API or an Apify actor to read the
 application form questions for that job URL. Your answers are not sent to Apify. The fill happens in your browser via
 the extension; this service never clicks Submit for you.</p>
-<p>Finding contacts and public profile research runs through Apify's LinkedIn people actors (not by this app fetching
-linkedin.com). Sending approved mail uses Google's Gmail API when you have connected Gmail.</p>
+<p>Finding job listings runs through Apify (LinkedIn and Indeed) and SerpAPI (Google Jobs). The service sends only
+search queries (role and location), never your email, name or CV. Finding contacts and public profile research runs
+through Apify's LinkedIn people actors (not by this app fetching linkedin.com). Sending approved mail uses Google's
+Gmail API when you have connected Gmail.</p>
 <p>When you ask for interview intel on a target role, the service collects public posts through Apify and sends those
 short snippets to Anthropic so it can label success vs failure stories and draft a practice plan. Your email address,
 name and CV are not part of that.</p>

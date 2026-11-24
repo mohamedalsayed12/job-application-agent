@@ -189,8 +189,8 @@ def build_report(session: Session, *, now: datetime | None = None) -> QualityRep
         summaries=_summaries_section(session),
         gaps=[
             "Real: Companies House is not connected, so it is not one of the signals.",
-            "Unique: LinkedIn is the only source, so every duplicate found is within it.",
-            "Closed: LinkedIn does not say when a job closes, so a job closes when no search has found it for a while.",
+            "Unique: LinkedIn, Indeed and Google Jobs can list the same opening, so cross-source duplicates are expected.",
+            "Closed: sources rarely say when a job closes, so a job closes when no search of its own source has found it for a while.",
             "Relevance: skills are those an advert names, which includes skills it mentions without requiring.",
         ],
     )

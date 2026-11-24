@@ -1,7 +1,9 @@
 """Account emails: confirm an address, reset a password, or say an address already has an account.
 
-MAIL_BACKEND picks where they go. "smtp" sends through SMTP_*; "memory" keeps them in ``outbox``
-for tests and never sends. Nothing here logs a message body, because bodies hold one-time links.
+MAIL_BACKEND picks where they go. "smtp" sends through SMTP_*; "resend" posts to Resend's HTTPS API
+(using SMTP_PASSWORD as the API key — needed on hosts that block outbound SMTP); "memory" keeps them
+in ``outbox`` for tests and never sends. Nothing here logs a message body, because bodies hold
+one-time links.
 """
 
 from __future__ import annotations
@@ -12,6 +14,8 @@ import ssl
 from dataclasses import dataclass
 from email.message import EmailMessage
 from urllib.parse import urlencode
+
+import httpx
 
 from app.core.config import Settings, get_settings
 
@@ -55,6 +59,25 @@ def _send_smtp(settings: Settings, mail: Mail) -> None:
         client.send_message(message)
 
 
+def _send_resend(settings: Settings, mail: Mail) -> None:
+    """HTTPS to api.resend.com — works where cloud hosts block SMTP ports."""
+    key = settings.smtp_password.strip()
+    if not key:
+        raise OSError("SMTP_PASSWORD must hold the Resend API key when MAIL_BACKEND=resend")
+    with httpx.Client(timeout=settings.smtp_timeout_seconds) as client:
+        response = client.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={
+                "from": settings.mail_from,
+                "to": [mail.to],
+                "subject": mail.subject,
+                "text": mail.text,
+            },
+        )
+        response.raise_for_status()
+
+
 def send(mail: Mail) -> None:
     """Runs after the response is sent, so how long sending takes says nothing about whether an account exists."""
     settings = get_settings()
@@ -62,8 +85,11 @@ def send(mail: Mail) -> None:
         outbox.append(mail)
         return
     try:
-        _send_smtp(settings, mail)
-    except (OSError, smtplib.SMTPException) as exc:
+        if settings.mail_backend == "resend":
+            _send_resend(settings, mail)
+        else:
+            _send_smtp(settings, mail)
+    except (OSError, smtplib.SMTPException, httpx.HTTPError) as exc:
         # The kind of failure only: the message holds a one-time link, and the error may quote it.
         logger.error("account email not sent (%s): %s", mail.subject, type(exc).__name__)
 

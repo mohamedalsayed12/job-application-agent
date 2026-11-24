@@ -26,12 +26,13 @@ This starts `postgres:16` on port `5436` with user/password/db `jaa` / `jaa` / `
 cp .env.example .env
 ```
 
-Job listings come from LinkedIn and Indeed, scraped once a day through Apify. Set `APIFY_API_TOKEN`
+Job listings come from LinkedIn and Indeed (Apify) and Google Jobs (SerpAPI). Set `APIFY_API_TOKEN`
 in `.env` to the API token from
-[Apify integrations](https://console.apify.com/settings/integrations). Without that token the
-worker does not search. Each search is a paid Apify run, so it also needs a monthly money cap
-in `budget_policy`. Until that cap is set, paid calls stay blocked. The scrapers and the search
-limits have defaults; see `.env.example`.
+[Apify integrations](https://console.apify.com/settings/integrations), and optionally
+`SERPAPI_API_KEY` from [SerpAPI](https://serpapi.com/manage-api-key). Without the Apify token the
+worker skips LinkedIn and Indeed; without the SerpAPI key it skips Google Jobs. Each search is
+paid, so it also needs a monthly money cap in `budget_policy`. Until that cap is set, paid calls
+stay blocked. The scrapers and the search limits have defaults; see `.env.example`.
 
 ### 3. Install dependencies
 
@@ -99,22 +100,25 @@ uv run pytest
 
 ## Daily collection
 
-Jobs come from LinkedIn and Indeed. Once a day the worker runs one LinkedIn search per
-target role and location, and Indeed searches for the graduate, junior and entry-level
-forms of each role in each location. The same query is searched once per source, however
-many people want it. LinkedIn uses the Black Falcon Data scraper
+Jobs come from LinkedIn, Indeed and Google Jobs. Once a day the worker runs one LinkedIn
+search per target role and location, and Indeed and Google Jobs searches for the graduate,
+junior and entry-level forms of each role in each location. The same query is searched once
+per source, however many people want it. LinkedIn uses the Black Falcon Data scraper
 (`blackfalcondata/linkedin-job-scraper`): entry-level, last 3 days, newest first, up to
 50 jobs. Indeed uses `valig/indeed-jobs-scraper` with country `uk`, those entry title
-forms, a 3-day window and the same limit; D46 still filters on the match side. The
-worker stores every run and every raw job, then cleans them into postings.
+forms, a 3-day window and the same limit; D46 still filters on the match side. Google Jobs
+uses SerpAPI (`engine=google_jobs`, `gl=uk`), one page of up to 10 results per search, never
+fetching google.com directly. The worker stores every run and every raw job, then cleans
+them into postings.
 
 A search is due 24 hours after the last one for that source, so a machine that was off
-catches up the next time the worker runs. A search that fails is recorded, and the next
-attempt waits until the following day. A run that does not finish within 15 minutes is
-stopped.
+catches up the next time the worker runs. A failed Apify run is recorded and the next
+attempt waits until the following day; a SerpAPI call that returns no billable body is not
+charged and does not block the day. A run that does not finish within 15 minutes is stopped.
 
-Set `APIFY_API_TOKEN` first. Each run is reserved against the monthly money cap before it
-starts, and the recorded cost is what Apify reports.
+Set `APIFY_API_TOKEN` and optionally `SERPAPI_API_KEY` first. Each run is reserved against
+the monthly money cap before it starts. Apify costs settle at what Apify reports; SerpAPI
+settles at the configured search ceiling (the response has no cost field).
 
 ```bash
 uv run python -m app.worker          # runs until stopped

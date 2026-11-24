@@ -195,7 +195,7 @@ LONDON = {"city": "London", "country": "GB"}
         (["Remote UK"], [LONDON], "hybrid", False),
         (["Remote UK"], [{"city": None, "country": "US"}], "remote", False),
         (["Remote"], [{"city": None, "country": "US"}], "remote", True),
-        (["United Kingdom"], [MANCHESTER], None, False),
+        (["United Kingdom"], [MANCHESTER], None, True),
         (["United Kingdom"], [UK], None, True),
         (["Leeds", "London"], [LONDON], None, True),
     ],

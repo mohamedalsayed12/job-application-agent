@@ -318,13 +318,25 @@ def wanted_locations(locations: list[str]) -> list[Wanted]:
 
 
 def location_fit(wanted: list[Wanted], places: list[dict[str, Any]], remote_type: str | None) -> tuple[bool, str]:
-    """True with the reason it fits. Different named countries never fit, even for the same city name."""
+    """True with the reason it fits. Different named countries never fit, even for the same city name.
+
+    A country with no city (e.g. "United Kingdom") means every city in that country.
+    """
     for want in wanted:
         if want.remote:
             continue
         for place in places:
             if _same_city(want, place):
                 return True, f"in {place['city']}"
+        # Country-only preference: Manchester, London, and country-level GB places all fit.
+        if want.city is None and want.country is not None:
+            for place in places:
+                if not _covers(place, want.country):
+                    continue
+                if place.get("city"):
+                    return True, f"in {place['city']}"
+                if remote_type != "remote":
+                    return True, f"anywhere in {place['country'] or place['region']}"
         for place in places:
             if remote_type != "remote" and place["city"] is None and _covers(place, want.country):
                 return True, f"anywhere in {place['country'] or place['region']}"

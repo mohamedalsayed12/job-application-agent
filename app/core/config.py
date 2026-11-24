@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     # Links in account emails start with this, never with the request's Host header (which a sender can forge).
     public_base_url: str = "http://localhost:8000"
 
-    # Account emails (verify, reset). "smtp" sends; "memory" keeps them in a list for tests and never sends.
+    # Account emails (verify, reset). "smtp" sends; "resend" uses Resend's HTTPS API (SMTP_PASSWORD =
+    # API key); "memory" keeps them in a list for tests and never sends.
     mail_backend: str = "smtp"
     mail_from: str = "Job Agent <no-reply@localhost>"
     # Defaults reach Mailpit from docker-compose.yml, which catches mail locally and sends nothing on.
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
     api_allowlist: str = (
-        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
+        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,serpapi.com,"
         "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com"
     )
 
@@ -70,6 +71,16 @@ class Settings(BaseSettings):
     indeed_country: str = "uk"  # actor enum uses uk, not ISO gb
     indeed_unit_price: Decimal = Decimal("0.0002")
     indeed_run_price: Decimal = Decimal("0.01")
+
+    # D71: Google Jobs through SerpAPI (never fetch google.com; serpapi.com is allowlisted).
+    serpapi_api_key: str = ""
+    google_jobs_max_results: int = 10  # one SerpAPI page
+    google_jobs_every_hours: int = 24
+    google_jobs_stale_days: int = 14
+    google_jobs_gl: str = "uk"
+    # SerpAPI bills per search (~$0.015); settle the ceiling because the response has no cost field.
+    google_jobs_unit_price: Decimal = Decimal("0")
+    google_jobs_run_price: Decimal = Decimal("0.012")
 
     # Outreach: people discovery and profile research through Apify (still never fetch linkedin.com here).
     apify_outreach_hm_actor: str = "automation_studio/linkedin-job-hiring-manager-finder"
@@ -173,6 +184,8 @@ class Settings(BaseSettings):
         "linkedin_run_price",
         "indeed_unit_price",
         "indeed_run_price",
+        "google_jobs_unit_price",
+        "google_jobs_run_price",
         "usd_to_gbp",
         "interview_collect_unit_price",
         "interview_collect_run_price",
@@ -202,8 +215,8 @@ class Settings(BaseSettings):
             problems.append(f"SESSION_SECRET must be at least {MIN_SESSION_SECRET_LENGTH} characters")
         if self.admin_key in ("", "change-me"):
             problems.append("ADMIN_KEY must be set to a private value")
-        if self.mail_backend not in ("smtp", "memory"):
-            problems.append("MAIL_BACKEND must be smtp or memory")
+        if self.mail_backend not in ("smtp", "resend", "memory"):
+            problems.append("MAIL_BACKEND must be smtp, resend or memory")
         if self.smtp_security not in ("starttls", "ssl", "none"):
             problems.append("SMTP_SECURITY must be starttls, ssl or none")
         if not self.public_base_url.startswith(("https://", "http://")):
