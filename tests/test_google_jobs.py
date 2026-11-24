@@ -107,11 +107,11 @@ async def test_a_search_calls_serpapi_and_stores_what_it_found(session: Session)
     assert all(request.url.host == "serpapi.com" for request in serp.requests)
     assert all(request.url.path == "/search.json" for request in serp.requests)
     queries = serp.queries()
-    assert [q["q"][0] for q in queries] == [search.role for search in _ENTRY_BACKEND]
+    assert [q["q"][0] for q in queries] == [f"{search.role} Manchester" for search in _ENTRY_BACKEND]
+    # The place is part of the query: SerpAPI's own `location` refuses names like "Manchester, UK".
     assert queries[0] == {
         "engine": ["google_jobs"],
-        "q": ["Graduate Backend Developer"],
-        "location": ["Manchester"],
+        "q": ["Graduate Backend Developer Manchester"],
         "hl": ["en"],
         "gl": ["uk"],
         "api_key": ["test-key"],

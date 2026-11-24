@@ -290,3 +290,11 @@ async def test_the_listings_show_the_newest_jobs_first_by_default(client: httpx.
     newest = (await client.get("/listings", params={"sort": "newest"})).text
     assert _titles(page) == _titles(newest)
 
+
+
+async def test_d72_page_links_keep_the_my_locations_filter(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    mine = (await client.get("/listings", params={"everywhere": "0"})).text
+    assert '<option value="0" selected>My locations</option>' in mine
+    assert "everywhere=1" not in (await client.get("/listings")).text

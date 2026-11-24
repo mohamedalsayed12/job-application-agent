@@ -331,7 +331,8 @@ async def test_too_few_jobs_on_one_google_page_means_reading_the_next(session: S
         pages={"https://acme.example/jobs/1": _page(_posting())},
     )
 
-    report = await _collect(session, web, applicant_id=applicant_id)
+    # Set here so a CAREERS_MAX_PAGES in the developer's .env cannot change the test.
+    report = await _collect(session, web, applicant_id=applicant_id, careers_max_pages=3)
 
     assert [int(parse_qs(r.url.query.decode())["start"][0]) for r in web.google_calls()] == [0, 10]
     assert (report.google_pages, report.jobs) == (2, 1)

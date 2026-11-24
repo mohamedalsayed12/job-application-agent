@@ -448,6 +448,9 @@ def render_listing(item: Listing, csrf: str = "") -> str:
 
 
 def _query(**params: object) -> str:
+    """Leaves out each filter at its default. Every location is the default (D72), so only "0" is written."""
+    if "everywhere" in params:
+        params["everywhere"] = None if params["everywhere"] else "0"
     return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "newest", "roles")}))
 
 

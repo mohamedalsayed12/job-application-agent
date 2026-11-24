@@ -113,8 +113,9 @@ async def _search(
     """One SerpAPI Google Jobs page. Returns (items, problem). items is None when the call failed."""
     params = {
         "engine": "google_jobs",
-        "q": search.role,
-        "location": search.location,
+        # The place goes in the query: SerpAPI's `location` takes only its own canonical names and
+        # answers 400 to "Manchester, UK".
+        "q": f"{search.role} {search.location}",
         "hl": "en",
         "gl": settings.google_jobs_gl.strip().lower() or "uk",
         "api_key": api_key,

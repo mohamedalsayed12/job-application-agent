@@ -468,7 +468,10 @@ class SpendLedger(_UuidPk, Base):
 
 class FetchRun(_UuidPk, Base):
     __tablename__ = "fetch_run"
-    __table_args__ = (_text_in("outcome", FetchOutcome),)
+    __table_args__ = (
+        _text_in("outcome", FetchOutcome),
+        Index("ix_fetch_run_source_search_key", "source", "search_key", "started_at"),
+    )
 
     source: Mapped[str] = mapped_column(Text())
     outcome: Mapped[str] = mapped_column(Text())
