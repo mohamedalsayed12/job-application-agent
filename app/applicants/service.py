@@ -40,9 +40,9 @@ def parse_preference_input(
     roles = tuple(r.strip() for r in target_roles if r and r.strip())
     locs = tuple(loc.strip() for loc in locations if loc and loc.strip())
     if not roles:
-        raise PreferenceValidationError("at least one target role is required")
+        raise PreferenceValidationError("At least one target role is required.")
     if not locs:
-        raise PreferenceValidationError("at least one location is required")
+        raise PreferenceValidationError("At least one location is required.")
     sector_clean = sector.strip().lower()
     if sector_clean != MILESTONE1_SECTOR:
         raise PreferenceValidationError("sector must be tech for Milestone 1")

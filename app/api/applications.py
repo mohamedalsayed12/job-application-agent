@@ -62,7 +62,12 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
             "Then press <b>Fill this tab</b> in the Job Agent extension: it reads the form, fills in your "
             "saved answers and CV, and never presses Submit.</p>"
         )
-    error = f'<p class="error">{_e(app_row.error)}</p>' if app_row.error else ""
+    # When unanswered questions are listed below, repeating them in error is noise, not a failure.
+    error = (
+        f'<p class="error">{_e(app_row.error)}</p>'
+        if app_row.error and not app_row.missing_fields
+        else ""
+    )
     actions = [
         f'<a class="button" href="{_e(app_row.apply_url)}" rel="noopener noreferrer" target="_blank">Open apply page</a>'
     ]

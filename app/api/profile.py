@@ -210,7 +210,8 @@ def preference_sections(fields: ProfileFields, *, first_number: int) -> str:
         [("", "Choose one"), *((level.value, label) for level, label in EXPERIENCE_LABELS.items())],
         fields.experience_level,
     )
-    periods = _options([(period, f"a {period}") for period in _SALARY_PERIODS], fields.salary_period)
+    period_labels = {"year": "a year", "month": "a month", "day": "a day", "hour": "an hour"}
+    periods = _options([(period, period_labels[period]) for period in _SALARY_PERIODS], fields.salary_period)
     rows = [*fields.certifications, *[("", "", "certification", "")] * _SPARE_CERTIFICATION_ROWS]
     return f"""
   <section class="card">
@@ -534,5 +535,6 @@ def cv_download(applicant: Applicant = Depends(require_login), db: Session = Dep
 @router.post("/cv/delete", dependencies=_CSRF)
 def cv_delete(applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> RedirectResponse:
     delete_cv(db, applicant.id)
+    match_all(db, now=datetime.now(UTC), applicant_ids={applicant.id})
     db.commit()
     return RedirectResponse("/profile", status_code=_SEE_OTHER)

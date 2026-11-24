@@ -162,14 +162,17 @@ def _choice(value: str, choices: tuple[str, ...], *, label: str) -> str | None:
     return cleaned
 
 
-def _date(value: str, *, label: str) -> date | None:
+def _date(value: str, *, label: str, not_before: date | None = None) -> date | None:
     cleaned = value.strip()
     if not cleaned:
         return None
     try:
-        return date.fromisoformat(cleaned)
+        parsed = date.fromisoformat(cleaned)
     except ValueError as exc:
         raise AnswersRefused(f"Enter {label} as a date.") from exc
+    if not_before is not None and parsed < not_before:
+        raise AnswersRefused(f"Enter {label} as today or a future date.")
+    return parsed
 
 
 def _bool_text(value: bool | None) -> str:
@@ -216,7 +219,9 @@ def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -
         "heard_about": _trim(raw.heard_about),
         "previously_employed": _boolish(raw.previously_employed, label="previously employed"),
         "notice_period": _choice(raw.notice_period, NOTICE_PERIODS, label="notice period"),
-        "earliest_start_date": _date(raw.earliest_start_date, label="the earliest start date"),
+        "earliest_start_date": _date(
+            raw.earliest_start_date, label="the earliest start date", not_before=date.today()
+        ),
         "willing_to_relocate": _boolish(raw.willing_to_relocate, label="willing to relocate"),
         "work_hours": _choice(raw.work_hours, WORK_HOURS, label="full-time or part-time"),
         "work_location": _choice(raw.work_location, WORK_LOCATIONS, label="where you want to work"),

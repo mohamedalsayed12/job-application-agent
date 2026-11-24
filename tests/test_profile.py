@@ -144,6 +144,8 @@ async def test_t30_the_saved_profile_shows_on_the_form(client: httpx.AsyncClient
         assert expected in text
     assert '<option value="entry" selected>Entry level (graduate or junior)</option>' in text
     assert '<option value="licence" selected>Licence</option>' in text
+    assert '<option value="hour">an hour</option>' in text
+    assert "a hour" not in text
 
 
 async def test_t30_saving_again_replaces_the_lists(client: httpx.AsyncClient, session: Session) -> None:

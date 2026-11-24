@@ -53,6 +53,18 @@ router = APIRouter(tags=["outreach"])
 _CSRF = [Depends(require_csrf)]
 _SEE_OTHER = 303
 _APPLY_FIRST = "Mark this job as applied first. Outreach comes after you've sent your application."
+_NOTICES = {
+    "employees_actor_empty": "No people were found at this company right now. Try again later, or look them up on LinkedIn yourself.",
+    "budget": "The monthly spending cap is used up, so finding people is paused until next month.",
+    "saved": "Draft saved.",
+    "draft_failed": "Could not draft a message for this person. Try again, or write it yourself.",
+}
+
+
+def _notice_text(notice: str | None) -> str | None:
+    if not notice:
+        return None
+    return _NOTICES.get(notice, notice)
 
 
 async def get_gateway() -> AsyncIterator[FetchGateway]:
@@ -154,7 +166,7 @@ def outreach_list(
             .order_by(OutreachContact.created_at.desc())
         )
     )
-    notice = request.query_params.get("notice")
+    notice = _notice_text(request.query_params.get("notice"))
     return page(
         f"Outreach · {job.title}",
         _contacts_html(job, contacts, request, applied=has_applied(db, applicant.id, job.id), notice=notice),

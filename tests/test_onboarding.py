@@ -422,6 +422,7 @@ async def test_bad_details_are_refused_keep_what_was_typed_and_save_nothing(
         ({"willing_to_relocate": ""}, "Only the start date is optional."),
         ({"notice_period": "Whenever"}, "Choose one of the options for notice period."),
         ({"earliest_start_date": "next summer"}, "Enter the earliest start date as a date."),
+        ({"earliest_start_date": "2020-01-01"}, "Enter the earliest start date as today or a future date."),
     ],
 )
 async def test_bad_availability_is_refused(
