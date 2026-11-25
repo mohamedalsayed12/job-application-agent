@@ -30,7 +30,6 @@ from app.accounts.service import (
     AccountError,
     InvalidLinkError,
     authenticate,
-    check_registration,
     check_token,
     confirm_email,
     delete_account,
@@ -193,13 +192,6 @@ def register_submit(
     password: str = Form(...),
     db: Session = Depends(get_db),
 ) -> Response:
-    try:
-        # A mistyped form creates nothing and sends no email, so it does not use up the hourly limit.
-        check_registration(email, password)
-    except AccountError as exc:
-        return _credentials_page(
-            request, "Register", "/register", new_password=True, error=str(exc), email=email, status_code=400
-        )
     if not throttle.take_register_attempt(_client_ip(request)):
         return _credentials_page(
             request, "Register", "/register", new_password=True, error=_TOO_MANY, email=email, status_code=429
