@@ -142,6 +142,8 @@ def _card(
         actions.append('<span class="tag good">Ready for your review — submit yourself</span>')
     if app_row.status != ApplicationStatus.submitted.value:
         actions.append(applied_button(csrf_field(request), app_row.job_id))
+    if app_row.status in (ApplicationStatus.submitted.value, ApplicationStatus.filled_awaiting_review.value):
+        actions.append(f'<a class="button" href="/jobs/{_e(str(app_row.job_id))}/interview">Prepare for interview</a>')
     return f"""
 <article class="card">
   <h2>{_e(title)}</h2>
