@@ -49,10 +49,19 @@ from app.tailor.refiner import (
 )
 from app.tailor.render import render_docx, render_pdf
 from app.tailor.resume import all_text
+from app.tailor.voice import (
+    letter_notes,
+    limit_rewrites,
+    recommendations,
+    style_notes,
+    uk_spelling,
+    voice_sample,
+)
 
 # Bumped when the guard or layout changes, so ready CVs are written again: grounded-v2 adds the
-# posting-word check, the bullet fix and certifications kept with their dates.
-PROMPT_VERSION = "resume-matcher-959e458-cover-letter-grounded-v2"
+# posting-word check, the bullet fix and certifications kept with their dates; human-v3 (D75) caps the rows
+# that change, keeps the person's voice and British spelling, and shows the changes.
+PROMPT_VERSION = "resume-matcher-959e458-cover-letter-human-v3"
 TAILOR_VERDICTS = frozenset({"Apply", "Consider"})
 REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
@@ -408,6 +417,8 @@ async def _process_one(
     tailored, phrases = remove_ai_phrases(tailored, item.posting, protected_text=all_text(master))
     tailored, fabricated = drop_fabricated_skills(tailored, master)
     tailored = finalize_ai_resume(master, tailored, allow_review_claims=False, posting=item.posting)
+    tailored, spelled = uk_spelling(tailored, protected_text=all_text(master))
+    tailored, changed = limit_rewrites(master, tailored, first=[change.path for change in applied])
     if phrases:
         warnings.append(f"Replaced stock AI wording: {', '.join(phrases)}")
     if fabricated:
@@ -416,7 +427,9 @@ async def _process_one(
     # Upstream treats the letter as optional output: its failure is a warning, never a failed CV.
     try:
         written = await paid(
-            lambda: ai.generate_cover_letter(gateway, resume=tailored, posting=item.posting, **key)
+            lambda: ai.generate_cover_letter(
+                gateway, resume=tailored, posting=item.posting, voice=voice_sample(master), **key
+            )
         )
     except BudgetWait:
         written = AiCallFailure(reason="budget")
@@ -426,8 +439,12 @@ async def _process_one(
         warnings.append(f"Cover letter skipped: {reason}")
     else:
         letter, letter_phrases = remove_ai_phrases(written[0], item.posting, protected_text=all_text(master))
+        letter, letter_spelled = uk_spelling(letter, protected_text=all_text(master))
+        spelled = sorted({*spelled, *letter_spelled})
         if letter_phrases:
             warnings.append(f"Replaced stock AI wording in the cover letter: {', '.join(letter_phrases)}")
+    if spelled:
+        warnings.append(f"Changed to British spelling: {', '.join(spelled)}")
 
     pdf = render_pdf(tailored)
     docx = render_docx(tailored)
@@ -440,7 +457,11 @@ async def _process_one(
     row.draft = tailored
     row.cover_letter = letter
     row.keywords = keywords
-    row.ats_report = ats_report(pdf_bytes=pdf, resume=tailored, master=master, keywords=keywords, warnings=warnings)
+    report = ats_report(pdf_bytes=pdf, resume=tailored, master=master, keywords=keywords, warnings=warnings)
+    notes = style_notes(master, tailored, keywords, changed) + (letter_notes(letter) if letter else [])
+    report["changes"] = [rewrite.to_json() for rewrite in changed]
+    report["recommendations"] = recommendations(report["coverage"], notes)
+    row.ats_report = report
     row.company_research_id = None
     row.company_research_available = False
     row.pdf_content = pdf

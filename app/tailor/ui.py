@@ -18,6 +18,8 @@ def tailor_button(csrf: str, job_id: uuid.UUID, *, label: str = "Tailor my CV fo
 def tailor_section(job_id: uuid.UUID, row: TailoredCv | None, csrf: str, *, allowed: bool) -> str:
     """The job page's tailored-CV area: status, plus the button when a request would do something."""
     status = tailored_block(job_id, row)
+    if row is not None and row.status == TailoredCvStatus.ready.value:
+        status += changes_block(row.ats_report or {})
     if row is not None and row.status == TailoredCvStatus.ready.value and row.cover_letter:
         status += (
             "<details><summary>Read the cover letter</summary>"
@@ -32,6 +34,33 @@ def tailor_section(job_id: uuid.UUID, row: TailoredCv | None, csrf: str, *, allo
     if row.status == TailoredCvStatus.pending.value:
         return '<p class="muted">Tailoring your CV for this job. Refresh in a few minutes.</p>'
     return status
+
+
+def changes_block(report: dict) -> str:
+    """What the tailoring reworded, beside the person's own wording, and what they could do next (D75)."""
+    out = ""
+    changes = report.get("changes")
+    if changes is not None:
+        if not changes:
+            out += '<p class="muted">No wording changed: your CV already matched this advert.</p>'
+        else:
+            rows = "".join(
+                f"<li><b>{html.escape(item.get('where', ''))}</b><br>"
+                f'<span class="muted">Before:</span> <del>{html.escape(item.get("before", ""))}</del><br>'
+                f'<span class="muted">After:</span> {html.escape(item.get("after", ""))}</li>'
+                for item in changes
+            )
+            noun = "change" if len(changes) == 1 else "changes"
+            out += (
+                f"<details><summary>See what changed ({len(changes)} {noun})</summary>"
+                "<p class=\"muted\">Everything else is your own wording. Edit the downloaded DOCX if a line "
+                f"doesn't sound like you.</p><ul>{rows}</ul></details>"
+            )
+    advice = report.get("recommendations") or []
+    if advice:
+        items = "".join(f"<li>{html.escape(line)}</li>" for line in advice)
+        out += f"<details><summary>Recommendations ({len(advice)})</summary><ul>{items}</ul></details>"
+    return out
 
 
 def tailored_block(job_id: uuid.UUID, row: TailoredCv | None, *, verdict: str | None = None) -> str:

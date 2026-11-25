@@ -4,6 +4,9 @@ Ported from srbhr/Resume-Matcher@959e458 (apps/backend/app/prompts/templates.py 
 refinement.py). Only the default "keywords" strategy is kept. Custom sections and row styles are
 left out because the structured CV here has neither. Upstream's user-editable cover-letter prompt
 override is left out too.
+
+D75 replaces upstream's "reframe every section by default" rules: a few rows change, in the person's own
+voice and British spelling, and each job keyword is used once.
 """
 
 from __future__ import annotations
@@ -109,7 +112,7 @@ Job description:
 DIFF_SYSTEM = "You are an expert resume editor. Output only valid JSON with targeted changes. " + DATA_RULE
 
 KEYWORDS_STRATEGY = (
-    "Weave in relevant keywords where evidence already exists. You may rephrase bullets but do not add new ones."
+    "Use a job keyword only where the CV already shows that work. You may rephrase bullets but do not add new ones."
 )
 
 DIFF_IMPROVE_PROMPT = """Given this resume and job description, output a JSON object with targeted changes to better align the resume with the job.
@@ -121,12 +124,14 @@ RULES:
 4. {strategy_instruction}
 5. Each change MUST include the original text (copied exactly) so it can be verified
 6. For each change, explain WHY it helps match the job description
-7. Generate all new text in {output_language}
+7. Generate all new text in {output_language}, with British spelling (organise, analyse, programme for schemes, licence as a noun)
 8. Do not use em dash characters
-9. Keep changes minimal and targeted; do not rewrite content that already aligns well
+9. Reword at most {max_changes} pieces of text in total (summary, bullets and education descriptions together). Pick the ones where the job's wording most clearly describes work the CV already shows, and leave every other bullet exactly as written
 10. Never add a skill the resume does not already list
-11. By DEFAULT, scan the summary and every work, project, and education description for content that already demonstrates a job-description keyword or skill, and reframe that text using the job description's terminology where it is not already phrased that way (per rule 9, leave content that already aligns well), while preserving the candidate's actual accomplishment. Do NOT add new work, metrics, or responsibilities; only restate existing content in the JD's language, and verify every reframe stays factually accurate.
-12. Preserve original capitalization, especially for proper nouns, technical terms (e.g., REST, API, AWS), and acronyms. Do not change the casing of words that were capitalized in the original.
+11. Write the way this candidate writes. Keep their tense, person, sentence length and plain vocabulary; a recruiter reading the CV should not be able to tell which bullets changed. Do not swap their plain verbs for grander ones
+12. Use each job keyword at most once across all your changes, and not at all where the CV already uses it. Never list several keywords in one bullet
+13. Do not start two reworded bullets with the same word, and do not pad or trim bullets to a uniform length
+14. Preserve original capitalization, especially for proper nouns, technical terms (e.g., REST, API, AWS), and acronyms. Do not change the casing of words that were capitalized in the original.
 
 PATHS you can target:
 - "summary" — the resume summary text
@@ -182,7 +187,7 @@ INJECT_SYSTEM = (
     "Return only valid JSON matching the input schema. " + DATA_RULE
 )
 
-KEYWORD_INJECTION_PROMPT = """Inject the following keywords into this resume by reframing the candidate's existing experience in the job description's language. Target EVERY section (summary, work experience, projects, technical skills) by default.
+KEYWORD_INJECTION_PROMPT = """Add the following keywords to this resume by rewording the candidate's existing experience, each in the single place where the master resume best supports it. Leave all other text exactly as it is.
 
 CRITICAL RULES:
 1. Only reframe with keywords the master resume substantively supports (e.g., if the master shows "used Python for data analysis", surface "Python" and "data analysis" language)
@@ -190,7 +195,8 @@ CRITICAL RULES:
 3. Rephrase existing bullet points and content to include keywords - do not invent new content, metrics, or work history
 4. Maintain the exact same JSON structure
 5. Do not use em-dashes (—) or their variants (---, --)
-6. Make keyword incorporation the DEFAULT across all content sections, not an optional enhancement
+6. Use each keyword once. If a keyword does not fit naturally anywhere, leave it out
+7. Keep the candidate's own voice, tense and sentence length, and use British spelling
 
 Keywords to inject (only if supported by master resume):
 {keywords_to_inject}
@@ -207,8 +213,8 @@ Job description context:
 Output the complete resume JSON with keywords naturally integrated. Return ONLY valid JSON."""
 
 COVER_LETTER_SYSTEM = (
-    "You are a professional career coach and resume writer. Write compelling, personalized cover letters. "
-    + DATA_RULE
+    "You are a professional career coach and resume writer. Write cover letters that read as the candidate's own "
+    "writing. " + DATA_RULE
 )
 
 # Upstream asks for plain text; structured outputs here need a JSON object, so only the last line differs.
@@ -221,6 +227,10 @@ Job Description:
 
 Candidate Resume (JSON):
 {resume_data}
+
+The candidate's own writing, from their CV. Write the letter the way this person writes: similar sentence
+length, the same level of formality and their plain vocabulary:
+{voice_sample}
 
 Plan silently before writing:
 - Identify the target role, company, and the job's most important requirements.
@@ -242,6 +252,8 @@ Requirements:
 - Do NOT invent experience, skills, metrics, motivations, company facts, or information not in the supplied resume and job description.
 - Avoid unsupported claims such as "perfect candidate," generic praise such as "innovative company," and weak phrasing such as "I helped with."
 - Tone: Confident peer, factual and specific, calibrated to the employer.
+- Sound like a person, not a template: mix short and longer sentences, start some sentences with the work or the employer rather than "I", and use British spelling.
+- Never use these stock phrases: "I am writing to express", "I am excited to apply", "thrilled", "passionate about", "I am confident that", "aligns perfectly", "perfect fit", "fast-paced", "dynamic team", "eager to contribute", "unique blend", "proven track record", "hit the ground running", "esteemed", "resonates", "testament to".
 - Do NOT use an em dash ("—") anywhere in the writing/output; replace it with punctuation appropriate to the language.
 
 Put the whole letter in the "letter" field as plain text, paragraphs separated by a blank line. No markdown formatting."""
