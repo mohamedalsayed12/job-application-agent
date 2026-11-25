@@ -318,16 +318,29 @@ async def cv_step_upload(
 
 
 @router.post("/onboarding/cv/keep", response_model=None, dependencies=_CSRF)
-def cv_step_keep(request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> Response:
+async def cv_step_keep(
+    request: Request,
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
+) -> Response:
     if redirect := _guard(applicant, OnboardingStep.cv):
         return redirect
-    if cv_for(db, applicant.id) is None:
+    cv = cv_for(db, applicant.id)
+    if cv is None:
         return _wizard_page(
             request, applicant, OnboardingStep.cv, _cv_body(request, db, applicant), error="Upload your CV first.", status_code=400
         )
+    query = ""
+    if cv.suggestions is None:
+        # The first read failed or never ran (reading off, budget, a timeout): try again rather than leave the form blank.
+        read = await read_cv(db, applicant.id, cv.content, CvFileType(cv.file_type), gateway=gateway, settings=get_settings())
+        if read.suggestions is not None:
+            cv.suggestions = suggestions_to_json(read.suggestions)
+        query = f"?cv={read.outcome.value}"
     next_url = _advance(applicant, OnboardingStep.cv)
     db.commit()
-    return RedirectResponse(next_url, status_code=_SEE_OTHER)
+    return RedirectResponse(f"{next_url}{query}", status_code=_SEE_OTHER)
 
 
 # Step 3: details for employer forms.
@@ -391,7 +404,7 @@ def _details_body(request: Request, answers: AnswersInput, from_cv: set[str]) ->
       <label>Will you need visa sponsorship? {yes_no_select("needs_visa_sponsorship", answers.needs_visa_sponsorship, required=True)}</label>
     </div>
     {text("nationality", "Nationality", hint="optional")}
-    {extra_fields(answers, "right_to_work")}
+    {extra_fields(answers, "right_to_work", required={"right_to_work_type"})}
   </section>
   <div class="wizard-foot">{_back(OnboardingStep.details)}<button type="submit" class="primary">Continue</button></div>
 </form>

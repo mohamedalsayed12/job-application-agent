@@ -135,10 +135,13 @@ async function downloadCv(applicationId) {
   const bytes = new Uint8Array(await response.arrayBuffer());
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  const docx = (response.headers.get("Content-Disposition") || "").includes(".docx");
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const docx = disposition.includes(".docx");
+  // The server names the file after the person (Sam-Taylor-CV.pdf); employers see this name.
+  const named = disposition.match(/filename="([^"]+)"/);
   return {
     base64: btoa(binary),
-    name: docx ? "cv.docx" : "cv.pdf",
+    name: named ? named[1] : docx ? "CV.docx" : "CV.pdf",
     type: response.headers.get("Content-Type") || (docx ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "application/pdf"),
   };
 }

@@ -263,3 +263,12 @@ async def test_d43_without_a_cv_the_fill_button_goes_back_to_the_profile(client:
     assert (await sign_up(client, "cv@example.com", PASSWORD)).status_code == 303
     response = await client.post("/profile/cv/fill")
     assert (response.status_code, response.headers["location"]) == (303, "/profile")
+
+
+def test_internship_level_needs_the_cv_to_ask_for_one() -> None:
+    student = ["Sam Taylor", "BSc Business Management, University of Manchester, 2024 - 2027", "Python, SQL"]
+    found = grounded({**FOUND, "experience_level": "internship"}, "\n".join(student))
+    assert found.experience_level == "entry"
+    asking = [*student, "Looking for a placement year in software engineering"]
+    found = grounded({**FOUND, "experience_level": "internship"}, "\n".join(asking))
+    assert found.experience_level == "internship"

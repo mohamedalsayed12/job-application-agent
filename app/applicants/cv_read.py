@@ -49,6 +49,12 @@ MAX_PDF_PAGES = 10
 MAX_DOCUMENT_XML_BYTES = 5 * 1024 * 1024
 MAX_SUGGESTED_ROLES = 3
 _W_TEXT = re.compile(rb"<w:t(?:\s[^>]*)?>([^<]*)</w:t>")
+# Words a CV uses when the person wants an internship or placement rather than a job.
+_ASKS_FOR_INTERNSHIP = re.compile(
+    r"\b(interns?|internships?|placements?|placement year|year in industry|industrial year"
+    r"|sandwich year|summer analyst|spring week|insight week)\b",
+    re.IGNORECASE,
+)
 
 SYSTEM_INSTRUCTIONS = """You read one CV and suggest entries for the person's job-search profile.
 
@@ -268,6 +274,9 @@ def grounded(payload: dict, text: str) -> CvSuggestions:
             expires = ""
         certifications.append(Certification(" ".join(item["name"].split()), issuer, item.get("is_licence") is True, expires))
     level = payload.get("experience_level")
+    if level == ExperienceLevel.internship.value and not _ASKS_FOR_INTERNSHIP.search(text):
+        # Being a student is not asking for an internship. Without the CV saying so, a student looks for entry-level jobs.
+        level = ExperienceLevel.entry.value
     return CvSuggestions(
         target_roles=_strings(payload.get("target_roles"), MAX_SUGGESTED_ROLES),
         locations=[place for place in _strings(payload.get("locations"), MAX_LOCATIONS) if in_cv(place)],

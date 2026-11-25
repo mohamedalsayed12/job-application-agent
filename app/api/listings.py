@@ -313,7 +313,9 @@ def _reasons(item: Listing) -> str:
         lines.append(f"Licences you don't list: {', '.join(item.missing_licences)}")
     ai = item.reasons.get("ai", {})
     if ai.get("score"):
-        lines.append(f"AI score: {ai['score']} out of 5 (added at 3.0 or more)")
+        # D53: the headline score is the fit report's when there is one, so name this one for what it is.
+        label = "First AI check" if (item.reasons.get("report") or {}).get("score") else "AI score"
+        lines.append(f"{label}: {ai['score']} out of 5 (added at 3.0 or more)")
     ratings = ai.get("ratings") or {}
     rated = [f"{label} {ratings[key]}/5" for key, label in _AI_AREAS if key in ratings]
     if rated:
@@ -561,7 +563,9 @@ def listings_page(
     where = "in every location" if everywhere else "in your locations"
     pending = never_searched(db, searches(db, {applicant.id})) if preference is not None else 0
     searching = (
-        f'<div class="card discover">We are searching for {pending} of your job titles now. '
+        # `pending` counts searches (each title in each location), not titles.
+        f'<div class="card discover">We are running {pending} {"search" if pending == 1 else "searches"} '
+        "for your job titles and locations now. "
         "New jobs usually appear here within a few minutes: reload the page to see them.</div>"
         if pending
         else ""

@@ -58,6 +58,12 @@ def _check_password(password: str) -> None:
         raise AccountError(f"Use a password of at most {MAX_PASSWORD_LENGTH} characters.")
 
 
+def check_registration(email: str, password: str) -> None:
+    """The form checks alone, with no hashing and no database: raises AccountError on a mistyped form."""
+    _clean_email(email)
+    _check_password(password)
+
+
 def register(session: Session, *, email: str, password: str) -> Applicant | None:
     """A new, unconfirmed account, or None when the email is taken.
 

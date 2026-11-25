@@ -14,7 +14,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.applications.drafts import answer_question, question_key
+from app.applications.drafts import CORRECTED_NOTE, answer_question, question_key
 from app.applications.extension_device import issue_token
 from app.applications.prepare import (
     PrepareRefused,
@@ -28,7 +28,9 @@ from app.core.db import get_db
 from app.models import (
     Applicant,
     Application,
+    ApplicationAnswers,
     ApplicationStatus,
+    ExtensionDevice,
     FormQuestion,
     Job,
     JobFreshness,
@@ -79,13 +81,25 @@ def question_form(request: Request, row: FormQuestion, back: str) -> str:
     )
 
 
-def _drafts(app_row: Application) -> str:
-    """Every page's checked drafts for this application."""
-    steps = [s for s in ((app_row.fill_plan_json or {}).get("drafts") or {}).values() if s and s.get("value")]
+def _draft_note(note: str | None) -> str:
+    """Drafts saved by older versions carry the checker's raw, often cut-off text; show the fixed wording instead."""
+    if (note or "").startswith("Drafted and corrected ("):
+        return CORRECTED_NOTE
+    return note or ""
+
+
+def _drafts(app_row: Application, questions: dict[str, FormQuestion] | None = None) -> str:
+    """Every page's checked drafts for this application, except questions the person has since answered."""
+    answered = {key for key, row in (questions or {}).items() if (row.answer or "").strip()}
+    steps = [
+        s
+        for key, s in ((app_row.fill_plan_json or {}).get("drafts") or {}).items()
+        if s and s.get("value") and key not in answered
+    ]
     if not steps:
         return ""
     items = "".join(
-        f'<li><b>{_e(s.get("label"))}</b><p>{_e(s.get("value"))}</p><p class="hint">{_e(s.get("note"))}</p></li>'
+        f'<li><b>{_e(s.get("label"))}</b><p>{_e(s.get("value"))}</p><p class="hint">{_e(_draft_note(s.get("note")))}</p></li>'
         for s in steps
     )
     return (
@@ -103,7 +117,9 @@ def _card(
     company = job.company_name if job else ""
     status_label = _STATUS_LABEL.get(app_row.status, app_row.status)
     missing = ""
-    if app_row.missing_fields:
+    # Once the person has submitted, the form's open questions and drafts are history, not a to-do.
+    submitted = app_row.status == ApplicationStatus.submitted.value
+    if app_row.missing_fields and not submitted:
         questions = questions or {}
         answerable = [questions[k] for m in app_row.missing_fields if (k := question_key(m)) in questions]
         plain = [m for m in app_row.missing_fields if question_key(m) not in questions]
@@ -148,7 +164,7 @@ def _card(
 <article class="card">
   <h2>{_e(title)}</h2>
   <p class="muted">{_e(company)} · {_e(status_label)}</p>
-  {how}{error}{missing}{_drafts(app_row)}{_outreach(app_row, waiting)}
+  {how}{error}{missing}{"" if submitted else _drafts(app_row, questions)}{_outreach(app_row, waiting)}
   <div class="job-foot">{"".join(actions)}</div>
 </article>
 """
@@ -159,18 +175,19 @@ def _outreach(app_row: Application, waiting: int) -> str:
     if app_row.status != ApplicationStatus.submitted.value or app_row.outreach_state is None:
         return ""
     link = f'<a href="/jobs/{_e(str(app_row.job_id))}/outreach">'
+    # Drafts ready win over the background state, which may still say queued when the person drafted by hand.
+    if waiting:
+        return (
+            f'<p class="notice">{waiting} outreach {"draft is" if waiting == 1 else "drafts are"} ready. {link}Read and send them</a>: '
+            "Gmail sends in one click, and the extension types LinkedIn notes for you to send.</p>"
+        )
     if app_row.outreach_state == "queued":
         return (
             '<p class="hint">Finding the hiring manager and people in this role, and drafting a message to each. '
-            "This takes a few minutes; nothing is sent without you.</p>"
+            f"This takes a few minutes; nothing is sent without you. {link}Outreach for this job</a></p>"
         )
     if app_row.outreach_state == "no_contacts":
         return f'<p class="hint">No one at this company was found. {link}Look again or add someone</a>.</p>'
-    if waiting:
-        return (
-            f'<p class="notice">{waiting} outreach draft(s) ready. {link}Read and send them</a>: '
-            "Gmail sends in one click, and the extension types LinkedIn notes for you to send.</p>"
-        )
     return f'<p class="hint">{link}Outreach for this job</a></p>'
 
 
@@ -186,17 +203,23 @@ def applications_page(
     body = "".join(cards) or '<p class="muted">No applications prepared yet. Use Prepare apply on a listing.</p>'
     awaiting = sum(1 for r in rows if r.status == ApplicationStatus.filled_awaiting_review.value)
     banner = (
-        f'<p class="notice">{awaiting} application(s) filled and waiting for your review before submit.</p>'
+        f'<p class="notice">{awaiting} {"application is" if awaiting == 1 else "applications are"} filled and waiting for your review before submit.</p>'
         if awaiting
         else ""
     )
+    # Ask only for the setup still missing, not for what the person has already done.
+    needed = []
+    if db.scalar(select(ApplicationAnswers.id).where(ApplicationAnswers.applicant_id == applicant.id)) is None:
+        needed.append('<a href="/profile/apply-answers">apply answers</a>')
+    if db.scalar(select(ExtensionDevice.id).where(ExtensionDevice.applicant_id == applicant.id)) is None:
+        needed.append('an <a href="/account#extension">extension token</a>')
+    setup = f" Set {' and '.join(needed)} first." if needed else ""
     return page(
         "Applications",
         f"""
 <div class="page-head"><div>
   <h1>Applications</h1>
-  <p class="muted">The extension fills the form in your browser and stops before Submit.
-  Set <a href="/profile/apply-answers">apply answers</a> and an <a href="/account#extension">extension token</a> first.</p>
+  <p class="muted">The extension fills the form in your browser and stops before Submit.{setup}</p>
 </div></div>
 {banner}
 {body}
@@ -231,7 +254,7 @@ def application_detail(
     row = get_application(db, application_id, applicant.id)
     if row is None:
         return page("Not found", "<h1>Not found</h1>", status_code=404, header=applicant_bar(request, "applications"))
-    card = _card(request, row, db.get(Job, row.job_id), _questions(db, applicant.id))
+    card = _card(request, row, db.get(Job, row.job_id), _questions(db, applicant.id), drafts_waiting(db, row))
     return page(
         "Application",
         f'<p><a href="/applications">All applications</a></p>{card}',

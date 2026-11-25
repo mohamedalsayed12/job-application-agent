@@ -262,3 +262,10 @@ async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: h
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register
     assert register.count('href="/privacy"') == 2
+
+
+async def test_a_mistyped_registration_does_not_use_up_the_limit(client: httpx.AsyncClient) -> None:
+    for _ in range(6):
+        assert (await _register_only(client, email="not-an-email")).status_code == 400
+        assert (await _register_only(client, email="person@example.com", password="short")).status_code == 400
+    assert (await _register_only(client)).status_code == 303

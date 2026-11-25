@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.accounts import throttle
 from app.api.forms import require_csrf
-from app.applicants.apply_answers import AnswersInput, save_answers
+from app.applicants.apply_answers import (
+    AnswersInput,
+    document_file_name,
+    load_answers,
+    save_answers,
+)
 from app.applications.extension_device import issue_token
 from app.applications.fill_safety import (
     assert_plan_has_no_submit_clicks,
@@ -510,3 +515,16 @@ async def test_the_extension_cannot_mark_an_application_submitted(client: httpx.
     assert response.status_code == 400
     session.refresh(row)
     assert row.status == ApplicationStatus.ready_to_fill.value
+
+
+async def test_downloaded_files_carry_the_persons_name(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    # Before any apply answers are saved there is no name to use.
+    assert document_file_name(session, applicant.id, "CV", "pdf") == "CV.pdf"
+    _answers(session, applicant)
+    assert document_file_name(session, applicant.id, "CV", "pdf") == "Mo-Ali-CV.pdf"
+    row = load_answers(session, applicant.id)
+    row.legal_first_name, row.legal_last_name = "José", "O'Neill-Smith"
+    # The name goes into a header, so it is plain ASCII with no quotes.
+    assert document_file_name(session, applicant.id, "Cover-Letter", "docx") == "Jose-O-Neill-Smith-Cover-Letter.docx"

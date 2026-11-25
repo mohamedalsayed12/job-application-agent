@@ -90,26 +90,35 @@ def diversity_fields(answers: AnswersInput) -> str:
     )
 
 
-def _extra_field(question: Question, current: str, *, from_cv: bool) -> str:
+def _extra_field(question: Question, current: str, *, from_cv: bool, required: bool = False) -> str:
     name = EXTRA_PREFIX + question.key
     tag = ' <span class="from-cv">from your CV</span>' if from_cv else ""
     hint = f' <span class="hint">{esc(question.hint)}</span>' if question.hint else ""
     if question.kind == "choice":
         chosen = current or (PREFER_NOT if question.prefer_not else "")
-        control = choice_select(name, question.choices, chosen, blank=None if question.prefer_not else "Not set")
+        blank = None if question.prefer_not else ("Choose one" if required else "Not set")
+        control = choice_select(name, question.choices, chosen, blank=blank, required=required)
     elif question.kind == "yes_no":
-        control = yes_no_select(name, current or "unset")
+        control = yes_no_select(name, current or "unset", required=required)
     else:
         kind = {"date": "date", "month": "month"}.get(question.kind, "text")
         placeholder = ' placeholder="YYYY-MM"' if kind == "month" else ""
-        control = f'<input name="{name}" id="{name}" type="{kind}"{placeholder} value="{esc(current)}"/>'
+        control = f'<input name="{name}" id="{name}" type="{kind}"{placeholder} value="{esc(current)}"{" required" if required else ""}/>'
     return f"<label>{esc(question.label)}{tag}{hint} {control}</label>"
 
 
-def extra_fields(answers: AnswersInput, group: str, *, from_cv: set[str] | frozenset[str] = frozenset()) -> str:
-    """Every extra question in one group, showing what is saved. Each one is optional."""
+def extra_fields(
+    answers: AnswersInput,
+    group: str,
+    *,
+    from_cv: set[str] | frozenset[str] = frozenset(),
+    required: set[str] | frozenset[str] = frozenset(),
+) -> str:
+    """Every extra question in one group, showing what is saved. Optional unless its key is in `required`."""
     return "".join(
-        _extra_field(question, answers.extra.get(question.key, ""), from_cv=question.key in from_cv)
+        _extra_field(
+            question, answers.extra.get(question.key, ""), from_cv=question.key in from_cv, required=question.key in required
+        )
         for question in questions_in(group)
     )
 

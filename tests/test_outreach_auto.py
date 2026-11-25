@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.applications import _draft_note
+from app.api.applications import _outreach as _outreach_hint
+from app.applications.drafts import CORRECTED_NOTE
 from app.applications.prepare import application_for_job, mark_submitted
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.models import (
+    Application,
+    ApplicationStatus,
     OutreachChannel,
     OutreachContact,
     OutreachDraft,
@@ -253,3 +259,20 @@ async def test_extension_gets_the_note_the_person_chose_for_linkedin(session: Se
         assert client.get("/extension/outreach/notes", headers=headers).json() == []
     finally:
         app.dependency_overrides.clear()
+
+
+def test_the_card_counts_drafts_ready_even_while_still_queued() -> None:
+    application = Application(
+        job_id=uuid.uuid4(), status=ApplicationStatus.submitted.value, outreach_state="queued"
+    )
+    assert "Finding the hiring manager" in _outreach_hint(application, 0)
+    assert "1 outreach draft is ready" in _outreach_hint(application, 1)
+    assert "3 outreach drafts are ready" in _outreach_hint(application, 3)
+    application.status = ApplicationStatus.filled_awaiting_review.value
+    assert _outreach_hint(application, 3) == ""
+
+
+def test_old_cut_off_draft_notes_show_the_fixed_wording() -> None:
+    assert _draft_note("Drafted and corrected (The draft claimed experience with Kube") == CORRECTED_NOTE
+    assert _draft_note("From your saved answer.") == "From your saved answer."
+    assert _draft_note(None) == ""

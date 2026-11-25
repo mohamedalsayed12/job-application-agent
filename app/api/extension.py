@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.jobs import get_gateway
+from app.applicants.apply_answers import document_file_name
 from app.applicants.cv import cv_for
 from app.applications.drafts import draft_with_ai
 from app.applications.extension_device import applicant_for_token
@@ -211,7 +212,8 @@ def download_cv(
     media = "application/pdf" if file_type == CvFileType.pdf.value else (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    name = f"cv.{file_type}"
+    # Employers see this name on the uploaded file, so it is the person's name, not "cv.pdf".
+    name = document_file_name(db, applicant_id, "CV", file_type)
     return Response(
         content=content,
         media_type=media,

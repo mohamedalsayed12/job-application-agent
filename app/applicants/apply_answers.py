@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass, field, fields
 from datetime import date
@@ -367,3 +368,13 @@ def answers_as_map(row: ApplicationAnswers | None, *, email: str) -> dict[str, s
     # The choice made once in the extra questions wins over the older free-text answer.
     base["heard_about"] = base["heard_about_source"] or row.heard_about
     return base
+
+
+def document_file_name(session: Session, applicant_id: uuid.UUID, document: str, extension: str) -> str:
+    """A file name an employer sees, such as Sam-Taylor-CV.pdf. Without a saved name, just CV.pdf."""
+    row = load_answers(session, applicant_id)
+    parts = [row.legal_first_name or "", row.legal_last_name or ""] if row is not None else []
+    # The header must be plain ASCII, so José becomes Jose rather than Jos.
+    plain = [unicodedata.normalize("NFKD", part).encode("ascii", "ignore").decode() for part in parts]
+    words = [word for part in plain for word in re.findall(r"[A-Za-z0-9]+", part)]
+    return "-".join([*words, document]) + f".{extension}"

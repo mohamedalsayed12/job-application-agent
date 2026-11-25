@@ -54,20 +54,6 @@ router = APIRouter(tags=["outreach"])
 _CSRF = [Depends(require_csrf)]
 _SEE_OTHER = 303
 _APPLY_FIRST = "Mark this job as applied first. Outreach comes after you've sent your application."
-_NOTICES = {
-    "employees_actor_empty": "No people were found at this company right now. Try again later, or look them up on LinkedIn yourself.",
-    "budget": "The monthly spending cap is used up, so finding people is paused until next month.",
-    "saved": "Draft saved.",
-    "draft_failed": "Could not draft a message for this person. Try again, or write it yourself.",
-}
-
-
-def _notice_text(notice: str | None) -> str | None:
-    if not notice:
-        return None
-    return _NOTICES.get(notice, notice)
-
-
 async def get_gateway() -> AsyncIterator[FetchGateway]:
     gateway = FetchGateway()
     try:
@@ -102,8 +88,47 @@ def _apply_first(job: Job) -> RedirectResponse:
     return RedirectResponse(f"/jobs/{job.id}/outreach?notice={quote(_APPLY_FIRST)}", status_code=_SEE_OTHER)
 
 
-def _error(message: str | None) -> str:
-    return f'<p class="error">{html.escape(message)}</p>' if message else ""
+# What the codes in ?notice= mean to the person: (sentence, is it a problem).
+_NOTICES: dict[str, tuple[str, bool]] = {
+    "not_configured": ("Finding people and drafting messages isn't set up on this server yet.", True),
+    "budget": ("The monthly spending cap is used up, so finding people is paused until next month.", True),
+    "hm_actor_empty": ("We couldn't find the hiring manager for this job. Try again later.", True),
+    "employees_actor_empty": (
+        "No people were found at this company right now. Try again later, or look them up on LinkedIn yourself.", True
+    ),
+    "draft_failed": ("Could not draft a message for this person. Try again, or write it yourself.", True),
+    "saved": ("Draft saved.", False),
+    "sent": ("Sent from your Gmail.", False),
+    "dry_run": (
+        (
+            "Test mode is on, so this email was not sent. Copy the message and send it yourself, "
+            "or ask the person who runs this site to switch test mode off."
+        ),
+        True,
+    ),
+    "confirmation_required": ("Tick the box to confirm you may email this person before sending.", True),
+    "no_recipient_email": ("We don't have an email address for this person. Copy the message or use LinkedIn.", True),
+    "already_sent": ("This message has already been sent.", True),
+    "daily_cap": ("You've reached today's sending limit. Try again tomorrow.", True),
+    "gmail_not_connected": ("Connect Gmail on your account page before sending.", True),
+    "wrong_channel": ("This message is for LinkedIn, not email.", True),
+    "missing_draft": ("There's no message to send yet.", True),
+    "token_unreadable": ("Your Gmail connection needs renewing. Disconnect and connect Gmail again.", True),
+    "connected": ("Gmail is connected.", False),
+    "disconnected": ("Gmail is disconnected.", False),
+    "state_mismatch": ("The Gmail sign-in didn't match this session. Try connecting again.", True),
+    "no_email": ("Gmail didn't share your address. Try connecting again.", True),
+}
+_GMAIL_NOTICES = {"not_configured": ("Sending from Gmail isn't set up on this server yet.", True)}
+
+
+def _error(message: str | None, *, gmail: bool = False) -> str:
+    """A notice code as a sentence. Unknown text shows as it is, as a problem unless it reports contacts found."""
+    if not message:
+        return ""
+    known = (_GMAIL_NOTICES.get(message) if gmail else None) or _NOTICES.get(message)
+    text, problem = known or (message, not message.startswith("Found "))
+    return f'<p class="{"error" if problem else "notice"}">{html.escape(text)}</p>'
 
 
 def _find_button(job: Job, request: Request, *, applied: bool) -> str:
@@ -123,7 +148,8 @@ def _contacts_html(
         title = html.escape(contact.title or "Title unknown")
         name = html.escape(contact.full_name)
         kind = html.escape(contact.role_kind.replace("_", " "))
-        email = f"{html.escape(contact.email or 'No email')}. {html.escape(email_note(contact))}"
+        # email_note already says when there is no address, so the address is shown only when there is one.
+        email = f"{html.escape(contact.email) + '. ' if contact.email else ''}{html.escape(email_note(contact))}"
         # People are found by company name, so another firm with the same name can slip in: show whose staff they are.
         employer = html.escape(contact.company_name or job.company_name)
         rows.append(
@@ -143,8 +169,8 @@ def _contacts_html(
 <p><a href="/jobs/{job.id}">← Back to job</a></p>
 <div class="card">
 <h1>Outreach · {html.escape(job.title)}</h1>
-<p class="muted">{html.escape(job.company_name)}. Contacts come from Apify LinkedIn people actors.
-You review every message before anything is sent. Cold email is your responsibility under UK PECR.</p>
+<p class="muted">{html.escape(job.company_name)}. We find people who work there from public LinkedIn profiles.
+You review every message before anything is sent. You are responsible for following UK rules on unsolicited email (PECR).</p>
 {_error(notice)}
 {_find_button(job, request, applied=applied)}
 </div>
@@ -167,7 +193,7 @@ def outreach_list(
             .order_by(OutreachContact.created_at.desc())
         )
     )
-    notice = _notice_text(request.query_params.get("notice"))
+    notice = request.query_params.get("notice")
     return page(
         f"Outreach · {job.title}",
         _contacts_html(job, contacts, request, applied=has_applied(db, applicant.id, job.id), notice=notice),
@@ -196,7 +222,7 @@ async def outreach_find(
         settings=settings,
         persist=db.commit,
     )
-    notice = report.stopped_by or report.problem or f"Found {report.added} new contact(s)."
+    notice = report.stopped_by or report.problem or f"Found {report.added} new {'contact' if report.added == 1 else 'contacts'}."
     return RedirectResponse(f"/jobs/{job.id}/outreach?notice={quote(notice)}", status_code=_SEE_OTHER)
 
 
@@ -314,17 +340,19 @@ def _draft_html(
         body = html.escape(current_body(gmail_draft))
         subject = html.escape(gmail_draft.subject or "")
         send_disabled = "" if (connection_email and contact.email) else "disabled"
-        connect_hint = (
-            f"<p class=\"muted\">Sending as {html.escape(connection_email)}.</p>"
-            if connection_email
-            else '<p class="muted">Connect Gmail on <a href="/account/gmail">your account</a> first.</p>'
-        )
+        if not gmail_ready:
+            connect_hint = (
+                '<p class="muted">Sending from Gmail isn&#39;t set up on this server yet. '
+                "Copy the message into your own email instead.</p>"
+            )
+        elif connection_email:
+            connect_hint = f"<p class=\"muted\">Sending as {html.escape(connection_email)}.</p>"
+        else:
+            connect_hint = '<p class="muted">Connect Gmail on <a href="/account/gmail">your account</a> first.</p>'
         if not contact.email:
             connect_hint += '<p class="muted">No email for this person, so Gmail can\'t send. Use the LinkedIn note.</p>'
         else:
             connect_hint += f'<p class="muted">To: {html.escape(contact.email)}. {html.escape(email_note(contact))}</p>'
-        if not gmail_ready:
-            connect_hint = '<p class="muted">Gmail OAuth is not configured on this server.</p>'
         gmail_form = f"""
 <form method="post" action="/jobs/{job.id}/outreach/{contact.id}/send">
   {csrf_field(request)}
@@ -535,8 +563,8 @@ def gmail_page(
         body = f"""
 <div class="card">
 <h1>Gmail</h1>
-{_error(notice)}
-<p class="muted">Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET and GMAIL_REDIRECT_URI to connect.</p>
+{_error(notice, gmail=True)}
+<p class="muted">Sending from Gmail isn't set up on this server yet. You can still copy each message and send it yourself.</p>
 <p><a href="/account">← Account</a></p>
 </div>
 """
@@ -544,7 +572,7 @@ def gmail_page(
         body = f"""
 <div class="card">
 <h1>Gmail</h1>
-{_error(notice)}
+{_error(notice, gmail=True)}
 <p>Connected as <b>{html.escape(connection.email)}</b>.</p>
 <form method="post" action="/account/gmail/disconnect">
   {csrf_field(request)}
@@ -557,9 +585,9 @@ def gmail_page(
         body = f"""
 <div class="card">
 <h1>Gmail</h1>
-{_error(notice)}
-<p>Connect Gmail so you can send approved outreach drafts. Tokens are sealed at rest. Dry-run is
-{"on" if settings.outreach_gmail_dry_run else "off"}.</p>
+{_error(notice, gmail=True)}
+<p>Connect Gmail to send the outreach messages you approve from your own address. Nothing is sent without you.</p>
+{"<p class='hint'>Test mode is on: pressing Send records the message but does not email it.</p>" if settings.outreach_gmail_dry_run else ""}
 <form method="post" action="/account/gmail/connect">
   {csrf_field(request)}
   <button type="submit" class="primary">Connect Gmail</button>
