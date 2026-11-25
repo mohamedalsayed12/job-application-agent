@@ -487,8 +487,8 @@ def _account_page(
 <div class="card">
 <p>Logged in as {html.escape(applicant.email)}.</p>
 <p><a href="/listings">Your job matches</a> · <a href="/applications">Applications</a> ·
-<a href="/profile">Your profile and CV</a> · <a href="/profile/apply-answers">Apply answers</a> ·
-<a href="/account/gmail">Gmail for outreach</a></p>
+<a href="/profile">Your profile and CV</a> · <a href="/profile/apply-answers">Apply answers</a>
+</p>
 <form method="post" action="/logout">{csrf_field(request)}<button type="submit">Log out</button></form>
 </div>
 <div class="card" id="extension">

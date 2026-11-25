@@ -1,8 +1,8 @@
 """After "Submitted": find people and draft outreach without being asked (D76).
 
 Marking an application submitted queues it. Each worker cycle takes a few queued applications, finds the
-hiring manager and people doing the same job, finds an email for each, researches them and drafts a Gmail
-message and a LinkedIn note. Nothing is sent: the person reads every draft and sends it with one click.
+hiring manager and people doing the same job, finds an email for each, researches them and drafts an email
+to each person with an address. Nothing is sent: the person reads every draft and sends it from their own Gmail.
 A spending cap pauses the work and the next cycle carries on where it stopped.
 """
 
@@ -135,9 +135,8 @@ async def _prepare_one(
         researched = await research_contact(session, contact, gateway=gateway, settings=settings, persist=persist, now=now)
         if researched.stopped_by == "budget":
             return "budget"
-        channels = [OutreachChannel.linkedin_note] if contact.linkedin_url else []
-        if email.email:
-            channels.insert(0, OutreachChannel.gmail)
+        # Only emails are drafted: the person opens each one in their own Gmail and sends it themselves.
+        channels = [OutreachChannel.gmail] if email.email else []
         for channel in channels:
             if _has_draft(session, contact, channel):
                 continue
@@ -164,14 +163,16 @@ async def _prepare_one(
 
 
 def drafts_waiting(session: Session, application: Application) -> int:
-    """Drafts for this application's contacts that the person has not sent or copied yet."""
+    """Emails for this application's contacts that the person has not opened in Gmail or copied yet."""
     contact_ids = [c.id for c in _contacts(session, application)]
     if not contact_ids:
         return 0
     return len(
         session.scalars(
             select(OutreachDraft.id).where(
-                OutreachDraft.contact_id.in_(contact_ids), OutreachDraft.status.in_(("draft", "edited"))
+                OutreachDraft.contact_id.in_(contact_ids),
+                OutreachDraft.channel == OutreachChannel.gmail.value,
+                OutreachDraft.status.in_(("draft", "edited")),
             )
         ).all()
     )

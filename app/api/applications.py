@@ -178,12 +178,12 @@ def _outreach(app_row: Application, waiting: int) -> str:
     # Drafts ready win over the background state, which may still say queued when the person drafted by hand.
     if waiting:
         return (
-            f'<p class="notice">{waiting} outreach {"draft is" if waiting == 1 else "drafts are"} ready. {link}Read and send them</a>: '
-            "Gmail sends in one click, and the extension types LinkedIn notes for you to send.</p>"
+            f'<p class="notice">{waiting} outreach {"email is" if waiting == 1 else "emails are"} ready. {link}Read them</a>, '
+            "then open each one in your own Gmail and send it yourself.</p>"
         )
     if app_row.outreach_state == "queued":
         return (
-            '<p class="hint">Finding the hiring manager and people in this role, and drafting a message to each. '
+            '<p class="hint">Finding the hiring manager and people in this role, and drafting an email to each. '
             f"This takes a few minutes; nothing is sent without you. {link}Outreach for this job</a></p>"
         )
     if app_row.outreach_state == "no_contacts":

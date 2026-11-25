@@ -1,15 +1,14 @@
-"""Outreach UI: find contacts, draft, edit, Gmail send, LinkedIn copy."""
+"""Outreach UI: find contacts, draft an email to each, and open it in the person's own Gmail to send."""
 
 from __future__ import annotations
 
 import html
-import secrets
 import uuid
 from collections.abc import AsyncIterator
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -36,17 +35,7 @@ from app.models import (
 from app.outreach.draft import current_body, draft_for_contact
 from app.outreach.email_find import email_note, find_email
 from app.outreach.find import find_contacts
-from app.outreach.gmail import (
-    active_connection,
-    authorize_url,
-    exchange_code,
-    gmail_configured,
-    profile_email,
-    record_copy,
-    revoke_connection,
-    save_connection,
-    send_draft,
-)
+from app.outreach.gmail import active_connection, record_copy, revoke_connection
 from app.outreach.patterns import load_patterns
 from app.outreach.research import research_contact
 
@@ -98,36 +87,15 @@ _NOTICES: dict[str, tuple[str, bool]] = {
     ),
     "draft_failed": ("Could not draft a message for this person. Try again, or write it yourself.", True),
     "saved": ("Draft saved.", False),
-    "sent": ("Sent from your Gmail.", False),
-    "dry_run": (
-        (
-            "Test mode is on, so this email was not sent. Copy the message and send it yourself, "
-            "or ask the person who runs this site to switch test mode off."
-        ),
-        True,
-    ),
-    "confirmation_required": ("Tick the box to confirm you may email this person before sending.", True),
-    "no_recipient_email": ("We don't have an email address for this person. Copy the message or use LinkedIn.", True),
-    "already_sent": ("This message has already been sent.", True),
-    "daily_cap": ("You've reached today's sending limit. Try again tomorrow.", True),
-    "gmail_not_connected": ("Connect Gmail on your account page before sending.", True),
-    "wrong_channel": ("This message is for LinkedIn, not email.", True),
-    "missing_draft": ("There's no message to send yet.", True),
-    "token_unreadable": ("Your Gmail connection needs renewing. Disconnect and connect Gmail again.", True),
-    "connected": ("Gmail is connected.", False),
     "disconnected": ("Gmail is disconnected.", False),
-    "state_mismatch": ("The Gmail sign-in didn't match this session. Try connecting again.", True),
-    "no_email": ("Gmail didn't share your address. Try connecting again.", True),
 }
-_GMAIL_NOTICES = {"not_configured": ("Sending from Gmail isn't set up on this server yet.", True)}
 
 
-def _error(message: str | None, *, gmail: bool = False) -> str:
+def _error(message: str | None) -> str:
     """A notice code as a sentence. Unknown text shows as it is, as a problem unless it reports contacts found."""
     if not message:
         return ""
-    known = (_GMAIL_NOTICES.get(message) if gmail else None) or _NOTICES.get(message)
-    text, problem = known or (message, not message.startswith("Found "))
+    text, problem = _NOTICES.get(message) or (message, not message.startswith("Found "))
     return f'<p class="{"error" if problem else "notice"}">{html.escape(text)}</p>'
 
 
@@ -160,7 +128,7 @@ def _contacts_html(
   <p class="muted">{email}</p>
   <form method="post" action="/jobs/{job.id}/outreach/{contact.id}/draft">
     {csrf_field(request)}
-    <button type="submit" class="primary">Research and draft</button>
+    <button type="submit" class="primary">Research and draft an email</button>
   </form>
 </div>"""
         )
@@ -169,8 +137,9 @@ def _contacts_html(
 <p><a href="/jobs/{job.id}">← Back to job</a></p>
 <div class="card">
 <h1>Outreach · {html.escape(job.title)}</h1>
-<p class="muted">{html.escape(job.company_name)}. We find people who work there from public LinkedIn profiles.
-You review every message before anything is sent. You are responsible for following UK rules on unsolicited email (PECR).</p>
+<p class="muted">{html.escape(job.company_name)}. We find people who work there from public LinkedIn profiles
+and draft an email to each. You read it, open it in your own Gmail and send it yourself.
+You are responsible for following UK rules on unsolicited email (PECR).</p>
 {_error(notice)}
 {_find_button(job, request, applied=applied)}
 </div>
@@ -256,20 +225,8 @@ async def outreach_draft_create(
         settings=settings,
         persist=db.commit,
     )
-    note = await draft_for_contact(
-        db,
-        applicant_id=applicant.id,
-        job=job,
-        contact=contact,
-        research=researched.research,
-        channel=OutreachChannel.linkedin_note,
-        gateway=gateway,
-        settings=settings,
-        persist=db.commit,
-    )
-    draft = gmail.draft or note.draft
-    if draft is None:
-        problem = gmail.problem or note.problem or gmail.stopped_by or note.stopped_by or "draft_failed"
+    if gmail.draft is None:
+        problem = gmail.problem or gmail.stopped_by or "draft_failed"
         return RedirectResponse(f"/jobs/{job.id}/outreach?notice={quote(problem)}", status_code=_SEE_OTHER)
     return RedirectResponse(f"/jobs/{job.id}/outreach/{contact.id}", status_code=_SEE_OTHER)
 
@@ -286,35 +243,26 @@ def outreach_contact_page(
     contact = _own_contact(db, applicant, contact_id)
     if contact.job_id != job.id:
         raise HTTPException(status_code=404)
-    drafts = list(
-        db.scalars(
-            select(OutreachDraft).where(
-                OutreachDraft.applicant_id == applicant.id,
-                OutreachDraft.contact_id == contact.id,
-            )
+    gmail_draft = db.scalar(
+        select(OutreachDraft).where(
+            OutreachDraft.applicant_id == applicant.id,
+            OutreachDraft.contact_id == contact.id,
+            OutreachDraft.channel == OutreachChannel.gmail.value,
         )
     )
     research = db.scalar(select(OutreachResearch).where(OutreachResearch.contact_id == contact.id))
-    gmail_draft = next((d for d in drafts if d.channel == OutreachChannel.gmail.value), None)
-    note_draft = next((d for d in drafts if d.channel == OutreachChannel.linkedin_note.value), None)
-    connection = active_connection(db, applicant.id)
     notice = request.query_params.get("notice")
     return page(
         f"Message · {contact.full_name}",
-        _draft_html(
-            request,
-            job,
-            contact,
-            gmail_draft=gmail_draft,
-            note_draft=note_draft,
-            research=research,
-            connection_email=connection.email if connection else None,
-            gmail_ready=gmail_configured(get_settings()),
-            notice=notice,
-        ),
+        _draft_html(request, job, contact, gmail_draft=gmail_draft, research=research, notice=notice),
         header=applicant_bar(request, "matches"),
         narrow=True,
     )
+
+
+def gmail_compose_url(*, to: str, subject: str, body: str) -> str:
+    """Gmail's compose window with the email filled in. The person reads it there and presses Send."""
+    return "https://mail.google.com/mail/?" + urlencode({"view": "cm", "fs": "1", "to": to, "su": subject, "body": body})
 
 
 def _draft_html(
@@ -323,10 +271,7 @@ def _draft_html(
     contact: OutreachContact,
     *,
     gmail_draft: OutreachDraft | None,
-    note_draft: OutreachDraft | None,
     research: OutreachResearch | None,
-    connection_email: str | None,
-    gmail_ready: bool,
     notice: str | None,
 ) -> str:
     library = load_patterns()
@@ -335,66 +280,34 @@ def _draft_html(
     quotes = ""
     if research and research.quotes:
         quotes = "<ul>" + "".join(f"<li>{html.escape(str(q.get('text') or '')[:200])}</li>" for q in research.quotes[:5]) + "</ul>"
-    gmail_form = "<p class=\"muted\">No Gmail draft yet. Press Research and draft again.</p>"
+    gmail_form = '<p class="muted">No email drafted yet. Go back and press Research and draft an email.</p>'
     if gmail_draft:
         body = html.escape(current_body(gmail_draft))
         subject = html.escape(gmail_draft.subject or "")
-        send_disabled = "" if (connection_email and contact.email) else "disabled"
-        if not gmail_ready:
-            connect_hint = (
-                '<p class="muted">Sending from Gmail isn&#39;t set up on this server yet. '
-                "Copy the message into your own email instead.</p>"
+        if contact.email:
+            to = f'<p class="muted">To: {html.escape(contact.email)}. {html.escape(email_note(contact))}</p>'
+            open_button = (
+                '<button type="submit" name="action" value="gmail" class="primary" formtarget="_blank">'
+                "Open in Gmail</button>"
             )
-        elif connection_email:
-            connect_hint = f"<p class=\"muted\">Sending as {html.escape(connection_email)}.</p>"
         else:
-            connect_hint = '<p class="muted">Connect Gmail on <a href="/account/gmail">your account</a> first.</p>'
-        if not contact.email:
-            connect_hint += '<p class="muted">No email for this person, so Gmail can\'t send. Use the LinkedIn note.</p>'
-        else:
-            connect_hint += f'<p class="muted">To: {html.escape(contact.email)}. {html.escape(email_note(contact))}</p>'
+            to = f'<p class="muted">{html.escape(email_note(contact))} Copy the email and add their address yourself.</p>'
+            open_button = ""
         gmail_form = f"""
-<form method="post" action="/jobs/{job.id}/outreach/{contact.id}/send">
+<form method="post" action="/jobs/{job.id}/outreach/{contact.id}/take">
   {csrf_field(request)}
   <input type="hidden" name="draft_id" value="{gmail_draft.id}"/>
   <label>Subject <input name="subject" value="{subject}"/></label>
   <label>Body <textarea name="body" rows="10">{body}</textarea></label>
-  {connect_hint}
-  <label><input type="checkbox" name="confirm" value="1"/> I confirm I may email this person and the text above is what to send.</label>
+  {to}
+  <p class="hint">Open in Gmail starts a new email in your own Gmail with any edits above.
+  Read it there and press Send yourself. Nothing is sent from this site.</p>
   <p>
+    {open_button}
+    <button type="submit" name="action" value="copy">Copy the email</button>
     <button type="submit" name="action" value="save">Save edits</button>
-    <button type="submit" name="action" value="send" class="primary" {send_disabled}>Send with Gmail</button>
   </p>
 </form>
-"""
-    note_form = "<p class=\"muted\">No LinkedIn note yet.</p>"
-    if note_draft:
-        note_body = html.escape(current_body(note_draft))
-        linkedin_send = (
-            f"""<form method="post" action="/jobs/{job.id}/outreach/{contact.id}/linkedin" target="_blank">
-  {csrf_field(request)}
-  <input type="hidden" name="draft_id" value="{note_draft.id}"/>
-  <button type="submit" class="primary">Open on LinkedIn with the note typed in</button>
-</form>
-<p class="muted">The Job Agent extension opens Connect, adds the note and stops: you read it and press Send.
-Save any edits first.</p>"""
-            if contact.linkedin_url
-            else '<p class="muted">No LinkedIn profile URL.</p>'
-        )
-        note_form = f"""
-<form method="post" action="/jobs/{job.id}/outreach/{contact.id}/save">
-  {csrf_field(request)}
-  <input type="hidden" name="draft_id" value="{note_draft.id}"/>
-  <label>LinkedIn note <textarea name="body" rows="4" maxlength="300">{note_body}</textarea></label>
-  <p><button type="submit">Save note</button></p>
-</form>
-{linkedin_send}
-<form method="post" action="/jobs/{job.id}/outreach/{contact.id}/copy">
-  {csrf_field(request)}
-  <input type="hidden" name="draft_id" value="{note_draft.id}"/>
-  <button type="submit">Just copy the note</button>
-</form>
-<pre id="note-text" style="display:none">{note_body}</pre>
 """
     return f"""
 <p><a href="/jobs/{job.id}/outreach">← Contacts</a></p>
@@ -408,111 +321,59 @@ Save any edits first.</p>"""
 {quotes or '<p class="muted">None yet.</p>'}
 </div>
 <div class="card">
-<h2>Gmail</h2>
+<h2>Email</h2>
 {gmail_form}
-</div>
-<div class="card">
-<h2>LinkedIn (manual)</h2>
-{note_form}
 </div>
 """
 
 
-@router.post("/jobs/{job_id}/outreach/{contact_id}/save", response_class=HTMLResponse, dependencies=_CSRF)
-def outreach_save(
-    job_id: uuid.UUID,
-    contact_id: uuid.UUID,
-    draft_id: uuid.UUID = Form(...),
-    body: str = Form(...),
-    subject: str | None = Form(None),
-    applicant: Applicant = Depends(require_login),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
-    contact = _own_contact(db, applicant, contact_id)
-    draft = db.get(OutreachDraft, draft_id)
-    if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
-        raise HTTPException(status_code=404)
-    draft.user_edited_body = body.strip()
-    if draft.channel == OutreachChannel.gmail.value and subject is not None:
-        draft.subject = subject.strip() or draft.subject
-    draft.status = OutreachDraftStatus.edited.value
-    db.commit()
-    return RedirectResponse(f"/jobs/{job.id}/outreach/{contact.id}?notice=saved", status_code=_SEE_OTHER)
-
-
-@router.post("/jobs/{job_id}/outreach/{contact_id}/send", response_class=HTMLResponse, dependencies=_CSRF)
-async def outreach_send(
-    job_id: uuid.UUID,
-    contact_id: uuid.UUID,
-    draft_id: uuid.UUID = Form(...),
-    body: str = Form(...),
-    subject: str | None = Form(None),
-    confirm: str | None = Form(None),
-    action: str = Form("send"),
-    applicant: Applicant = Depends(require_login),
-    db: Session = Depends(get_db),
-    gateway: FetchGateway = Depends(get_gateway),
-    settings: Settings = Depends(get_settings),
-) -> RedirectResponse:
-    job = _open_matched_job(db, applicant, job_id)
-    contact = _own_contact(db, applicant, contact_id)
-    draft = db.get(OutreachDraft, draft_id)
-    if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
-        raise HTTPException(status_code=404)
-    draft.user_edited_body = body.strip()
-    if draft.channel == OutreachChannel.gmail.value and subject is not None:
-        draft.subject = subject.strip() or draft.subject
-    draft.status = OutreachDraftStatus.edited.value
-    if action != "send":
-        db.commit()
-        return RedirectResponse(f"/jobs/{job.id}/outreach/{contact.id}?notice=saved", status_code=_SEE_OTHER)
-    result = await send_draft(
-        db,
-        draft,
-        to_email=contact.email or "",
-        gateway=gateway,
-        settings=settings,
-        confirm=confirm == "1",
-    )
-    db.commit()
-    return RedirectResponse(
-        f"/jobs/{job.id}/outreach/{contact.id}?notice={quote(result.error or result.status)}",
-        status_code=_SEE_OTHER,
-    )
-
-
-@router.post("/jobs/{job_id}/outreach/{contact_id}/copy", response_class=HTMLResponse, dependencies=_CSRF)
-def outreach_copy(
+@router.post("/jobs/{job_id}/outreach/{contact_id}/take", response_class=HTMLResponse, dependencies=_CSRF)
+def outreach_take(
     request: Request,
     job_id: uuid.UUID,
     contact_id: uuid.UUID,
     draft_id: uuid.UUID = Form(...),
+    body: str = Form(...),
+    subject: str = Form(""),
+    action: str = Form("save"),
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
-) -> HTMLResponse:
+) -> Response:
+    """Save the edits, then open the email in Gmail or show it to copy. The person sends it themselves."""
     job = _open_matched_job(db, applicant, job_id)
     contact = _own_contact(db, applicant, contact_id)
     draft = db.get(OutreachDraft, draft_id)
-    if draft is None or draft.applicant_id != applicant.id or draft.contact_id != contact.id:
+    if (
+        draft is None
+        or draft.applicant_id != applicant.id
+        or draft.contact_id != contact.id
+        or draft.channel != OutreachChannel.gmail.value
+    ):
         raise HTTPException(status_code=404)
+    draft.user_edited_body = body.strip() or draft.user_edited_body
+    draft.subject = subject.strip() or draft.subject
+    if action == "save":
+        draft.status = OutreachDraftStatus.edited.value
+        db.commit()
+        return RedirectResponse(f"/jobs/{job.id}/outreach/{contact.id}?notice=saved", status_code=_SEE_OTHER)
+    # Taken to send: it no longer counts as waiting on the application card.
     record_copy(db, draft)
     db.commit()
     text = current_body(draft)
-    profile = (
-        f'<p><a href="{html.escape(contact.linkedin_url, quote=True)}" rel="noopener noreferrer" target="_blank">Open profile</a></p>'
-        if contact.linkedin_url
-        else ""
-    )
+    if action == "gmail" and contact.email:
+        return RedirectResponse(
+            gmail_compose_url(to=contact.email, subject=draft.subject or "", body=text), status_code=_SEE_OTHER
+        )
     return page(
-        "Copy LinkedIn note",
+        "Copy the email",
         f"""
 <p><a href="/jobs/{job.id}/outreach/{contact.id}">← Back</a></p>
 <div class="card">
-<h1>LinkedIn note ready</h1>
-<p>Select the text and copy it, then paste into LinkedIn yourself. This app never sends LinkedIn messages.</p>
-<textarea id="copy-box" rows="6" readonly>{html.escape(text)}</textarea>
-{profile}
+<h1>Email ready to copy</h1>
+<p>Paste it into a new email in your own Gmail and send it yourself. This site never sends email for you.</p>
+<p class="muted">To: {html.escape(contact.email or "no address found")}</p>
+<label>Subject <input readonly value="{html.escape(draft.subject or "")}"/></label>
+<label>Body <textarea id="copy-box" rows="10" readonly>{html.escape(text)}</textarea></label>
 <script>
 const box = document.getElementById("copy-box");
 box.focus(); box.select();
@@ -525,126 +386,31 @@ navigator.clipboard.writeText(box.value).catch(() => {{}});
     )
 
 
-@router.post("/jobs/{job_id}/outreach/{contact_id}/linkedin", dependencies=_CSRF)
-def outreach_linkedin(
-    job_id: uuid.UUID,
-    contact_id: uuid.UUID,
-    draft_id: uuid.UUID = Form(...),
-    applicant: Applicant = Depends(require_login),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    """Opens the profile; the extension sees the note chosen here and types it into LinkedIn's Connect box (D76)."""
-    _open_matched_job(db, applicant, job_id)
-    contact = _own_contact(db, applicant, contact_id)
-    draft = db.get(OutreachDraft, draft_id)
-    if (
-        draft is None
-        or draft.applicant_id != applicant.id
-        or draft.contact_id != contact.id
-        or draft.channel != OutreachChannel.linkedin_note.value
-        or not (contact.linkedin_url or "").startswith("https://")
-    ):
-        raise HTTPException(status_code=404)
-    record_copy(db, draft)
-    db.commit()
-    return RedirectResponse(contact.linkedin_url, status_code=_SEE_OTHER)
-
-
 @router.get("/account/gmail", response_class=HTMLResponse)
 def gmail_page(
     request: Request,
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
 ) -> HTMLResponse:
+    """Outreach emails open in the person's own Gmail now; this page only removes a connection made before that."""
     connection = active_connection(db, applicant.id)
-    notice = request.query_params.get("notice")
-    if not gmail_configured(settings):
-        body = f"""
-<div class="card">
-<h1>Gmail</h1>
-{_error(notice, gmail=True)}
-<p class="muted">Sending from Gmail isn't set up on this server yet. You can still copy each message and send it yourself.</p>
-<p><a href="/account">← Account</a></p>
-</div>
-"""
-    elif connection:
-        body = f"""
-<div class="card">
-<h1>Gmail</h1>
-{_error(notice, gmail=True)}
-<p>Connected as <b>{html.escape(connection.email)}</b>.</p>
+    if connection:
+        action = f"""<p>An earlier version connected <b>{html.escape(connection.email)}</b>. It is no longer used.</p>
 <form method="post" action="/account/gmail/disconnect">
   {csrf_field(request)}
   <button type="submit" class="danger">Disconnect</button>
-</form>
-<p><a href="/account">← Account</a></p>
-</div>
-"""
+</form>"""
     else:
-        body = f"""
+        action = "<p>Outreach emails open in your own Gmail for you to send, so there is nothing to connect.</p>"
+    body = f"""
 <div class="card">
 <h1>Gmail</h1>
-{_error(notice, gmail=True)}
-<p>Connect Gmail to send the outreach messages you approve from your own address. Nothing is sent without you.</p>
-{"<p class='hint'>Test mode is on: pressing Send records the message but does not email it.</p>" if settings.outreach_gmail_dry_run else ""}
-<form method="post" action="/account/gmail/connect">
-  {csrf_field(request)}
-  <button type="submit" class="primary">Connect Gmail</button>
-</form>
+{_error(request.query_params.get("notice"))}
+{action}
 <p><a href="/account">← Account</a></p>
 </div>
 """
     return page("Gmail", body, header=applicant_bar(request, "account"), narrow=True)
-
-
-@router.post("/account/gmail/connect", dependencies=_CSRF)
-def gmail_connect(
-    request: Request,
-    applicant: Applicant = Depends(require_login),
-    settings: Settings = Depends(get_settings),
-) -> RedirectResponse:
-    if not gmail_configured(settings):
-        return RedirectResponse("/account/gmail?notice=not_configured", status_code=_SEE_OTHER)
-    state = secrets.token_urlsafe(24)
-    request.session["gmail_oauth_state"] = state
-    request.session["gmail_oauth_applicant"] = str(applicant.id)
-    return RedirectResponse(authorize_url(settings, state=state), status_code=_SEE_OTHER)
-
-
-@router.get("/account/gmail/callback", response_class=HTMLResponse)
-async def gmail_callback(
-    request: Request,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    applicant: Applicant = Depends(require_login),
-    db: Session = Depends(get_db),
-    gateway: FetchGateway = Depends(get_gateway),
-    settings: Settings = Depends(get_settings),
-) -> RedirectResponse:
-    if error:
-        return RedirectResponse(f"/account/gmail?notice={quote(error)}", status_code=_SEE_OTHER)
-    expected = request.session.get("gmail_oauth_state")
-    if not code or not state or state != expected or request.session.get("gmail_oauth_applicant") != str(applicant.id):
-        return RedirectResponse("/account/gmail?notice=state_mismatch", status_code=_SEE_OTHER)
-    request.session.pop("gmail_oauth_state", None)
-    request.session.pop("gmail_oauth_applicant", None)
-    tokens = await exchange_code(gateway, settings, code=code)
-    if isinstance(tokens, str):
-        return RedirectResponse(f"/account/gmail?notice={quote(tokens)}", status_code=_SEE_OTHER)
-    email = await profile_email(gateway, str(tokens["access_token"]))
-    if not email:
-        return RedirectResponse("/account/gmail?notice=no_email", status_code=_SEE_OTHER)
-    save_connection(
-        db,
-        applicant_id=applicant.id,
-        email=email,
-        refresh_token=str(tokens["refresh_token"]),
-        settings=settings,
-    )
-    db.commit()
-    return RedirectResponse("/account/gmail?notice=connected", status_code=_SEE_OTHER)
 
 
 @router.post("/account/gmail/disconnect", dependencies=_CSRF)
