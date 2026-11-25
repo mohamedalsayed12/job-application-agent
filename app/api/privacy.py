@@ -89,8 +89,13 @@ declarations are never sent: only you answer those. Drafts are outlined on the f
 never clicks Submit for you.</p>
 <p>Finding job listings runs through Apify (LinkedIn and Indeed) and SerpAPI (Google Jobs). The service sends only
 search queries (role and location), never your email, name or CV. Finding contacts and public profile research runs
-through Apify's LinkedIn people actors (not by this app fetching linkedin.com). Sending approved mail uses Google's
-Gmail API when you have connected Gmail.</p>
+through Apify's LinkedIn people actors (not by this app fetching linkedin.com). When you mark an application
+submitted, this happens automatically for that job: the hiring manager and people in the same role are found and a
+message to each is drafted, and nothing is sent. A work email is guessed from the employer's web address in the
+usual company format, or, if the operator set a Hunter key, looked up by sending Hunter the person's name and the
+company's domain. Sending approved mail uses Google's Gmail API when you have connected Gmail. For LinkedIn, the
+extension opens the person's profile in your browser and types the note into LinkedIn's Connect box; you press
+Send.</p>
 <p>When you ask for interview intel on a target role, the service collects public posts through Apify and sends those
 short snippets to Anthropic so it can label success vs failure stories and draft a practice plan. Your email address,
 name and CV are not part of that.</p>

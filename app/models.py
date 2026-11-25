@@ -105,6 +105,7 @@ class SpendKind(StrEnum):
     linkedin_people = "linkedin_people"
     linkedin_profile = "linkedin_profile"
     ai_outreach = "ai_outreach"
+    email_lookup = "email_lookup"
     interview_collect = "interview_collect"
     ai_interview_analyse = "ai_interview_analyse"
     ai_interview_plan = "ai_interview_plan"
@@ -844,6 +845,9 @@ class Application(_UuidPk, Base):
         UniqueConstraint("applicant_id", "job_id", name="uq_application_applicant_job"),
         _text_in("status", ApplicationStatus),
         _text_in("ats_kind", AtsKind, nullable=True),
+        CheckConstraint(
+            "outreach_state IS NULL OR outreach_state IN ('queued', 'ready', 'no_contacts')", name="outreach_state"
+        ),
         Index("ix_application_applicant_status", "applicant_id", "status"),
     )
 
@@ -856,6 +860,8 @@ class Application(_UuidPk, Base):
     fill_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     missing_fields: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     error: Mapped[str | None] = mapped_column(Text())
+    # D76: None until the person marks it submitted; then queued, ready (drafts written) or no_contacts.
+    outreach_state: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 

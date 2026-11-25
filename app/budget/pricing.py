@@ -23,6 +23,7 @@ _PRICE = {
     SpendKind.ai_fit_report: "ai_report_unit_price",
     SpendKind.ai_cv_tailor: "ai_tailor_unit_price",
     SpendKind.ai_apply_map: "ai_apply_unit_price",
+    SpendKind.email_lookup: "email_lookup_unit_price",
     SpendKind.ai_summary: "ai_summary_unit_price",
 }
 

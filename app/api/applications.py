@@ -33,6 +33,7 @@ from app.models import (
     Job,
     JobFreshness,
 )
+from app.outreach.auto import drafts_waiting
 
 router = APIRouter(tags=["applications"])
 _CSRF = [Depends(require_csrf)]
@@ -95,7 +96,8 @@ def _drafts(app_row: Application) -> str:
 
 
 def _card(
-    request: Request, app_row: Application, job: Job | None, questions: dict[str, FormQuestion] | None = None
+    request: Request, app_row: Application, job: Job | None, questions: dict[str, FormQuestion] | None = None,
+    waiting: int = 0,
 ) -> str:
     title = job.title if job else "Job"
     company = job.company_name if job else ""
@@ -144,10 +146,30 @@ def _card(
 <article class="card">
   <h2>{_e(title)}</h2>
   <p class="muted">{_e(company)} · {_e(status_label)}</p>
-  {how}{error}{missing}{_drafts(app_row)}
+  {how}{error}{missing}{_drafts(app_row)}{_outreach(app_row, waiting)}
   <div class="job-foot">{"".join(actions)}</div>
 </article>
 """
+
+
+def _outreach(app_row: Application, waiting: int) -> str:
+    """After Submitted: where the people and drafts are (D76)."""
+    if app_row.status != ApplicationStatus.submitted.value or app_row.outreach_state is None:
+        return ""
+    link = f'<a href="/jobs/{_e(str(app_row.job_id))}/outreach">'
+    if app_row.outreach_state == "queued":
+        return (
+            '<p class="hint">Finding the hiring manager and people in this role, and drafting a message to each. '
+            "This takes a few minutes; nothing is sent without you.</p>"
+        )
+    if app_row.outreach_state == "no_contacts":
+        return f'<p class="hint">No one at this company was found. {link}Look again or add someone</a>.</p>'
+    if waiting:
+        return (
+            f'<p class="notice">{waiting} outreach draft(s) ready. {link}Read and send them</a>: '
+            "Gmail sends in one click, and the extension types LinkedIn notes for you to send.</p>"
+        )
+    return f'<p class="hint">{link}Outreach for this job</a></p>'
 
 
 @router.get("/applications", response_class=HTMLResponse)
@@ -158,7 +180,7 @@ def applications_page(
 ) -> HTMLResponse:
     rows = list_applications(db, applicant.id)
     questions = _questions(db, applicant.id)
-    cards = [_card(request, row, db.get(Job, row.job_id), questions) for row in rows]
+    cards = [_card(request, row, db.get(Job, row.job_id), questions, drafts_waiting(db, row)) for row in rows]
     body = "".join(cards) or '<p class="muted">No applications prepared yet. Use Prepare apply on a listing.</p>'
     awaiting = sum(1 for r in rows if r.status == ApplicationStatus.filled_awaiting_review.value)
     banner = (
