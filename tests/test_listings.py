@@ -29,6 +29,7 @@ from app.models import (
     SummaryStatus,
 )
 from app.skills.taxonomy import load_taxonomy, map_job_skills
+from tests.auth import sign_up
 from tests.conftest import WordEmbedder
 from tests.jobs import _job, _store
 from tests.test_matching import _posting
@@ -72,7 +73,7 @@ async def _jobs(session: Session) -> None:
 
 
 async def _register_with_profile(client: httpx.AsyncClient) -> None:
-    assert (await client.post("/register", data={"email": "l@example.com", "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, "l@example.com", PASSWORD)).status_code == 303
     profile = {
         "target_roles": "Junior Backend Developer",
         "locations": "Manchester",

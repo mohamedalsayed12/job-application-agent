@@ -27,6 +27,7 @@ from app.skills.taxonomy import (
     skill_for_text,
     suggest_skills,
 )
+from tests.auth import sign_up
 from tests.jobs import _job, _store
 from tests.test_matching import _posting
 
@@ -96,6 +97,7 @@ def test_loading_twice_changes_nothing(session: Session, loaded: dict[str, Label
         ("K8s", "Kubernetes"),
         ("AWS", "Amazon Web Services"),
         ("Golang", "Golang"),
+        ("GitHub Actions (CI/CD)", "GitHub"),
     ],
 )
 def test_t33_a_profile_skill_and_a_job_skill_reach_the_same_entry(
@@ -188,7 +190,7 @@ async def test_a12_the_report_separates_esco_from_our_own_list(session: Session,
 
 
 async def _register(client: httpx.AsyncClient) -> None:
-    assert (await client.post("/register", data={"email": "p@example.com", "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, "p@example.com", PASSWORD)).status_code == 303
 
 
 async def test_t33_saving_a_profile_links_skills_and_keeps_what_was_typed(
