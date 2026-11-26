@@ -106,8 +106,15 @@ def _one(item: dict[str, Any], *, actor: str, company_fallback: str | None) -> F
     )
     if not name or name.lower() == "linkedin member":
         return None
-    title = _text(item.get("title") or item.get("headline") or item.get("currentTitle") or item.get("position"))
-    company = _text(item.get("company") or item.get("companyName") or item.get("currentCompany")) or company_fallback
+    position = _current_position(item)
+    title = _text(
+        item.get("title") or position.get("title") or item.get("headline") or item.get("currentTitle") or item.get("position")
+    )
+    company = (
+        _company_text(item.get("company") or item.get("companyName") or item.get("currentCompany"))
+        or _company_text(position.get("companyName") or position.get("company"))
+        or company_fallback
+    )
     url = _linkedin_url(
         item.get("linkedinUrl")
         or item.get("profileUrl")
@@ -132,6 +139,46 @@ def _one(item: dict[str, Any], *, actor: str, company_fallback: str | None) -> F
         evidence=evidence,
         source_actor=actor,
     )
+
+
+def _current_position(item: dict[str, Any]) -> dict[str, Any]:
+    """The job a people row says the person holds now (harvestapi rows keep it in currentPositions)."""
+    positions = [p for p in _list(item.get("currentPositions")) if isinstance(p, dict)]
+    current = [p for p in positions if p.get("current") is not False]
+    return (current or positions or [{}])[0]
+
+
+def _company_text(value: object) -> str | None:
+    if isinstance(value, dict):
+        return _text(value.get("name") or value.get("companyName"))
+    return _text(value)
+
+
+_COMPANY_SUFFIX = re.compile(r"\b(?:ltd|limited|plc|llp|llc|inc|incorporated|corp|corporation)\b")
+
+
+def company_key(name: str | None) -> str:
+    """A company name reduced so "TPP Ltd" and "tpp" compare equal, but "TPP Retail" does not."""
+    words = re.sub(r"[^a-z0-9 ]+", " ", (name or "").lower())
+    return " ".join(_COMPANY_SUFFIX.sub(" ", words).split())
+
+
+_BRACKETED = re.compile(r"\(([^()]*)\)")
+
+
+def _company_keys(name: str) -> set[str]:
+    """ "TPP (The Phoenix Partnership)" answers to its whole name, "TPP" and "The Phoenix Partnership"."""
+    keys = {company_key(name), company_key(_BRACKETED.sub(" ", name))}
+    keys.update(company_key(inside) for inside in _BRACKETED.findall(name))
+    return {key for key in keys if key}
+
+
+def works_at(contact: FoundContact, company: str) -> bool:
+    """False only when the row names a different current employer: a search by name finds namesakes.
+
+    Two firms can share a name exactly ("TPP Ltd"), so a match here is likely, not proven.
+    """
+    return not contact.company_name or bool(_company_keys(contact.company_name) & _company_keys(company))
 
 
 def _kind_from_hint(hint: str) -> OutreachRoleKind:

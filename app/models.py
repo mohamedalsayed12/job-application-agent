@@ -99,6 +99,7 @@ class SpendKind(StrEnum):
     ai_search_ideas = "ai_search_ideas"
     linkedin_jobs = "linkedin_jobs"
     indeed_jobs = "indeed_jobs"
+    careers_search = "careers_search"
     apply_form = "apply_form"
     ai_apply_map = "ai_apply_map"
     linkedin_people = "linkedin_people"
@@ -239,8 +240,24 @@ def _updated():
     return mapped_column(TZ, server_default=func.now(), onupdate=func.now())
 
 
+class OnboardingStep(StrEnum):
+    """The sign-up wizard's steps after the account itself, in order. Null on the row means finished."""
+
+    cv = "cv"
+    details = "details"
+    preferences = "preferences"
+    availability = "availability"
+    diversity = "diversity"
+
+
+class AuthTokenPurpose(StrEnum):
+    verify_email = "verify_email"
+    reset_password = "reset_password"
+
+
 class Applicant(_UuidPk, Base):
     __tablename__ = "applicant"
+    __table_args__ = (_text_in("onboarding_step", OnboardingStep, nullable=True),)
 
     email: Mapped[str] = mapped_column(CITEXT(), unique=True)
     display_name: Mapped[str | None] = mapped_column(Text())
@@ -249,6 +266,29 @@ class Applicant(_UuidPk, Base):
     password_hash: Mapped[str | None] = mapped_column(Text())
     # Stored in the login cookie. Raising it ends every session for this applicant.
     session_version: Mapped[int] = mapped_column(Integer(), default=0, server_default=text("0"))
+    # The sign-up wizard step to show next. Null once finished, and for every account made before it.
+    onboarding_step: Mapped[str | None] = mapped_column(Text())
+    # Null until the person opens the link emailed to them. Until then they can log in but see only the confirm page.
+    email_verified_at: Mapped[datetime | None] = mapped_column(TZ)
+    created_at: Mapped[datetime] = _created()
+
+
+class AuthToken(_UuidPk, Base):
+    """A one-time emailed link. Only the SHA-256 of the token is kept, so a copy of the table opens nothing."""
+
+    __tablename__ = "auth_token"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_auth_token_token_hash"),
+        _text_in("purpose", AuthTokenPurpose),
+        Index("ix_auth_token_applicant_id_purpose", "applicant_id", "purpose"),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    purpose: Mapped[str] = mapped_column(Text())
+    token_hash: Mapped[str] = mapped_column(Text())
+    expires_at: Mapped[datetime] = mapped_column(TZ)
+    # Set when the link is used, or when a newer link or a password change replaces it.
+    used_at: Mapped[datetime | None] = mapped_column(TZ)
     created_at: Mapped[datetime] = _created()
 
 
@@ -429,6 +469,8 @@ class CvFile(_UuidPk, Base):
     label: Mapped[str] = mapped_column(Text(), default="", server_default=text("''"))
     # Used for a job no label fits.
     is_primary: Mapped[bool] = mapped_column(Boolean(), default=False, server_default=text("false"))
+    # What the sign-up wizard read from this file, kept only until the person has checked it.
+    suggestions: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
 
 
 class SpendLedger(_UuidPk, Base):
@@ -812,6 +854,16 @@ class ApplicationAnswers(_UuidPk, Base):
     ethnicity: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     disability: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     veteran: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    notice_period: Mapped[str | None] = mapped_column(Text())
+    earliest_start_date: Mapped[date | None] = mapped_column(Date())
+    willing_to_relocate: Mapped[bool | None] = mapped_column(Boolean())
+    work_hours: Mapped[str | None] = mapped_column(Text())
+    work_location: Mapped[str | None] = mapped_column(Text())
+    sexual_orientation: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    religion: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    caring_responsibilities: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    school_type: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    parental_occupation: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     saved_questions: Mapped[list[dict[str, str]]] = mapped_column(
         JSONB(), default=list, server_default=text("'[]'::jsonb")
     )

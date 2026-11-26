@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -212,16 +211,3 @@ def _strings(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip()[:200] for item in value if str(item).strip()][:8]
-
-
-def apply_labels_for_tests(rows: list[InterviewEvidence], labels: dict[str, dict[str, Any]]) -> None:
-    """Test helper: apply fixed labels without calling the AI."""
-    for row in rows:
-        label = labels.get(str(row.id)) or labels.get(row.url)
-        if not label:
-            continue
-        row.outcome = label.get("outcome", InterviewOutcome.unclear.value)
-        row.reasons = list(label.get("reasons") or [])
-        row.methods = list(label.get("methods") or [])
-        row.materials = list(label.get("materials") or [])
-        row.labelled = True

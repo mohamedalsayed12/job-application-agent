@@ -13,6 +13,7 @@ from app.api.forms import require_csrf
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
+from tests.auth import sign_up
 
 
 @pytest.fixture
@@ -38,10 +39,7 @@ async def test_workflow_requires_login_and_shows_every_stage(client: httpx.Async
     assert anonymous.status_code == 303
     assert anonymous.headers["location"] == "/login"
 
-    registered = await client.post(
-        "/register",
-        data={"email": "workflow@example.com", "password": "correct horse battery"},
-    )
+    registered = await sign_up(client, "workflow@example.com", "correct horse battery")
     assert registered.status_code == 303
 
     response = await client.get("/workflow")

@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import MetaData, create_engine
+from sqlalchemy import Engine, MetaData, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
@@ -19,8 +19,19 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
+# Without this, a port that accepts TCP but never answers (Docker's relay while the
+# container starts) blocks a connect forever, so /health hangs instead of returning 503.
+CONNECT_TIMEOUT_SECONDS = 5
+
+
+def make_engine(url: str) -> Engine:
+    return create_engine(
+        url, pool_pre_ping=True, connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS}
+    )
+
+
 settings = get_settings()
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+engine = make_engine(settings.database_url)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 

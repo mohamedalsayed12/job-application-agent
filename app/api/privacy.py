@@ -11,7 +11,7 @@ from app.api.chrome import public_bar
 router = APIRouter(tags=["privacy"])
 
 CONTACT_EMAIL = "mohammed33771885@gmail.com"
-UPDATED = "15 November 2026"
+UPDATED = "22 November 2026"
 
 _BODY = f"""
 <h1>Privacy notice</h1>
@@ -26,19 +26,27 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
 <div class="card">
 <h2>What we keep about you, and why</h2>
 <ul>
-  <li><b>Your email and password.</b> To let you log in. The password is stored only as an Argon2 hash, never as text.</li>
+  <li><b>Your email and password.</b> To let you log in. The password is stored only as an Argon2 hash, never as text.
+  We email you a link to confirm your address and, if you ask, a link to reset your password; each works once,
+  expires within 24 hours (1 hour for a reset), and only a hash of it is stored.</li>
   <li><b>Your profile:</b> target roles, locations, experience levels, travel distance, minimum salary, degrees, skills,
   certifications and licences. To find jobs that fit you and explain each match.</li>
   <li><b>Your CV, if you upload one.</b> Stored so you can download it again. When you upload it, or press "Fill my profile
-  from my CV", its text is read to suggest entries for your profile form. The suggestions aren't stored: only what you
-  save is kept. For jobs the fit report marks Apply or Consider, a tailored CV copy (PDF and DOCX) may also be stored
+  from my CV", its text is read to suggest entries for your profile form and your contact details. On the profile page the
+  suggestions aren't stored. During sign-up they are kept with your CV only until you finish the last step, so each step
+  can show them for you to check, and are then deleted: only what you save is kept. For jobs the fit report marks Apply or Consider, a tailored CV copy (PDF and DOCX) may also be stored
   for you to download; it never replaces your uploaded CV. While a tailored copy is being written, each finished AI
   step is saved so a crash does not repeat it. Those steps are deleted once the copy is finished or has failed, and
   always with the copy itself.</li>
   <li><b>Your job matches:</b> which jobs fit your profile, with a score and the reasons.</li>
-  <li><b>Apply answers</b> (optional): legal name, phone, address, work authorisation, visa sponsorship need,
-  links, and optional demographics such as free school meals. Used only to fill employer forms in your browser.
-  Demographics default to prefer not to say and are never inferred from your CV.</li>
+  <li><b>Apply answers:</b> legal name, phone, address, work authorisation, visa sponsorship need, links, notice
+  period, start date, whether you'd relocate, and full-time or part-time and on-site, hybrid or remote. Used only to
+  fill employer forms in your browser.</li>
+  <li><b>Diversity answers</b> (optional): gender, ethnic group, disability, armed forces service, free school meals,
+  sexual orientation, religion or belief, caring responsibilities, school type and your household's occupation when you
+  were 14. Some of these are special category data under UK GDPR. Each defaults to prefer not to say, is never inferred
+  from your CV, and is used only to answer the same monitoring questions on employers' forms. Choosing an answer is your
+  explicit consent to that use, and you can change it back to prefer not to say at any time.</li>
   <li><b>Prepared applications:</b> which jobs you asked to prepare, the form fields we saw, and the fill plan for your
   extension. Nothing is submitted to an employer by this service.</li>
   <li><b>Extension token</b> (hashed): so the browser extension can download your CV and fill plans.</li>

@@ -6,8 +6,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0024_multi_cv"
-down_revision: str | None = "0023_search_ideas_spend"
+revision: str = "0028_multi_cv"
+down_revision: str | None = "0027_search_ideas_spend"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
