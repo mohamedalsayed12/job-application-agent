@@ -438,6 +438,15 @@ async def test_d43_without_a_cv_the_fill_button_goes_back_to_the_profile(client:
     assert (response.status_code, response.headers["location"]) == (303, "/profile")
 
 
+def test_internship_level_needs_the_cv_to_ask_for_one() -> None:
+    student = ["Sam Taylor", "BSc Business Management, University of Manchester, 2024 - 2027", "Python, SQL"]
+    found = grounded({**FOUND, "experience_levels": ["internship"]}, "\n".join(student))
+    assert found.experience_levels == ["entry"]
+    asking = [*student, "Looking for a placement year in software engineering"]
+    found = grounded({**FOUND, "experience_levels": ["internship"]}, "\n".join(asking))
+    assert found.experience_levels == ["internship"]
+
+
 async def test_d43_typed_answers_stay_and_an_empty_label_takes_the_title_in_the_cv(
     client: httpx.AsyncClient, session: Session, claude: _Claude
 ) -> None:

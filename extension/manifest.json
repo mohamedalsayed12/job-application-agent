@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Job Agent Apply Fill",
-  "version": "0.4.0",
-  "description": "Fills employer application forms page by page from your Job Agent answers, CV and checked drafts, and types your LinkedIn notes. Never clicks Submit or Send.",
+  "version": "0.5.0",
+  "description": "Fills employer application forms page by page from your Job Agent answers, CV and checked drafts. Never clicks Submit.",
   "permissions": [
     "storage",
     "notifications",

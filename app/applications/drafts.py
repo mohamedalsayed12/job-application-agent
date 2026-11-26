@@ -54,6 +54,14 @@ PERSON_ONLY = re.compile(
     r"bank|national insurance|passport|social security",
     re.IGNORECASE,
 )
+# Questions asking for one real experience ("a time when", "an example of a situation where"). A CV almost never
+# holds that story, so a draft would have to invent it: these are left for the person and kept in their question bank.
+STORY_QUESTION = re.compile(
+    r"\b(a|one|any) (time|situation|occasion|moment|challenge|mistake|conflict|disagreement) (when|where|in which|that|you)\b"
+    r"|\bexamples? of (a |an )?(time|situation|occasion|when|where|how you)\b",
+    re.IGNORECASE,
+)
+CORRECTED_NOTE = "Drafted from your CV, then corrected to remove what your CV doesn't support. Read it before you submit."
 # An optional question is drafted only when it plainly asks for the person's own words.
 WORTH_DRAFTING = re.compile(
     r"why|tell us|describe|cover letter|motivat|interest|about yourself|suit|example of",
@@ -70,7 +78,7 @@ Rules:
   grades, skills, numbers or motives. When the sources don't support an answer, give "" and basis "none".
 - A question with options: answer with one option copied exactly, only when a saved answer or the CV supports it.
 - A yes/no question: answer only from a saved answer or a plain fact in the CV, otherwise "".
-- A free-text question (why this role, tell us about a time, cover letter, anything else): write it in the first
+- A free-text question (why this role, why this company, cover letter, anything else): write it in the first
   person, plain UK English, specific to this employer and role using the advert, backed by real CV details.
   Short paragraphs, no headings, no lists unless asked, no em dashes, no buzzwords ("passionate", "leverage",
   "dynamic", "synergy"), no flattery. Keep within any word or character limit the question states, and under
@@ -370,7 +378,11 @@ async def draft_with_ai(
     reused_ids: set[str] = set()
     open_fields: list[FormField] = []
     for form_field in unanswered(fields, plan):
-        if PERSON_ONLY.search(" ".join([form_field.question, *form_field.options])):
+        if PERSON_ONLY.search(" ".join([form_field.question, *form_field.options])) or STORY_QUESTION.search(
+            form_field.question
+        ):
+            # A draft kept from before this rule must not be shown or filled again.
+            settled.pop(question_key(form_field.question), None)
             continue
         if not (form_field.required or WORTH_DRAFTING.search(form_field.question)):
             continue
@@ -476,10 +488,8 @@ async def draft_with_ai(
             if not _plausible(draft.form_field, fixed):
                 continue
             answer = fixed
-            note = (
-                f"Drafted and corrected ({str(check.get('problem') or '').strip()[:200]}). "
-                "Read it before you submit."
-            )
+            # Fixed wording: the checker's own `problem` text can be long, rambling or cut off mid-word.
+            note = CORRECTED_NOTE
         if draft.form_field.options:
             answer = _pick_option(draft.form_field.options, answer) or answer
         steps.append(FillStep(draft.form_field.id, _action(draft.form_field), answer, "ai", note=note))

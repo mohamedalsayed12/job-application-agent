@@ -29,7 +29,13 @@ from app.outreach.check import outreach_unsupported
 from app.outreach.draft import draft_for_contact
 from app.outreach.find import find_contacts
 from app.outreach.gmail import record_copy, save_connection, send_draft
-from app.outreach.normalize import linkedin_job_url, normalize_people, normalize_research, parse_email, role_kind_for
+from app.outreach.normalize import (
+    linkedin_job_url,
+    normalize_people,
+    normalize_research,
+    parse_email,
+    role_kind_for,
+)
 from app.outreach.seal import seal, unseal
 from tests.auth import sign_up
 from tests.jobs import DAY_1, _Apify, _li, _public_resolve, _store
@@ -443,7 +449,7 @@ async def test_gmail_dry_run_records_send_without_calling_gmail(session: Session
     assert draft.status == OutreachDraftStatus.sent.value
 
 
-def test_linkedin_copy_records_copied_send(session: Session) -> None:
+def test_copying_an_email_records_it_as_taken(session: Session) -> None:
     applicant_id = _applicant(session, roles=["Junior Developer"], locations=["Manchester"])
     job = _matched_job(session, applicant_id)
     contact = OutreachContact(
@@ -453,7 +459,7 @@ def test_linkedin_copy_records_copied_send(session: Session) -> None:
         role_kind="employee",
         evidence={},
         source_actor="test",
-        linkedin_url="https://www.linkedin.com/in/casey",
+        email="casey@acme.example",
     )
     session.add(contact)
     session.flush()
@@ -461,8 +467,9 @@ def test_linkedin_copy_records_copied_send(session: Session) -> None:
         applicant_id=applicant_id,
         contact_id=contact.id,
         job_id=job.id,
-        channel=OutreachChannel.linkedin_note.value,
-        body="Short note",
+        channel=OutreachChannel.gmail.value,
+        subject="Hello",
+        body="Short email",
         pattern_ids=[],
         evidence_digest="x",
         status=OutreachDraftStatus.draft.value,
@@ -470,7 +477,7 @@ def test_linkedin_copy_records_copied_send(session: Session) -> None:
     session.add(draft)
     session.flush()
     row = record_copy(session, draft)
-    assert row.status == "copied"
+    assert row.status == "copied" and row.channel == OutreachChannel.gmail.value
     assert draft.status == OutreachDraftStatus.copied.value
 
 

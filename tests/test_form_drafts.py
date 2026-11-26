@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 from app.accounts import throttle
 from app.api.forms import require_csrf
 from app.api.jobs import get_gateway
-from app.applications.drafts import PERSON_ONLY, _plausible, question_key
+from app.applications.drafts import (
+    PERSON_ONLY,
+    STORY_QUESTION,
+    _plausible,
+    question_key,
+)
 from app.applications.extension_device import issue_token
 from app.applications.mapper import FormField
 from app.core.config import get_settings
@@ -245,7 +250,9 @@ async def test_a_draft_the_check_fixes_is_filled_as_fixed(session: Session, clie
     plan = (await client.post(f"/extension/applications/{row.id}/form", headers=headers, json=SCANNED)).json()
 
     assert _steps(plan)["f4"]["value"] == "I built a job search API in Python."
-    assert "corrected (Too much)" in _steps(plan)["f4"]["note"]
+    # Fixed wording, never the checker's own text, which can ramble or stop mid-word.
+    note = _steps(plan)["f4"]["note"]
+    assert "corrected" in note and "Too much" not in note
 
 
 async def test_without_money_or_a_cv_nothing_is_drafted(session: Session, client: httpx.AsyncClient, claude: _Claude) -> None:
@@ -323,8 +330,41 @@ def test_questions_only_the_person_may_answer(label: str) -> None:
 
 
 def test_questions_the_ai_may_draft() -> None:
-    for label in ("Why do you want to work here?", "Tell us about a time you solved a problem", "Cover letter"):
+    for label in ("Why do you want to work here?", "Tell us about a project you are proud of", "Cover letter",
+                  "Describe your experience with Python", "Tell us about yourself"):
         assert not PERSON_ONLY.search(label), label
+        assert not STORY_QUESTION.search(label), label
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["Describe a time you debugged a difficult problem.", "Tell us about a time when you worked in a team",
+     "Give an example of when you showed leadership", "Describe a situation where you had to meet a deadline",
+     "Describe a challenge you faced and how you overcame it", "Please give examples of how you have handled conflict"],
+)
+def test_questions_asking_for_one_real_experience_are_left_for_the_person(label: str) -> None:
+    # A CV almost never holds the story, so a draft would have to invent it.
+    assert STORY_QUESTION.search(label)
+
+
+async def test_a_story_question_is_never_sent_to_the_ai(session: Session, client: httpx.AsyncClient, claude: _Claude) -> None:
+    story = {
+        "id": "story",
+        "label": "Describe a time you solved a difficult problem.",
+        "name": "story",
+        "type": "textarea",
+        "required": True,
+    }
+    _money(session, "2")
+    row, headers = await _ready(client, session)
+
+    plan = (await client.post(
+        f"/extension/applications/{row.id}/form", headers=headers, json=dict(SCANNED, fields=[*SCANNED["fields"], story])
+    )).json()
+
+    assert "story" not in _steps(plan)
+    assert story["label"] in [m["label"] for m in plan["missing"]]
+    assert all("difficult problem" not in sent for sent in claude.sent)
 
 
 @pytest.mark.parametrize(

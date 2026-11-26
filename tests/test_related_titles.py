@@ -288,7 +288,7 @@ async def test_the_matches_page_says_when_new_titles_are_still_being_searched(
     }
     assert (await client.post("/profile", data=profile)).status_code == 303
 
-    assert "We are searching for 2 of your job titles now" in (await client.get("/listings")).text
+    assert "We are running 2 searches for your job titles and locations now" in (await client.get("/listings")).text
 
     now = datetime.now(UTC)
     for role in ("Data Analyst", "BI Analyst"):

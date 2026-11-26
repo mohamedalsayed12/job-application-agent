@@ -308,9 +308,10 @@ async def send_draft(
 
 
 def record_copy(session: Session, draft: OutreachDraft) -> OutreachSend:
+    """The person took the message to send it themselves (opened in Gmail or copied)."""
     row = OutreachSend(
         draft_id=draft.id,
-        channel=OutreachChannel.linkedin_note.value,
+        channel=draft.channel,
         status=OutreachSendStatus.copied.value,
     )
     session.add(row)

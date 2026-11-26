@@ -177,7 +177,7 @@ def email_note(contact: OutreachContact) -> str:
     evidence = contact.evidence or {}
     source = evidence.get("email_source")
     if not contact.email:
-        return "No email found. Use the LinkedIn note instead."
+        return "No email found."
     if source == "hunter":
         return f"Found by Hunter ({evidence.get('email_score')}% confident)."
     if source == "guessed":

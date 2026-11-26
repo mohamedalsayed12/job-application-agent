@@ -16,6 +16,7 @@ from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
 from app.api.listings import place_names
+from app.applicants.apply_answers import document_file_name
 from app.applications.prepare import application_for_job
 from app.applications.ui import apply_step
 from app.core.config import get_settings
@@ -180,15 +181,17 @@ def _download(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID, *, kind: 
     if row is None or row.status != TailoredCvStatus.ready.value:
         raise HTTPException(status_code=404)
     if kind == "pdf":
-        content, media, name = row.pdf_content, "application/pdf", "tailored-cv.pdf"
+        content, media, name = row.pdf_content, "application/pdf", document_file_name(db, applicant_id, "CV", "pdf")
     elif kind == "docx":
-        content, media, name = row.docx_content, _DOCX_TYPE, "tailored-cv.docx"
+        content, media, name = row.docx_content, _DOCX_TYPE, document_file_name(db, applicant_id, "CV", "docx")
     elif not row.cover_letter:
         raise HTTPException(status_code=404)
     elif kind == "letter_pdf":
-        content, media, name = render_letter_pdf(row.cover_letter, row.draft or {}), "application/pdf", "cover-letter.pdf"
+        content, media = render_letter_pdf(row.cover_letter, row.draft or {}), "application/pdf"
+        name = document_file_name(db, applicant_id, "Cover-Letter", "pdf")
     else:
-        content, media, name = render_letter_docx(row.cover_letter, row.draft or {}), _DOCX_TYPE, "cover-letter.docx"
+        content, media = render_letter_docx(row.cover_letter, row.draft or {}), _DOCX_TYPE
+        name = document_file_name(db, applicant_id, "Cover-Letter", "docx")
     if not content:
         raise HTTPException(status_code=404)
     return Response(

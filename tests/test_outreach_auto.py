@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+import uuid
+from datetime import timedelta
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.applications import _draft_note
+from app.api.applications import _outreach as _outreach_hint
+from app.applications.drafts import CORRECTED_NOTE
 from app.applications.prepare import application_for_job, mark_submitted
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.models import (
+    Application,
+    ApplicationStatus,
     OutreachChannel,
     OutreachContact,
     OutreachDraft,
@@ -27,7 +33,6 @@ from app.outreach.email_find import (
     guesses,
     name_parts,
 )
-from app.outreach.gmail import record_copy
 from tests.jobs import DAY_1, _Apify, _public_resolve
 from tests.test_matching import _applicant
 from tests.test_outreach import _employee, _matched_job, _policy
@@ -193,8 +198,9 @@ async def test_submitted_finds_people_and_drafts_without_sending(session: Sessio
     contact = session.scalars(select(OutreachContact).where(OutreachContact.job_id == job.id)).one()
     assert contact.email == "robin.example@acme.example"
     channels = sorted(d.channel for d in session.scalars(select(OutreachDraft).where(OutreachDraft.contact_id == contact.id)))
-    assert channels == [OutreachChannel.gmail.value, OutreachChannel.linkedin_note.value]
-    assert drafts_waiting(session, application) == 2
+    # Only an email is drafted: the person sends it from their own Gmail.
+    assert channels == [OutreachChannel.gmail.value]
+    assert drafts_waiting(session, application) == 1
     assert "gmail.googleapis.com" not in world.calls
 
     # A second cycle does nothing more: the application is no longer queued.
@@ -203,7 +209,7 @@ async def test_submitted_finds_people_and_drafts_without_sending(session: Sessio
         await prepare_outreach(session, gateway=again, settings=_settings(), persist=session.flush, now=lambda: DAY_1)
     finally:
         await again.aclose()
-    assert len(session.scalars(select(OutreachDraft)).all()) == 2
+    assert len(session.scalars(select(OutreachDraft)).all()) == 1
 
 
 async def test_a_spending_cap_leaves_the_application_queued(session: Session) -> None:
@@ -221,35 +227,66 @@ async def test_a_spending_cap_leaves_the_application_queued(session: Session) ->
     assert application_for_job(session, applicant, job.id).outreach_state == "queued"
 
 
-async def test_extension_gets_the_note_the_person_chose_for_linkedin(session: Session) -> None:
+def test_open_in_gmail_fills_a_new_email_for_the_person_to_send(session: Session) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
     from fastapi.testclient import TestClient
 
-    from app.applications.extension_device import issue_token
+    from app.api.accounts import require_login
+    from app.api.forms import require_csrf
     from app.core.db import get_db
     from app.main import app
+    from app.models import Applicant
 
     applicant = _applicant(session, roles=["Junior Developer"], locations=["Manchester"])
     job = _matched_job(session, applicant)
+    mark_submitted(session, applicant, job)
     contact = _contact(session, applicant, job, "Robin Example", "Software Developer", "employee")
-    contact.linkedin_url = "https://www.linkedin.com/in/robin"
-    note = OutreachDraft(
-        applicant_id=applicant, contact_id=contact.id, job_id=job.id, channel=OutreachChannel.linkedin_note.value,
-        subject=None, body=NOTE, pattern_ids=[], evidence_digest="d", status="draft",
+    contact.email = "robin@acme.example"
+    draft = OutreachDraft(
+        applicant_id=applicant, contact_id=contact.id, job_id=job.id, channel=OutreachChannel.gmail.value,
+        subject="Junior Developer role", body="Hi Robin", pattern_ids=[], evidence_digest="d", status="draft",
     )
-    session.add(note)
+    session.add(draft)
     session.flush()
-    token = issue_token(session, applicant)
+    application = application_for_job(session, applicant, job.id)
+    assert drafts_waiting(session, application) == 1
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[require_login] = lambda: session.get(Applicant, applicant)
+    app.dependency_overrides[require_csrf] = lambda: None
     try:
-        client = TestClient(app)
-        headers = {"Authorization": f"Bearer {token}"}
-        assert client.get("/extension/outreach/notes", headers=headers).json() == []
-        send = record_copy(session, note)
-        assert client.get("/extension/outreach/notes", headers=headers).json() == [
-            {"profile_url": "https://www.linkedin.com/in/robin", "note": NOTE}
-        ]
-        send.created_at = datetime.now(UTC) - timedelta(hours=2)
-        session.flush()
-        assert client.get("/extension/outreach/notes", headers=headers).json() == []
+        client = TestClient(app, follow_redirects=False)
+        page = client.get(f"/jobs/{job.id}/outreach/{contact.id}").text
+        assert "Open in Gmail" in page and "Send with Gmail" not in page and "LinkedIn note" not in page
+        opened = client.post(
+            f"/jobs/{job.id}/outreach/{contact.id}/take",
+            data={"draft_id": str(draft.id), "subject": "Junior Developer role", "body": "Hi Robin, edited", "action": "gmail"},
+        )
     finally:
         app.dependency_overrides.clear()
+    assert opened.status_code == 303
+    target = urlsplit(opened.headers["location"])
+    assert target.netloc == "mail.google.com"
+    query = parse_qs(target.query)
+    assert query["to"] == ["robin@acme.example"] and query["su"] == ["Junior Developer role"]
+    assert query["body"] == ["Hi Robin, edited"]
+    # Nothing was sent from here; the email is no longer waiting on the card.
+    assert "gmail.googleapis.com" not in str(opened.headers)
+    assert drafts_waiting(session, application) == 0
+
+
+def test_the_card_counts_drafts_ready_even_while_still_queued() -> None:
+    application = Application(
+        job_id=uuid.uuid4(), status=ApplicationStatus.submitted.value, outreach_state="queued"
+    )
+    assert "Finding the hiring manager" in _outreach_hint(application, 0)
+    assert "1 outreach email is ready" in _outreach_hint(application, 1)
+    assert "3 outreach emails are ready" in _outreach_hint(application, 3)
+    application.status = ApplicationStatus.filled_awaiting_review.value
+    assert _outreach_hint(application, 3) == ""
+
+
+def test_old_cut_off_draft_notes_show_the_fixed_wording() -> None:
+    assert _draft_note("Drafted and corrected (The draft claimed experience with Kube") == CORRECTED_NOTE
+    assert _draft_note("From your saved answer.") == "From your saved answer."
+    assert _draft_note(None) == ""

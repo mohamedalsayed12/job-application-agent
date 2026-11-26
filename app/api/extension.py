@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.jobs import get_gateway
+from app.applicants.apply_answers import document_file_name
 from app.applications.cv_choice import choose_cv
 from app.applications.extension_device import applicant_for_token
 from app.applications.fill_safety import assert_plan_has_no_submit_clicks
@@ -31,13 +30,7 @@ from app.models import (
     ApplicationStatus,
     CvFileType,
     Job,
-    OutreachChannel,
-    OutreachContact,
-    OutreachDraft,
-    OutreachSend,
-    OutreachSendStatus,
 )
-from app.outreach.draft import current_body
 
 router = APIRouter(prefix="/extension", tags=["extension"])
 
@@ -53,36 +46,6 @@ def _bearer_applicant(
     if applicant_id is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid extension token")
     return applicant_id
-
-
-@router.get("/outreach/notes")
-def linkedin_notes(
-    applicant_id: uuid.UUID = Depends(_bearer_applicant),
-    db: Session = Depends(get_db),
-) -> list[dict]:
-    """LinkedIn notes the person chose to send in the last hour, for the profile tab the extension types them into (D77)."""
-    since = datetime.now(UTC) - timedelta(hours=1)
-    rows = db.execute(
-        select(OutreachDraft, OutreachContact.linkedin_url)
-        .join(OutreachContact, OutreachContact.id == OutreachDraft.contact_id)
-        .join(OutreachSend, OutreachSend.draft_id == OutreachDraft.id)
-        .where(
-            OutreachDraft.applicant_id == applicant_id,
-            OutreachDraft.channel == OutreachChannel.linkedin_note.value,
-            OutreachSend.status == OutreachSendStatus.copied.value,
-            OutreachSend.created_at >= since,
-            OutreachContact.linkedin_url.is_not(None),
-        )
-        .order_by(OutreachSend.created_at.desc())
-    ).all()
-    seen: set[str] = set()
-    out = []
-    for draft, url in rows:
-        if url in seen:
-            continue
-        seen.add(url)
-        out.append({"profile_url": url, "note": current_body(draft)})
-    return out
 
 
 class StatusBody(BaseModel):
@@ -254,7 +217,8 @@ def download_cv(
     media = "application/pdf" if file_type == CvFileType.pdf.value else (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    name = f"cv.{file_type}"
+    # Employers see this name on the uploaded file, so it is the person's name, not "cv.pdf".
+    name = document_file_name(db, applicant_id, "CV", file_type)
     return Response(
         content=content,
         media_type=media,

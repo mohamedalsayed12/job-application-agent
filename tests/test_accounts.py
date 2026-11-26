@@ -262,3 +262,4 @@ async def test_the_privacy_notice_is_public_and_linked_from_every_page(client: h
     register = (await client.get("/register")).text
     assert 'href="/privacy"' in register
     assert register.count('href="/privacy"') == 2
+

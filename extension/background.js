@@ -135,10 +135,13 @@ async function downloadCv(applicationId) {
   const bytes = new Uint8Array(await response.arrayBuffer());
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  const docx = (response.headers.get("Content-Disposition") || "").includes(".docx");
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const docx = disposition.includes(".docx");
+  // The server names the file after the person (Sam-Taylor-CV.pdf); employers see this name.
+  const named = disposition.match(/filename="([^"]+)"/);
   return {
     base64: btoa(binary),
-    name: docx ? "cv.docx" : "cv.pdf",
+    name: named ? named[1] : docx ? "CV.docx" : "CV.pdf",
     type: response.headers.get("Content-Type") || (docx ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "application/pdf"),
   };
 }
@@ -214,51 +217,10 @@ async function fillActiveTab(applicationId) {
   return fillTab(tab.id, applicationId);
 }
 
-/** The /in/<name> part of a LinkedIn profile link, so links that differ only in tracking bits still match. */
-function profileKey(url) {
-  try {
-    const parsed = new URL(url);
-    if (!/(^|\.)linkedin\.com$/i.test(parsed.hostname)) return null;
-    const match = parsed.pathname.match(/^\/in\/([^/]+)/i);
-    return match ? decodeURIComponent(match[1]).toLowerCase() : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * D77: the person pressed "Open on LinkedIn with the note typed in" in Job Agent. When that profile loads,
- * type the note into LinkedIn's Connect box. The person presses Send; this never does.
- */
-async function typeLinkedinNote(tabId, url) {
-  const key = profileKey(url);
-  if (!key) return;
-  const { linkedinDone } = await chrome.storage.session.get("linkedinDone");
-  const done = linkedinDone || {};
-  if (done[`${tabId}:${key}`]) return;
-  let notes = [];
-  try {
-    notes = await api("/extension/outreach/notes");
-  } catch (_) {
-    return;
-  }
-  const wanted = notes.find((row) => profileKey(row.profile_url) === key);
-  if (!wanted) return;
-  done[`${tabId}:${key}`] = true;
-  await chrome.storage.session.set({ linkedinDone: done });
-  await chrome.scripting.executeScript({ target: { tabId }, files: ["linkedin.js"] });
-  const result = await chrome.tabs.sendMessage(tabId, { type: "jaa-linkedin-note", note: wanted.note }).catch(() => null);
-  if (result?.ok) await notify("LinkedIn note typed in", "Read the note on LinkedIn and press Send yourself.");
-}
-
 // "Open & fill" sends the tab to the job's apply page. Arriving there arms the tab, and every form page
 // it then reaches (the employer's site, the next step of the form) is filled without a click.
 chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   if (change.status !== "complete" || !tab.url?.startsWith("http")) return;
-  if (profileKey(tab.url)) {
-    await typeLinkedinNote(tabId, tab.url);
-    return;
-  }
   let applicationId = await armedFor(tabId);
   if (!applicationId) {
     const apps = await cachedApplications();
