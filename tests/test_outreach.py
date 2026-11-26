@@ -6,10 +6,14 @@ from datetime import timedelta
 from decimal import Decimal
 
 import httpx
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai.anthropic import AiCallResponse
+from app.applicants.cv import store_cv
 from app.core.config import Settings
+from app.fetch.gateway import FetchGateway
 from app.models import (
     ApplicantJobMatch,
     BudgetPolicy,
@@ -22,6 +26,7 @@ from app.models import (
     SalaryStatus,
 )
 from app.outreach.check import outreach_unsupported
+from app.outreach.draft import draft_for_contact
 from app.outreach.find import find_contacts
 from app.outreach.gmail import record_copy, save_connection, send_draft
 from app.outreach.normalize import linkedin_job_url, normalize_people, normalize_research, parse_email, role_kind_for
@@ -539,6 +544,104 @@ async def test_outreach_waits_until_the_person_has_applied(session: Session, mon
         app.dependency_overrides.clear()
         get_settings.cache_clear()
         throttle.reset()
+
+
+async def test_a_different_chosen_cv_does_not_reuse_the_previous_draft(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+
+    async def _reply(*_args: object, **_kwargs: object) -> AiCallResponse:
+        calls.append(1)
+        return AiCallResponse(
+            payload={
+                "subject": "Backend Engineer",
+                "body": f"I would like to talk about the Backend Engineer role at Acme ({len(calls)}).",
+                "pattern_ids": [],
+            },
+            prompt_tokens=1,
+            completion_tokens=1,
+            model="test",
+        )
+
+    monkeypatch.setattr("app.outreach.draft.send_anthropic_request", _reply)
+    applicant_id = _applicant(session, roles=["Backend Engineer"], locations=["Manchester"])
+    backend = store_cv(session, applicant_id, b"%PDF-1.7\nbackend", label="Backend Engineer")
+    analyst = store_cv(session, applicant_id, b"%PDF-1.7\nanalyst", label="Data Analyst")
+    job = _matched_job(session, applicant_id)
+    job.title = "Backend Engineer"
+    job.description = "Build HTTP services."
+    contact = OutreachContact(
+        applicant_id=applicant_id,
+        job_id=job.id,
+        full_name="Ada Recruiter",
+        company_name="Acme",
+        linkedin_url="https://www.linkedin.com/in/ada-draft",
+        role_kind="recruiter",
+        evidence={},
+        source_actor="test",
+    )
+    session.add(contact)
+    session.flush()
+    settings = Settings(
+        _env_file=None,
+        session_secret="x" * 32,
+        anthropic_api_key="test-key",
+        outreach_ai_unit_price=Decimal("0"),
+    )
+    gateway = FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset(),
+        resolve=_public_resolve,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+    )
+    try:
+        first = await draft_for_contact(
+            session,
+            applicant_id=applicant_id,
+            job=job,
+            contact=contact,
+            research=None,
+            channel=OutreachChannel.gmail,
+            gateway=gateway,
+            settings=settings,
+            persist=session.flush,
+        )
+        again = await draft_for_contact(
+            session,
+            applicant_id=applicant_id,
+            job=job,
+            contact=contact,
+            research=None,
+            channel=OutreachChannel.gmail,
+            gateway=gateway,
+            settings=settings,
+            persist=session.flush,
+        )
+        assert first.draft is not None and first.problem is None
+        assert again.draft is not None
+        assert again.draft.id == first.draft.id
+        assert len(calls) == 1
+
+        backend.label = "Data Analyst"
+        analyst.label = "Backend Engineer"
+        session.flush()
+        switched = await draft_for_contact(
+            session,
+            applicant_id=applicant_id,
+            job=job,
+            contact=contact,
+            research=None,
+            channel=OutreachChannel.gmail,
+            gateway=gateway,
+            settings=settings,
+            persist=session.flush,
+        )
+        assert switched.draft is not None and switched.problem is None
+        assert switched.draft.id != first.draft.id
+        assert len(calls) == 2
+    finally:
+        await gateway.aclose()
 
 
 def test_a_bracketed_company_name_still_counts_as_the_employer() -> None:

@@ -505,7 +505,7 @@ def outreach_linkedin(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    """Opens the profile; the extension sees the note chosen here and types it into LinkedIn's Connect box (D76)."""
+    """Opens the profile; the extension sees the note chosen here and types it into LinkedIn's Connect box (D77)."""
     _open_matched_job(db, applicant, job_id)
     contact = _own_contact(db, applicant, contact_id)
     draft = db.get(OutreachDraft, draft_id)

@@ -1,4 +1,4 @@
-// Types a drafted connection note on a LinkedIn profile (D76). It opens Connect and "Add a note" and puts the
+// Types a drafted connection note on a LinkedIn profile (D77). It opens Connect and "Add a note" and puts the
 // note in the box. It never presses Send: the person reads the note and sends it. When LinkedIn's page is not
 // as expected, the note is copied to the clipboard and a banner says what to click.
 (() => {

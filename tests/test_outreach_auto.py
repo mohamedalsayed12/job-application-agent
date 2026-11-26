@@ -1,4 +1,4 @@
-"""Outreach after Submitted (D76): people found, emails found, drafts written, LinkedIn notes for the extension."""
+"""Outreach after Submitted (D77): people found, emails found, drafts written, LinkedIn notes for the extension."""
 
 from __future__ import annotations
 

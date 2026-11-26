@@ -1,4 +1,4 @@
-"""The job whose interview practice pack waits on its role research (D77)."""
+"""The job whose interview practice pack waits on its role research (D78)."""
 
 from collections.abc import Sequence
 
@@ -6,8 +6,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0031_interview_job_wait"
-down_revision: str | None = "0030_outreach_auto"
+revision: str = "0041_interview_job_wait"
+down_revision: str | None = "0040_outreach_auto"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

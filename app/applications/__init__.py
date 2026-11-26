@@ -1,1 +1,1 @@
-"""Prepare employer applications: form schema, fill plan, extension hand-off."""
+"""Fill employer applications from the person's own answers. The extension never submits."""

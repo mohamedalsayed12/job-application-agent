@@ -207,17 +207,25 @@ def store_items(
 def actor_input(platform: InterviewPlatform, role: str, *, max_items: int, queries: list[str] | None = None) -> dict[str, Any]:
     queries = queries if queries is not None else queries_for(role)
     if platform is InterviewPlatform.reddit:
+        # Comments are billed per result. The charge cap is about $0.06, so posts only.
+        per_search = max(1, max_items // len(queries))
         return {
-            "searches": queries,
-            "maxItems": max_items,
-            "maxPostCount": max_items,
-            "skipComments": False,
+            "searchTerms": queries,
             "searchPosts": True,
-            "searchComments": True,
+            "searchComments": False,
+            "searchCommunities": False,
+            "searchSort": "relevance",
+            "searchTime": "all",
+            "maxPostsCount": per_search,
+            "maxCommentsCount": 0,
+            "crawlCommentsPerPost": False,
+            "maxCommentsPerPost": 0,
+            "includeNSFW": False,
+            "aiAnalysis": False,
         }
     if platform is InterviewPlatform.youtube:
         return {"searchQueries": queries, "maxResults": max_items, "maxResultsShorts": 0}
-    return {"searchQueries": queries, "searchQuery": queries[0], "limit": max_items, "maxPosts": max_items}
+    return {"keyword": queries[0], "sort_type": "relevance", "limit": max_items, "total_posts": max_items}
 
 
 def actor_id(platform: InterviewPlatform, settings: Settings) -> str:
