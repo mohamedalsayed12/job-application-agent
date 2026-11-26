@@ -13,17 +13,22 @@ async function api(path, options = {}) {
   const { apiBase, token } = await settings();
   const response = await fetch(`${apiBase}${path}`, {
     ...options,
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
   });
-  if (!response.ok) throw new Error(`Job Agent answered ${response.status}`);
-  return response.json();
+  return response;
 }
 
 async function openApplications() {
   const { token } = await settings();
   if (!token) return [];
   try {
-    return await api("/extension/applications/ready");
+    const response = await api("/extension/applications/ready");
+    if (!response.ok) return [];
+    return response.json();
   } catch (_) {
     return [];
   }
@@ -99,44 +104,95 @@ async function fillActiveTab(applicationId) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id || !tab.url) return { ok: false, error: "No active tab." };
 
-  const scan = await scanTab(tab.id);
-  if (!scan || scan.fields.length === 0) {
-    return { ok: false, error: "No form fields on this page. Click through to the employer's application form, then try again." };
+  let highlighted = "";
+  let filledAny = false;
+  let waitingForNext = false;
+  let lastMissing = [];
+  let lastFilled = 0;
+  let lastSkipped = [];
+
+  // Two passes so one Next click can be followed; upgrade when a form has more than two steps.
+  for (let pass = 0; pass < 2; pass += 1) {
+    const scan = await scanTab(tab.id);
+    if (!scan || !scan.fields?.length) {
+      if (pass === 0) {
+        return { ok: false, error: "No form fields on this page. Click through to the employer's application form, then try again." };
+      }
+      waitingForNext = true;
+      break;
+    }
+    let body;
+    try {
+      const response = await api(`/extension/applications/${applicationId}/form`, {
+        method: "POST",
+        body: JSON.stringify({ page_url: scan.url, fields: scan.fields }),
+      });
+      if (!response.ok) return { ok: false, error: `Job Agent answered ${response.status}` };
+      body = await response.json();
+    } catch (err) {
+      return { ok: false, error: String(err.message || err) };
+    }
+    if (body.status === "needs_input") {
+      await chrome.tabs.sendMessage(tab.id, { type: "jaa-notice", text: body.notice }, { frameId: scan.frameId });
+      return { ok: false, needsInput: true, error: body.notice, missing: (body.missing || []).map((m) => m.label || m) };
+    }
+    const steps = body.plan?.steps || body.steps || [];
+    if (steps.some((step) => !ALLOWED_ACTIONS.has(step.action))) {
+      return { ok: false, error: "Refusing a plan with a disallowed action." };
+    }
+    const cv = steps.some((step) => step.action === "upload_cv") ? await downloadCv(applicationId) : null;
+    if (steps.some((step) => step.action === "upload_cv") && !cv) {
+      return { ok: false, error: "Could not download the CV." };
+    }
+    const filled = await chrome.tabs.sendMessage(
+      tab.id,
+      {
+        type: "jaa-fill",
+        steps,
+        plan: body.plan || body,
+        cv,
+        notice: body.notice,
+        final: pass === 1 || !scan.hasNext,
+      },
+      { frameId: scan.frameId },
+    );
+    if (!filled?.ok) {
+      await reportStatus(applicationId, "failed", filled?.error || "Fill failed");
+      return { ok: false, error: filled?.error || "Fill failed" };
+    }
+    highlighted = filled.highlighted || highlighted;
+    lastFilled = filled.filled || lastFilled;
+    lastSkipped = filled.skipped || lastSkipped;
+    lastMissing = body.missing || [];
+    filledAny = true;
+    waitingForNext = Boolean(filled.advanced);
+    if (!filled.advanced) break;
   }
-  let plan;
-  try {
-    plan = await api(`/extension/applications/${applicationId}/form`, {
-      method: "POST",
-      body: JSON.stringify({ page_url: scan.url, fields: scan.fields }),
-    });
-  } catch (err) {
-    return { ok: false, error: String(err.message || err) };
-  }
-  if ((plan.steps || []).some((step) => !ALLOWED_ACTIONS.has(step.action))) {
-    return { ok: false, error: "Refusing a plan with a disallowed action." };
-  }
-  const cv = (plan.steps || []).some((step) => step.action === "upload_cv") ? await downloadCv(applicationId) : null;
-  const result = await chrome.tabs.sendMessage(tab.id, { type: "jaa-fill", plan, cv }, { frameId: scan.frameId });
-  if (!result?.ok) {
-    // Leave the application open so the person can try again on the same page.
-    return { ok: false, error: result?.error || "Fill failed" };
-  }
-  const missing = plan.missing || [];
-  if (missing.length === 0) await reportStatus(applicationId, "filled_awaiting_review");
-  await chrome.action.setBadgeText({ text: missing.length ? String(missing.length) : "" });
+
+  if (!filledAny) return { ok: false, error: "No form fields on this page." };
+  if (waitingForNext) return { ok: false, error: "The next step is not filled yet. Click Fill again." };
+  if (!lastMissing.length) await reportStatus(applicationId, "filled_awaiting_review");
+  await chrome.action.setBadgeText({ text: lastMissing.length ? String(lastMissing.length) : "!" });
+  await chrome.action.setBadgeBackgroundColor({ color: "#0a7" });
   try {
     await chrome.notifications.create({
       type: "basic",
       iconUrl: "icon.png",
-      title: missing.length ? "Some questions need you" : "Application ready to review",
-      message: missing.length
-        ? `Filled ${result.filled} fields. ${missing.length} question(s) have no saved answer: answer them on the form.`
-        : `Filled ${result.filled} fields. Check the form and press Submit yourself.`,
+      title: lastMissing.length ? "Some questions need you" : "Application ready to review",
+      message: lastMissing.length
+        ? `Filled ${lastFilled} fields. ${lastMissing.length} question(s) have no saved answer.`
+        : `Filled ${lastFilled} fields. Check the form and press Submit yourself.`,
     });
   } catch (_) {
     /* notifications are optional */
   }
-  return { ok: true, filled: result.filled, skipped: result.skipped || [], missing };
+  return {
+    ok: true,
+    filled: lastFilled,
+    skipped: lastSkipped,
+    missing: lastMissing.map((m) => m.label || m),
+    highlighted,
+  };
 }
 
 chrome.alarms.create("jaa-poll", { periodInMinutes: 1 });

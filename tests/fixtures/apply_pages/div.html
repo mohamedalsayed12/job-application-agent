@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<body>
+<form id="form" action="?submitted=1">
+  <label>First name <input name="first_name" required></label>
+  <label>Email <input name="email" type="email" required></label>
+  <div id="submit" role="button">Submit application</div>
+</form>
+<script>
+  window.__submitted = 0;
+  document.getElementById("form").addEventListener("submit", (event) => {
+    window.__submitted += 1;
+    event.preventDefault();
+  });
+  document.getElementById("submit").addEventListener("click", () => { window.__submitted += 1; });
+</script>
+</body>
+</html>

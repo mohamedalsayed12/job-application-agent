@@ -239,7 +239,7 @@ def _form_fields(request: Request, db: Session, applicant: Applicant) -> tuple[P
     draft = _draft_view(request)
     if draft is not None:
         return draft
-    return _saved_fields(db, applicant), None
+    return saved_fields(db, applicant), None
 
 
 def _options(pairs: list[tuple[str, str]], selected: str) -> str:

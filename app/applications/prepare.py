@@ -1,17 +1,14 @@
-"""Create or refresh an Application, and turn the form the extension read into a fill plan (D70)."""
+"""Create or refresh an Application for fill-from-answers (D70 prepare; D66 fill)."""
 
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.applicants.apply_answers import answers_as_map, load_answers
 from app.applicants.cv import base_cv
-from app.applications.mapper import FillPlan, build_fill_plan
-from app.applications.schema import classify_ats, fields_from_scan, schema_to_json
+from app.applications.mapper import FillPlan
 from app.models import Applicant, Application, ApplicationStatus, Job
 
 
@@ -66,44 +63,38 @@ def prepare_application(
     if row is not None and row.status == ApplicationStatus.submitted.value:
         raise PrepareRefused("You have already applied for this job.")
     if row is None:
-        row = Application(applicant_id=applicant.id, job_id=job_id, apply_url=apply_url, status=ApplicationStatus.ready_to_fill.value)
+        row = Application(
+            applicant_id=applicant.id,
+            job_id=job_id,
+            apply_url=apply_url,
+            status=ApplicationStatus.ready_to_fill.value,
+        )
         session.add(row)
     else:
         row.apply_url = apply_url
-        row.status = ApplicationStatus.ready_to_fill.value
-        row.error = None
-        row.missing_fields = []
-        row.schema_json = None
-        row.fill_plan_json = None
+    row.schema_json = None
+    store_fill_outcome(row, None, reopen=True)
     row.cv_file_id = cv.id if (cv := base_cv(session, applicant.id, job)) else None
     session.flush()
     return row
 
 
-def plan_for_scanned_form(
-    session: Session,
-    application: Application,
-    applicant: Applicant,
-    *,
-    page_url: str,
-    fields: list[dict[str, Any]],
-) -> FillPlan:
-    """Map the fields the extension read to the person's saved answers; unanswered required ones are listed."""
-    schema = fields_from_scan(fields, ats=classify_ats(page_url))
-    answers = answers_as_map(load_answers(session, applicant.id), email=applicant.email)
-    plan = build_fill_plan(schema, answers)
-    application.ats_kind = schema.ats_kind.value
-    application.schema_json = {**schema_to_json(schema), "page_url": page_url}
-    application.fill_plan_json = plan.to_json()
-    application.missing_fields = plan.missing
-    if plan.missing:
+def store_fill_outcome(application: Application, plan: FillPlan | None, *, reopen: bool = False) -> None:
+    """Write status, missing questions, and the fill plan together. A submitted application stays submitted."""
+    if application.status == ApplicationStatus.submitted.value:
+        return
+    if plan is not None and plan.missing:
+        shown = FillPlan(steps=[], missing=plan.missing, attach=plan.attach)
         application.status = ApplicationStatus.needs_input.value
-        application.error = "Some required questions on this form have no saved answer. They are listed below."
-    else:
-        application.status = ApplicationStatus.ready_to_fill.value
+        application.missing_fields = [question.label for question in plan.missing]
+        application.fill_plan_json = shown.to_json()
         application.error = None
-    session.flush()
-    return plan
+        return
+    if reopen or application.status != ApplicationStatus.filled_awaiting_review.value:
+        application.status = ApplicationStatus.ready_to_fill.value
+    application.missing_fields = []
+    application.fill_plan_json = plan.to_json() if plan is not None else None
+    application.error = None
 
 
 def set_application_status(
@@ -113,6 +104,8 @@ def set_application_status(
     status: ApplicationStatus,
     error: str | None = None,
 ) -> Application:
+    if status is ApplicationStatus.filled_awaiting_review and application.missing_fields:
+        raise PrepareRefused("Answer the missing questions first.")
     if status is ApplicationStatus.filled_awaiting_review and application.status not in (
         ApplicationStatus.ready_to_fill.value,
         ApplicationStatus.filled_awaiting_review.value,
@@ -129,7 +122,12 @@ def mark_submitted(session: Session, applicant_id: uuid.UUID, job: Job) -> Appli
     """The person says they sent the application, here or on the employer's site directly."""
     row = application_for_job(session, applicant_id, job.id)
     if row is None:
-        row = Application(applicant_id=applicant_id, job_id=job.id, apply_url=job.apply_url or "", status=ApplicationStatus.submitted.value)
+        row = Application(
+            applicant_id=applicant_id,
+            job_id=job.id,
+            apply_url=job.apply_url or "",
+            status=ApplicationStatus.submitted.value,
+        )
         session.add(row)
     else:
         row.status = ApplicationStatus.submitted.value

@@ -44,7 +44,7 @@ class Settings(BaseSettings):
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
     api_allowlist: str = (
-        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
+        "api.apify.com,api.anthropic.com,"
         "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,serpapi.com"
     )
 
@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     careers_stale_days: int = 14
     # SerpAPI's plans are about $0.01-0.025 a search; this ceiling is per Google page.
     careers_search_price: Decimal = Decimal("0.02")
+
+    # Apply fill: matching form questions the patterns miss to the person's own answers or CV text.
+    ai_apply_map_unit_price: Decimal = Decimal("0.002")
+    ai_apply_map_model: str = ""
+    ai_apply_map_max_output_tokens: int = 800
 
     # Outreach: people discovery and profile research through Apify (still never fetch linkedin.com here).
     apify_outreach_hm_actor: str = "automation_studio/linkedin-job-hiring-manager-finder"
@@ -187,6 +192,7 @@ class Settings(BaseSettings):
         "indeed_run_price",
         "careers_search_price",
         "usd_to_gbp",
+        "ai_apply_map_unit_price",
         "interview_collect_unit_price",
         "interview_collect_run_price",
         "interview_analyse_unit_price",
@@ -248,6 +254,9 @@ class Settings(BaseSettings):
 
     def resolved_ai_outreach_model(self) -> str:
         return self.ai_summary_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
+
+    def resolved_ai_apply_map_model(self) -> str:
+        return self.ai_apply_map_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def gmail_seal_secret(self) -> str:
         return (self.gmail_token_key or self.session_secret).strip()

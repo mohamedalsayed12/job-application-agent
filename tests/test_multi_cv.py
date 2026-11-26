@@ -26,6 +26,7 @@ from app.applicants.cv import (
     store_cv,
 )
 from app.applicants.service import create_applicant, parse_preference_input
+from app.applications.cv_choice import choose_cv
 from app.applications.prepare import prepare_application
 from app.core.config import get_settings
 from app.core.db import get_db
@@ -184,12 +185,17 @@ def test_the_loader_picks_the_cv_whose_label_fits_the_job(session: Session) -> N
 def test_preparing_an_application_records_the_cv_for_that_job(session: Session) -> None:
     person = _person(session)
     analyst = store_cv(session, person.id, PDF_A, label="Data Analyst")
-    store_cv(session, person.id, PDF_B, label="Backend Engineer")
+    backend = store_cv(session, person.id, PDF_B, label="Backend Engineer")
     _store(session, [_li(1, title="Data Analyst", content="Prepare weekly sales reports in Excel.")])
     job = _job(session, 1)
     row = prepare_application(session, applicant=person, job_id=job.id)
     assert row.cv_file_id == analyst.id
     assert row.status == ApplicationStatus.ready_to_fill.value
+
+    analyst.label, backend.label = "Backend Engineer", "Data Analyst"
+    session.flush()
+    chosen = choose_cv(session, person.id, row)
+    assert chosen is not None and chosen.content == PDF_A
 
 
 @pytest.fixture
