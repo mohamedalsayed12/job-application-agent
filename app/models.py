@@ -1117,6 +1117,8 @@ class InterviewIntelRequest(_UuidPk, Base):
     role_key: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(Text())
     pack_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("interview_intel_pack.id", ondelete="SET NULL"))
+    # D77: the job whose practice pack is built as soon as the role research is ready.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="SET NULL"))
     error: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()

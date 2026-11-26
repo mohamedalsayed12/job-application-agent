@@ -15,12 +15,14 @@ from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.interview.analyse import analyse_evidence
 from app.interview.collect import collect_for_role
+from app.interview.job_pack import build_job_pack
 from app.interview.plan import fresh_pack, write_pack
 from app.interview.roles import role_key as make_role_key
 from app.models import (
     ApplicantPreference,
     InterviewIntelRequest,
     InterviewRequestStatus,
+    Job,
 )
 
 
@@ -40,8 +42,13 @@ def enqueue(
     applicant_id: UUID,
     role: str,
     now: datetime | None = None,
+    job_id: UUID | None = None,
 ) -> InterviewIntelRequest:
-    """Create or reuse a request for this applicant and role; attach a fresh pack when one exists."""
+    """Create or reuse a request for this applicant and role; attach a fresh pack when one exists.
+
+    With `job_id` the role comes from a job the person matched or applied to, so it need not be one of their
+    target roles, and that job's practice pack is built as soon as the role research is ready (D77).
+    """
     now = now or datetime.now(UTC)
     role = role.strip()
     if not role:
@@ -49,7 +56,7 @@ def enqueue(
     key = make_role_key(role)
     preference = session.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant_id))
     allowed = {make_role_key(item) for item in (preference.target_roles if preference else [])}
-    if key not in allowed:
+    if job_id is None and key not in allowed:
         raise ValueError("role is not one of your target roles")
 
     active = session.scalar(
@@ -64,7 +71,14 @@ def enqueue(
         .order_by(InterviewIntelRequest.created_at.desc())
         .limit(1)
     )
+    if active is not None and job_id is not None and active.job_id not in (None, job_id):
+        # Another job waits on the same research: this job gets its own request, which the worker finishes
+        # without researching the role twice (see process_requests).
+        active = None
     if active is not None:
+        if job_id is not None and active.job_id is None:
+            active.job_id = job_id
+            session.flush()
         return active
 
     pack = fresh_pack(session, key, now=now)
@@ -98,6 +112,7 @@ def enqueue(
         role=role,
         role_key=key,
         status=InterviewRequestStatus.queued.value,
+        job_id=job_id,
     )
     session.add(request)
     session.flush()
@@ -115,7 +130,7 @@ async def process_requests(
 ) -> ProcessReport:
     clock = now or (lambda: datetime.now(UTC))
     report = ProcessReport()
-    todo = list(
+    waiting = list(
         session.scalars(
             select(InterviewIntelRequest)
             .where(
@@ -124,10 +139,19 @@ async def process_requests(
                 )
             )
             .order_by(InterviewIntelRequest.created_at)
-            .limit(settings.interview_per_cycle)
         )
     )
-    for request in todo:
+    # The per-cycle limit is for role research. A request whose role is researched already only needs its
+    # job's pack, so it is finished now instead of waiting a cycle (D77).
+    researching = 0
+    researched: set[str] = set()
+    for request in waiting:
+        if fresh_pack(session, request.role_key, now=clock()) is None:
+            # Several requests can wait on one role (one per job): the role is researched once.
+            if request.role_key in researched or researching >= settings.interview_per_cycle:
+                continue
+            researching += 1
+            researched.add(request.role_key)
         await _process_one(
             session,
             request,
@@ -145,6 +169,7 @@ def _halt(request: InterviewIntelRequest, stopped_by: str | None, persist: Calla
     """Apply a shared stop. Returns True when processing should end for this request."""
     if stopped_by == "budget" or stopped_by == "daily token cap":
         request.status = InterviewRequestStatus.queued.value
+        request.error = stopped_by
         persist()
         report.requeued += 1
         report.stopped_by = stopped_by
@@ -180,6 +205,7 @@ async def _process_one(
         request.error = None
         persist()
         report.ready += 1
+        await _build_waiting_job_pack(session, request, gateway=gateway, settings=settings, persist=persist)
         return
 
     request.status = InterviewRequestStatus.running.value
@@ -238,6 +264,33 @@ async def _process_one(
     request.error = None
     persist()
     report.ready += 1
+    await _build_waiting_job_pack(session, request, gateway=gateway, settings=settings, persist=persist)
+
+
+async def _build_waiting_job_pack(
+    session: Session,
+    request: InterviewIntelRequest,
+    *,
+    gateway: FetchGateway,
+    settings: Settings,
+    persist: Callable[[], None],
+) -> None:
+    """The person asked for one job's practice pack and the role research it needs is now ready (D77)."""
+    if request.job_id is None:
+        return
+    job = session.get(Job, request.job_id)
+    if job is None:
+        request.job_id = None
+        persist()
+        return
+    result = await build_job_pack(
+        session, applicant_id=request.applicant_id, job=job, gateway=gateway, settings=settings, role=request.role
+    )
+    if result.pack is not None:
+        request.job_id = None
+    else:
+        request.error = f"job pack: {result.stopped_by or 'failed'}"[:500]
+    persist()
 
 
 def _fail(request: InterviewIntelRequest, error: str, persist: Callable[[], None]) -> None:
