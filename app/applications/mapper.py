@@ -15,9 +15,12 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.applicants.apply_answers import SavedQuestion, question_key
+from app.applicants.questions import EXTRA_BY_KEY, EXTRA_QUESTIONS
 from app.models import PREFER_NOT
 
-FieldType = Literal["text", "email", "tel", "url", "number", "date", "textarea", "select", "radio", "checkbox", "file"]
+FieldType = Literal[
+    "text", "email", "tel", "url", "number", "date", "month", "textarea", "select", "radio", "checkbox", "file"
+]
 Action = Literal["fill", "select", "check", "upload_cv"]
 Source = Literal["answers", "saved", "account", "cv"]
 
@@ -93,8 +96,23 @@ class FillPlan:
         }
 
 
+# Extra questions whose labels contain another one's words, so they are tried first.
+_EXTRA_FIRST = ("gender_same_as_birth", "parents_university", "adjustments_details", "visa_expiry_date")
+# An extra question that fills an answer the mapper already knows by another key.
+_EXTRA_ALIAS = {"heard_about_source": "heard_about"}
+
+
+def _extra_patterns() -> list[tuple[str, tuple[str, ...]]]:
+    """The extra questions (D74), more specific than the generic names, address and gender patterns below."""
+    ordered = sorted(
+        EXTRA_QUESTIONS, key=lambda q: _EXTRA_FIRST.index(q.key) if q.key in _EXTRA_FIRST else len(_EXTRA_FIRST)
+    )
+    return [(_EXTRA_ALIAS.get(q.key, q.key), q.patterns) for q in ordered if q.patterns]
+
+
 # Longer, more specific patterns first. Short tokens use word boundaries.
 _PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    *_extra_patterns(),
     ("needs_visa_sponsorship", (r"visa sponsorship", r"require sponsorship", r"need sponsorship", r"\bsponsorship\b")),
     ("right_to_work_uk", (r"right to work", r"authorized to work", r"authorised to work", r"work authorization", r"work authorisation", r"legally authorized")),
     ("previously_employed", (r"previously employed", r"worked for .{0,20}(us|company|organisation|organization)", r"former employee", r"previously worked")),
@@ -164,6 +182,20 @@ _SYNONYMS: dict[str, tuple[str, ...]] = {
     "hybrid": ("hybrid working", "flexible hybrid"),
     "remote": ("fully remote", "remote only", "work from home", "home based"),
     "any": ("no preference", "any", "flexible", "open to all", "open to any"),
+    # 2021 Census wording, and the older wording answers were saved in before it.
+    "female": ("woman", "f", "female including trans woman"),
+    "male": ("man", "m", "male including trans man"),
+    "woman": ("female",),
+    "man": ("male",),
+    "non binary": ("nonbinary",),
+    "i describe myself another way": (
+        "prefer to self describe", "self describe", "i use another term", "in another way", "other",
+    ),
+    "straight or heterosexual": ("heterosexual", "straight", "heterosexual or straight"),
+    "gay or lesbian": ("lesbian or gay", "gay", "gay woman or lesbian"),
+    "another sexual orientation": (
+        "other sexual orientation", "another orientation", "other", "prefer to self describe", "i use another term",
+    ),
 }
 
 
@@ -208,8 +240,64 @@ def matches_from_payload(payload: Mapping[str, object]) -> dict[str, Match]:
 
 
 def _norm(text: str) -> str:
-    cleaned = re.sub(r"[-_]", " ", text.casefold())
+    """Lower case, hyphens as spaces and "Gay/Lesbian" as "gay or lesbian"."""
+    cleaned = re.sub(r"\s*/\s*", " or ", re.sub(r"[-_]", " ", text.casefold()))
     return " ".join(cleaned.split()).strip(" .:*?")
+
+
+def _loose(text: str) -> str:
+    """Only the words that carry meaning, so "Asian/Asian British - Indian" matches "Asian or Asian British: Indian"."""
+    return " ".join(word for word in re.findall(r"[a-z0-9]+", text.lower()) if word not in ("or", "and", "the"))
+
+
+def _pick_ethnicity(options: list[str], desired: str) -> str | None:
+    """A Census group ("White: Irish") as the form words it, else its broad group ("White")."""
+    group, _, detail = desired.partition(": ")
+    if not detail:
+        return None
+    first = group.split()[0].rstrip(",")
+    wanted = [f"{group} {detail}", detail, f"{first} {detail}"]
+    if detail.lower().startswith("any other"):
+        wanted += [f"{first} other", f"other {first}", f"any other {first}"]
+    if "British" in detail and first == "White":
+        wanted += ["White British", "British", "White English Welsh Scottish Northern Irish British"]
+    loose = {_loose(option): option for option in options}
+    for text in wanted:
+        if (found := loose.get(_loose(text))) is not None:
+            return found
+    return loose.get(_loose(group))
+
+
+def _month_value(text: str, form_field: FormField) -> str | None:
+    """A saved "YYYY-MM" as the form wants it: as is in a month box, "06/2027" typed, or a matching option."""
+    match = re.fullmatch(r"(\d{4})-(\d{2})", text)
+    if match is None:
+        return None
+    year, month = match.group(1), int(match.group(2))
+    if form_field.type == "month":
+        return text
+    if form_field.options:
+        names = (
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        )
+        for candidate in (f"{names[month - 1]} {year}", f"{names[month - 1][:3]} {year}", f"{month:02d}/{year}", year):
+            if (found := _pick_option(form_field.options, candidate)) is not None:
+                return found
+        return None
+    return f"{month:02d}/{year}"
+
+
+def _date_value(text: str, form_field: FormField) -> str | None:
+    """A saved ISO date: as is in a date box, the UK's day/month/year when typed."""
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if match is None:
+        return None
+    if form_field.options:
+        return _pick_option(form_field.options, text)
+    if form_field.type == "date":
+        return text
+    return f"{match.group(3)}/{match.group(2)}/{match.group(1)}"
 
 
 def _pick_option(options: list[str], desired: str) -> str | None:
@@ -229,10 +317,18 @@ def _pick_option(options: list[str], desired: str) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
-def _fit(form_field: FormField, value: str) -> str | None:
+def _fit(form_field: FormField, value: str, *, key: str | None = None) -> str | None:
     """The value as this field takes it, or None when the field cannot take it."""
+    question = EXTRA_BY_KEY.get(key) if key else None
+    if question is not None and question.kind == "month":
+        return _month_value(value, form_field)
+    if question is not None and question.kind == "date":
+        return _date_value(value, form_field)
     if form_field.options:
-        return _pick_option(form_field.options, value)
+        picked = _pick_option(form_field.options, value)
+        if picked is None and key == "ethnicity":
+            picked = _pick_ethnicity(form_field.options, value)
+        return picked
     if form_field.type == "checkbox":
         return {"yes": "Yes", "no": "No"}.get(_norm(value))
     if value == PREFER_NOT:
@@ -245,7 +341,7 @@ def _known(form_field: FormField, facts: Mapping[str, Fact], saved: Mapping[str,
     candidates = [facts.get(answer_fact_id(key))] if key and key != "cv" else []
     candidates.append(saved.get(question_key(form_field.question)))
     for fact in candidates:
-        if fact is not None and (value := _fit(form_field, fact.value)):
+        if fact is not None and (value := _fit(form_field, fact.value, key=key)):
             return value, fact.source
     return None
 
@@ -271,10 +367,11 @@ def _grounded(form_field: FormField, match: Match | None, facts: Mapping[str, Fa
     if match is None:
         return None
     fact = facts.get(match.fact_id)
-    if fact is not None and (value := _fit(form_field, fact.value)):
+    key = match_answer_key(form_field.label, form_field.name)
+    if fact is not None and (value := _fit(form_field, fact.value, key=key)):
         return value, fact.source
     quote = _cv_span(match.cv_quote, cv_text)
-    if quote is not None and (value := _fit(form_field, quote)):
+    if quote is not None and (value := _fit(form_field, quote, key=key)):
         return value, "cv"
     return None
 
