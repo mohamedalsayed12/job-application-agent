@@ -21,7 +21,8 @@ from app.models import BudgetPolicy, SpendKind, SpendLedger
 
 logger = logging.getLogger(__name__)
 
-CapName = Literal["monthly"]
+# "unset": no money cap is configured, so paid work waits until someone sets one.
+CapName = Literal["monthly", "unset"]
 WARN_RATIO = Decimal("0.8")
 # Fixed advisory key for all budget reserves (one worker / one gate).
 _BUDGET_ADVISORY_LOCK_KEY = 0x4A414142  # "JAAB"
@@ -133,7 +134,9 @@ class BudgetGate:
         money_cap = _load_monthly_money_cap(self._session, estimate.provider, now)
         requires_money = cost > 0
 
-        if requires_money and (money_cap is None or money_cap <= 0):
+        if requires_money and money_cap is None:
+            raise BudgetWait("unset")
+        if requires_money and money_cap <= 0:
             raise BudgetWait("monthly")
 
         if requires_money and money_cap is not None:

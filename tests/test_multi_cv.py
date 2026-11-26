@@ -182,12 +182,13 @@ def test_the_loader_picks_the_cv_whose_label_fits_the_job(session: Session) -> N
     assert base_cv(session, person.id, _job(session, 2)).id == backend.id
 
 
-def test_preparing_an_application_records_the_cv_the_form_gets(session: Session) -> None:
+def test_preparing_an_application_records_the_cv_for_that_job(session: Session) -> None:
     person = _person(session)
     analyst = store_cv(session, person.id, PDF_A, label="Data Analyst")
     backend = store_cv(session, person.id, PDF_B, label="Backend Engineer")
     _store(session, [_li(1, title="Data Analyst", content="Prepare weekly sales reports in Excel.")])
-    row = prepare_application(session, applicant_id=person.id, job_id=_job(session, 1).id)
+    job = _job(session, 1)
+    row = prepare_application(session, applicant=person, job_id=job.id)
     assert row.cv_file_id == analyst.id
     assert row.status == ApplicationStatus.ready_to_fill.value
 

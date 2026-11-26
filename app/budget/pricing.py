@@ -19,6 +19,8 @@ def estimate_cost(
         unit_price = settings.linkedin_unit_price
     elif kind == SpendKind.indeed_jobs:
         unit_price = settings.indeed_unit_price
+    elif kind == SpendKind.careers_search:
+        unit_price = settings.careers_search_price
     elif kind == SpendKind.linkedin_people:
         unit_price = settings.outreach_people_unit_price
     elif kind == SpendKind.linkedin_profile:

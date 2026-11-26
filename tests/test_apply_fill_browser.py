@@ -54,7 +54,7 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
         path = urlparse(self.path).path
-        if path.endswith("/plan"):
+        if path.endswith("/form") or path.endswith("/plan"):
             steps = []
             for field in json.loads(raw)["fields"]:
                 if field["type"] == "file":

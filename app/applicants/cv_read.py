@@ -16,7 +16,7 @@ import logging
 import re
 import uuid
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -61,8 +61,12 @@ Rules:
   such as a driving licence. expires_on is YYYY-MM-DD only if the CV states an expiry date, otherwise "".
 - degrees: each university degree the CV names, finished or being studied for, as the level and subject only,
   such as "BSc Business Management". No university name, grade or dates.
+- contact: the person's own details exactly as the CV writes them: first_name, last_name, phone, city, postcode,
+  linkedin_url, github_url, portfolio_url (a personal website, not an employer's). Use "" for anything the CV
+  doesn't show. Never build a link or a name from other parts of the CV.
 - Leave a list empty rather than guess.
 """
+_CONTACT_KEYS = ("first_name", "last_name", "phone", "city", "postcode", "linkedin_url", "github_url", "portfolio_url")
 CV_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -90,8 +94,23 @@ CV_SCHEMA = {
             },
         },
         "degrees": {"type": "array", "items": {"type": "string"}},
+        "contact": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {key: {"type": "string"} for key in _CONTACT_KEYS},
+            "required": list(_CONTACT_KEYS),
+        },
     },
-    "required": ["aimed_at", "target_roles", "locations", "experience_levels", "skills", "certifications", "degrees"],
+    "required": [
+        "aimed_at",
+        "target_roles",
+        "locations",
+        "experience_levels",
+        "skills",
+        "certifications",
+        "degrees",
+        "contact",
+    ],
 }
 
 
@@ -116,6 +135,20 @@ class Certification:
 
 
 @dataclass(frozen=True, slots=True)
+class ContactSuggestions:
+    """Contact details for employer forms. Every one is copied from the CV text, or left blank."""
+
+    first_name: str = ""
+    last_name: str = ""
+    phone: str = ""
+    city: str = ""
+    postcode: str = ""
+    linkedin_url: str = ""
+    github_url: str = ""
+    portfolio_url: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class CvSuggestions:
     aimed_at: str = ""
     target_roles: list[str] = field(default_factory=list)
@@ -124,6 +157,7 @@ class CvSuggestions:
     skills: list[str] = field(default_factory=list)
     certifications: list[Certification] = field(default_factory=list)
     degrees: list[str] = field(default_factory=list)
+    contact: ContactSuggestions = field(default_factory=ContactSuggestions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +241,56 @@ def grounded(payload: dict, text: str) -> CvSuggestions:
         skills=[skill for skill in _strings(payload.get("skills"), MAX_SKILLS) if in_cv(skill)],
         certifications=certifications[:MAX_CERTIFICATIONS],
         degrees=[degree for degree in _strings(payload.get("degrees"), MAX_DEGREES) if _words_in_cv(degree, text)],
+        contact=grounded_contact(payload.get("contact"), text),
     )
+
+
+_MAX_CONTACT_LENGTH = 200
+_LINK_HOSTS = {"linkedin_url": ("linkedin.com",), "github_url": ("github.com",)}
+_MIN_PHONE_DIGITS = 7
+
+
+def _digits(value: str) -> str:
+    return re.sub(r"\D", "", value)
+
+
+def _link(value: str, text: str, *, key: str) -> str:
+    """A link the CV shows, with https:// added when the CV leaves it off. Its host must suit the field."""
+    bare = re.sub(r"^(?:https?://)?(?:www\.)?", "", value.strip(), flags=re.IGNORECASE).rstrip("/")
+    if not bare or any(c.isspace() for c in bare) or bare.casefold() not in text.casefold():
+        return ""
+    host = bare.split("/", 1)[0].casefold()
+    if "." not in host or any(c in host for c in "@:"):
+        return ""
+    wanted = _LINK_HOSTS.get(key)
+    if wanted and not any(host == name or host.endswith("." + name) for name in wanted):
+        return ""
+    if key == "portfolio_url" and any(host.endswith(name) for names in _LINK_HOSTS.values() for name in names):
+        return ""
+    return "https://" + bare
+
+
+def grounded_contact(payload: object, text: str) -> ContactSuggestions:
+    """Keeps a contact detail only when the CV text has it, so nothing is made up or pieced together."""
+    if not isinstance(payload, dict):
+        return ContactSuggestions()
+    haystack = _key(text)
+    words = set(re.findall(r"\w+", text.casefold()))
+    found: dict[str, str] = {}
+    for key in _CONTACT_KEYS:
+        value = payload.get(key)
+        if not isinstance(value, str) or not (cleaned := " ".join(value.split())) or len(cleaned) > _MAX_CONTACT_LENGTH:
+            continue
+        if key.endswith("_url"):
+            found[key] = _link(cleaned, text, key=key)
+        elif key == "phone":
+            digits = _digits(cleaned)
+            found[key] = cleaned if len(digits) >= _MIN_PHONE_DIGITS and digits in _digits(text) else ""
+        elif key in ("first_name", "last_name"):
+            found[key] = cleaned if all(word in words for word in re.findall(r"\w+", cleaned.casefold())) else ""
+        else:
+            found[key] = cleaned if _key(cleaned) in haystack else ""
+    return ContactSuggestions(**found)
 
 
 def _words_in_cv(value: str, text: str) -> bool:
@@ -261,8 +344,9 @@ async def read_cv(
                 applicant_id=applicant_id,
             )
         )
-    except BudgetWait:
-        return CvRead(ReadOutcome.budget)
+    except BudgetWait as wait:
+        # No cap at all means reading was never switched on, not that this month's money ran out.
+        return CvRead(ReadOutcome.not_configured if wait.cap == "unset" else ReadOutcome.budget)
     session.commit()
 
     model = settings.resolved_ai_cv_model()
@@ -276,3 +360,26 @@ async def read_cv(
     gate.settle(reservation, actual_cost=cost, units=Decimal(1))
     session.commit()
     return CvRead(ReadOutcome.read, grounded(call.payload, text))
+
+
+def suggestions_to_json(found: CvSuggestions) -> dict:
+    return asdict(found)
+
+
+def suggestions_from_json(data: object) -> CvSuggestions | None:
+    """Rebuilds what was read earlier. Anything malformed counts as nothing read."""
+    if not isinstance(data, dict):
+        return None
+    try:
+        return CvSuggestions(
+            aimed_at=str(data.get("aimed_at") or ""),
+            target_roles=[str(item) for item in data.get("target_roles") or []],
+            locations=[str(item) for item in data.get("locations") or []],
+            experience_levels=[str(item) for item in data.get("experience_levels") or []],
+            skills=[str(item) for item in data.get("skills") or []],
+            certifications=[Certification(**item) for item in data.get("certifications") or []],
+            degrees=[str(item) for item in data.get("degrees") or []],
+            contact=ContactSuggestions(**(data.get("contact") or {})),
+        )
+    except TypeError:
+        return None
