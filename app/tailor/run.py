@@ -31,15 +31,21 @@ from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.verdicts import job_text
 from app.models import (
+    ApplicantJobMatch,
+    CvFile,
     CvFileType,
     Job,
+    JobFreshness,
     JobReport,
     SpendKind,
+    TAILOR_VERDICTS,
     TailoredCv,
     TailoredCvStatus,
+    attempt_failed,
 )
 from app.tailor import ai
 from app.tailor.ats import ats_report
+from app.tailor.company import load_site_terms, with_keyword_sources
 from app.tailor.improver import apply_diffs, verify_diff_result
 from app.tailor.preservation import finalize_ai_resume
 from app.tailor.refiner import (
@@ -49,13 +55,15 @@ from app.tailor.refiner import (
 )
 from app.tailor.render import render_docx, render_pdf
 from app.tailor.resume import all_text
+from app.tailor.voice import restore_lines, voice_problems
 
 # Bumped when the guard or layout changes, so ready CVs are written again: grounded-v2 adds the
 # posting-word check, the bullet fix and certifications kept with their dates.
 PROMPT_VERSION = "resume-matcher-959e458-cover-letter-grounded-v2"
-TAILOR_VERDICTS = frozenset({"Apply", "Consider"})
+# Placeholder hash for a requested package, so it never looks already built.
 REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
+_DONE = frozenset({TailoredCvStatus.ready.value, TailoredCvStatus.skipped.value, TailoredCvStatus.failed.value})
 
 
 @dataclass
@@ -72,6 +80,8 @@ class _Work:
     posting: str
     cv: str
     input_hash: str
+    company_name: str
+    apply_url: str
     cv_file_id: uuid.UUID
 
 
@@ -135,13 +145,15 @@ async def write_tailored_cvs(
             )
         except BudgetWait:
             row = _row_for(session, item)
-            # Keep a previous ready package downloadable; only mark waiting when nothing is ready yet.
-            if row.status != TailoredCvStatus.ready.value:
+            # A refresh that hits the cap keeps the previous download visible and stays due.
+            if row.pdf_content:
+                row.status = TailoredCvStatus.ready.value
+            else:
                 row.status = TailoredCvStatus.waiting_budget.value
                 row.input_hash = item.input_hash
                 row.prompt_version = PROMPT_VERSION
-                row.updated_at = now
-                session.flush()
+            row.updated_at = now
+            session.flush()
             run.outcomes["waiting_budget"] += 1
             run.stopped_by = "budget"
             persist()
@@ -152,6 +164,11 @@ async def write_tailored_cvs(
 def tailor_allowed(settings: Settings, applicant_id: uuid.UUID) -> bool:
     allowed = settings.ai_applicants()
     return allowed is None or applicant_id in allowed
+
+
+def base_cv(session: Session, applicant_id: uuid.UUID) -> CvFile | None:
+    """The CV a package is tailored from. Tailoring reads the person's CV only here."""
+    return session.scalar(select(CvFile).where(CvFile.applicant_id == applicant_id))
 
 
 def request_tailored_cv(
@@ -169,60 +186,66 @@ def request_tailored_cv(
             status=TailoredCvStatus.pending.value,
             input_hash=REQUESTED,
             prompt_version=PROMPT_VERSION,
-            updated_at=now,
         )
         session.add(row)
-    elif row.status == TailoredCvStatus.failed.value:
+    elif row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft):
         row.status = TailoredCvStatus.pending.value
         row.input_hash = REQUESTED
-        row.updated_at = now
+    row.requested_at = now
+    row.updated_at = now
     session.flush()
     return row
 
 
 def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
+    """Packages due now: requests oldest first, then listed Apply jobs, then listed Consider jobs, best score first.
+
+    A closed job is never tailored. A job hidden from the listings is tailored only when the person asked and it is still open.
+    """
     allowed = settings.ai_applicants()
-    reports = {
-        (row.applicant_id, row.job_id): row
-        for row in session.scalars(
-            select(JobReport).where(JobReport.verdict.in_(tuple(TAILOR_VERDICTS)))
+    is_open = Job.freshness == JobFreshness.open
+    rows = {(row.applicant_id, row.job_id): row for row in session.scalars(select(TailoredCv))}
+    rank: dict[tuple[uuid.UUID, uuid.UUID], tuple[int, float]] = {
+        (applicant_id, job_id): (1 + TAILOR_VERDICTS.index(verdict), -float(score))
+        for applicant_id, job_id, verdict, score in session.execute(
+            select(JobReport.applicant_id, JobReport.job_id, JobReport.verdict, JobReport.score)
+            .join(
+                ApplicantJobMatch,
+                (ApplicantJobMatch.applicant_id == JobReport.applicant_id)
+                & (ApplicantJobMatch.job_id == JobReport.job_id),
+            )
+            .join(Job, Job.id == JobReport.job_id)
+            .where(JobReport.verdict.in_(TAILOR_VERDICTS), is_open)
         )
     }
-    # A package row is itself demand: a person asked for it, or a report made one before.
-    existing = {
-        (row.applicant_id, row.job_id): row for row in session.scalars(select(TailoredCv))
-    }
-    pairs = [
-        pair
-        for pair in reports.keys() | existing.keys()
-        if allowed is None or pair[0] in allowed
-    ]
+    rank |= {pair: (0, row.requested_at.timestamp()) for pair, row in rows.items() if row.requested_at is not None}
+    pairs = sorted((pair for pair in rank if allowed is None or pair[0] in allowed), key=rank.__getitem__)
     if not pairs:
         return []
+    jobs = {job.id: job for job in session.scalars(select(Job).where(Job.id.in_({j for _, j in pairs}), is_open))}
 
+    texts: dict[uuid.UUID, str | None] = {}
     cvs = cvs_by_applicant(session, {applicant_id for applicant_id, _ in pairs})
-    jobs = {
-        row.id: row
-        for row in session.scalars(select(Job).where(Job.id.in_({job_id for _, job_id in pairs})))
-    }
-
-    work: list[tuple[int, float, _Work]] = []
+    work: list[_Work] = []
     for applicant_id, job_id in pairs:
-        report = reports.get((applicant_id, job_id))
-        current = existing.get((applicant_id, job_id))
         job = jobs.get(job_id)
         if job is None or not job.description:
             continue
+        current = rows.get((applicant_id, job_id))
         cv_file = pick_base_cv(cvs.get(applicant_id, []), title=job.title, advert=job.description)
         if cv_file is None:
-            _ensure_skipped(session, applicant_id, job_id, reason="no_cv", now=now)
+            _skip(session, applicant_id, job_id, current, reason="no_cv", now=now)
             continue
-        try:
-            text = cv_text(
-                cv_file.content, CvFileType(cv_file.file_type), max_chars=settings.ai_tailor_cv_chars
-            )
-        except CvUnreadable:
-            _ensure_skipped(session, applicant_id, job_id, reason="unreadable", now=now)
+        if cv_file.id not in texts:
+            try:
+                texts[cv_file.id] = cv_text(
+                    cv_file.content, CvFileType(cv_file.file_type), max_chars=settings.ai_tailor_cv_chars
+                )
+            except CvUnreadable:
+                texts[cv_file.id] = None
+        text = texts[cv_file.id]
+        if text is None:
+            _skip(session, applicant_id, job_id, current, reason="unreadable", now=now)
             continue
         posting = job_text(
             title=job.title,
@@ -231,74 +254,51 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
             apply_url=job.apply_url,
             description=job.description,
         )
+        item = _Work(
+            applicant_id=applicant_id,
+            job_id=job_id,
+            posting=posting,
+            cv=text,
+            input_hash=package_hash(posting=posting, cv_bytes=cv_file.content),
+            company_name=job.company_name,
+            apply_url=job.apply_url,
+            cv_file_id=cv_file.id,
+        )
+        if current is not None and current.input_hash == item.input_hash and current.status in _DONE:
+            continue
         if looks_like_injection(posting):
-            if current is not None and current.status == TailoredCvStatus.pending.value:
-                current.status = TailoredCvStatus.failed.value
-                current.input_hash = "posting_flagged"
-                current.draft = {"reason": "posting_flagged"}
-                current.updated_at = now
-                session.flush()
+            _fail(session, item, now=now, reason="posting_flagged")
             continue
-        wanted = package_hash(posting=posting, cv_bytes=cv_file.content)
-        if current is not None and current.input_hash == wanted and current.status in {
-            TailoredCvStatus.ready.value,
-            TailoredCvStatus.skipped.value,
-            TailoredCvStatus.failed.value,
-        }:
-            continue
-        verdict = report.verdict if report is not None else None
-        requested = current is not None and current.input_hash == REQUESTED
-        # Someone pressed the button and is waiting, so they go first.
-        prefer = 0 if requested else 1 if verdict == "Apply" else 2 if verdict == "Consider" else 3
-        work.append(
-            (
-                prefer,
-                -float(report.score) if report is not None else 0.0,
-                _Work(
-                    applicant_id=applicant_id,
-                    job_id=job_id,
-                    posting=posting,
-                    cv=text,
-                    input_hash=wanted,
-                    cv_file_id=cv_file.id,
-                ),
-            )
-        )
-    work.sort(key=lambda item: (item[0], item[1]))
-    return [item[2] for item in work]
+        work.append(item)
+    return work
 
 
-def _ensure_skipped(
-    session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID, *, reason: str, now: datetime
+def _skip(
+    session: Session,
+    applicant_id: uuid.UUID,
+    job_id: uuid.UUID,
+    row: TailoredCv | None,
+    *,
+    reason: str,
+    now: datetime,
 ) -> None:
-    row = session.scalars(
-        select(TailoredCv).where(TailoredCv.applicant_id == applicant_id, TailoredCv.job_id == job_id)
-    ).first()
-    payload = {"reason": reason}
+    if row is not None and row.status == TailoredCvStatus.skipped.value and row.input_hash == reason:
+        return
     if row is None:
-        session.add(
-            TailoredCv(
-                applicant_id=applicant_id,
-                job_id=job_id,
-                status=TailoredCvStatus.skipped.value,
-                input_hash=reason,
-                draft=payload,
-                keywords=None,
-                ats_report=None,
-                prompt_version=PROMPT_VERSION,
-                updated_at=now,
-            )
-        )
-    else:
-        row.status = TailoredCvStatus.skipped.value
-        row.input_hash = reason
-        row.draft = payload
-        row.cover_letter = None
-        row.pdf_content = None
-        row.docx_content = None
-        row.pdf_size_bytes = None
-        row.docx_size_bytes = None
-        row.updated_at = now
+        row = TailoredCv(applicant_id=applicant_id, job_id=job_id)
+        session.add(row)
+    row.status = TailoredCvStatus.skipped.value
+    row.input_hash = reason
+    row.draft = {"reason": reason}
+    row.cover_letter = None
+    row.keywords = None
+    row.ats_report = None
+    row.pdf_content = None
+    row.docx_content = None
+    row.pdf_size_bytes = None
+    row.docx_size_bytes = None
+    row.prompt_version = PROMPT_VERSION
+    row.updated_at = now
     session.flush()
 
 
@@ -323,9 +323,12 @@ def _row_for(session: Session, item: _Work) -> TailoredCv:
 
 def _fail(session: Session, item: _Work, *, now: datetime, reason: str) -> None:
     row = _row_for(session, item)
-    # Do not wipe a previous ready download when a refresh fails.
-    if row.status == TailoredCvStatus.ready.value and row.pdf_content:
-        row.draft = {**(row.draft or {}), "last_error": reason}
+    # A refresh that fails keeps the previous download and records this attempt so it is not retried.
+    if row.pdf_content:
+        row.status = TailoredCvStatus.ready.value
+        row.input_hash = item.input_hash
+        previous = row.draft if isinstance(row.draft, dict) else {}
+        row.draft = {**previous, "last_error": reason}
         row.updated_at = now
         session.flush()
         return
@@ -351,6 +354,12 @@ async def _process_one(
     run: TailorRun,
 ) -> None:
     spend = _Spend()
+    row = _row_for(session, item)
+    row.status = TailoredCvStatus.running.value
+    row.prompt_version = PROMPT_VERSION
+    row.updated_at = now
+    session.flush()
+    persist()
 
     async def paid(call: Callable[[], Awaitable[Any]]) -> Any:
         result = await _paid_ai(gate, cost, settings, related_item_id=item.job_id, persist=persist, call=call)
@@ -375,6 +384,16 @@ async def _process_one(
     if isinstance(extracted, AiCallFailure):
         return failed(extracted.reason)
     keywords = extracted[0]
+    site = await load_site_terms(
+        session,
+        gateway,
+        company_name=item.company_name,
+        apply_url=item.apply_url,
+        named_url=str(keywords.get("company_website") or ""),
+        posting=item.posting,
+        now=now,
+    )
+    keywords = with_keyword_sources(keywords, site.terms, site.note)
 
     diffs = await paid(
         lambda: ai.generate_resume_diffs(gateway, master=master, posting=item.posting, keywords=keywords, **key)
@@ -410,6 +429,16 @@ async def _process_one(
         warnings.append(f"Replaced stock AI wording: {', '.join(phrases)}")
     if fabricated:
         warnings.append(f"Removed skills the CV never mentions: {', '.join(fabricated)}")
+    tailored, voice_notes = await _human_voice(
+        tailored,
+        master=master,
+        posting=item.posting,
+        gateway=gateway,
+        settings=settings,
+        api_key=api_key,
+        paid=paid,
+    )
+    warnings.extend(voice_notes)
 
     # Upstream treats the letter as optional output: its failure is a warning, never a failed CV.
     try:
@@ -439,9 +468,11 @@ async def _process_one(
     row.draft = tailored
     row.cover_letter = letter
     row.keywords = keywords
-    row.ats_report = ats_report(pdf_bytes=pdf, resume=tailored, master=master, keywords=keywords, warnings=warnings)
-    row.company_research_id = None
-    row.company_research_available = False
+    row.ats_report = ats_report(
+        pdf_bytes=pdf, docx_bytes=docx, resume=tailored, master=master, keywords=keywords, warnings=warnings
+    )
+    row.company_research_id = site.row.id if site.row is not None else None
+    row.company_research_available = bool(site.terms)
     row.pdf_content = pdf
     row.docx_content = docx
     row.pdf_size_bytes = len(pdf)
@@ -456,6 +487,50 @@ async def _process_one(
     run.outcomes["ready"] += 1
     run.written.add(item.applicant_id)
     persist()
+
+
+async def _human_voice(
+    tailored: dict[str, Any],
+    *,
+    master: dict[str, Any],
+    posting: str,
+    gateway: FetchGateway,
+    settings: Settings,
+    api_key: str,
+    paid,
+) -> tuple[dict[str, Any], list[str]]:
+    """One revise call for lines that sound machine-written, then the person's own wording."""
+    findings = voice_problems(master, tailored, posting=posting)
+    if not findings:
+        return tailored, []
+    try:
+        revised = await paid(
+            lambda: ai.revise_voice(
+                gateway,
+                master=master,
+                tailored=tailored,
+                findings=findings,
+                posting=posting,
+                settings=settings,
+                api_key=api_key,
+            )
+        )
+    except BudgetWait:
+        revised = AiCallFailure(reason="budget")
+    if not isinstance(revised, AiCallFailure) and revised[0]:
+        tailored, _, _ = apply_diffs(tailored, revised[0])
+        tailored, _ = remove_ai_phrases(tailored, posting, protected_text=all_text(master))
+        tailored, _ = drop_fabricated_skills(tailored, master)
+        tailored = finalize_ai_resume(master, tailored, allow_review_claims=False)
+    still = voice_problems(master, tailored, posting=posting)
+    hard = [item for item in still if item["rule"] != "uniform"]
+    notes: list[str] = []
+    if hard:
+        tailored = restore_lines(master, tailored, hard)
+        notes.append("Restored lines that still sounded machine-written")
+    elif any(item["rule"] == "uniform" for item in still):
+        notes.append("Bullets stayed the same shape")
+    return tailored, notes
 
 
 async def _paid_ai(
