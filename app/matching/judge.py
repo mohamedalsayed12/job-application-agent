@@ -63,12 +63,16 @@ Rate each area from 1 to 5:
   of these have positive evidence, 3 when there is some or none, 2 or less when the advert contradicts them.
 
 red_flags: short phrases for anything that counts against the job (unpaid or commission-only pay, vague duties,
-an unnamed client, a requirement the person plainly cannot meet). Empty when there are none.
+an unnamed client, a requirement the person plainly cannot meet). Empty when there are none. When the profile says
+the person needs visa sponsorship and the advert clearly refuses sponsorship, name that in red_flags. Silence about
+sponsorship is unknown. A phrase such as "licensed sponsor" is only a weak, non-binding hint, never proof they will
+sponsor.
 
 score: your overall judgement from 1.0 to 5.0, one decimal place. It is not an average: role_alignment and cv_match
 matter most, and red flags pull it down. 4.5 or more is a strong match, worth applying straight away. 4.0 to 4.4 is
 a good match, worth applying. 3.5 to 3.9 is decent but not worth applying without a specific reason. Below 3.5, don't apply.
-Location and the person's salary wishes are checked elsewhere: ignore them.
+Location, salary wishes and clear no-sponsorship blocks are checked elsewhere: ignore location and salary; still flag
+sponsorship conflicts honestly when the profile states them.
 
 level is the experience level the advert asks for: entry, mid, senior, or unclear.
 reason is one plain sentence saying why, naming only things the advert or the profile states.

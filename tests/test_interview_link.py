@@ -22,9 +22,11 @@ from app.models import (
     InterviewRequestStatus,
     SalaryStatus,
 )
+from tests.auth import sign_up
 from tests.jobs import _job, _li, _store
 
 EMAIL = "interview-link@example.com"
+PASSWORD = "correct horse battery"
 
 
 @pytest.fixture
@@ -48,7 +50,7 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def _signed_in_with_a_job(client: httpx.AsyncClient, session: Session):
-    assert (await client.post("/register", data={"email": EMAIL, "password": "correct horse battery"})).status_code == 303
+    assert (await sign_up(client, EMAIL, PASSWORD)).status_code == 303
     applicant = session.scalar(select(Applicant).where(Applicant.email == EMAIL))
     _store(session, [_li(7001, title="Backend Developer", content="Build Python APIs.")])
     return applicant, _job(session, 7001)
@@ -87,11 +89,12 @@ async def test_a_matched_job_links_to_practice_and_shows_a_queued_request(
     applicant, job = await _signed_in_with_a_job(client, session)
     _match(session, applicant, job)
     assert "Interview practice for this job" in (await client.get(f"/jobs/{job.id}")).text
-    assert "queued" not in (await client.get(f"/jobs/{job.id}/interview")).text
+    assert "Researching interviews for this role" not in (await client.get(f"/jobs/{job.id}/interview")).text
 
     session.add(
         InterviewIntelRequest(
             applicant_id=applicant.id,
+            job_id=job.id,
             role="Backend Developer",
             role_key="backend developer",
             status=InterviewRequestStatus.queued.value,
@@ -99,4 +102,4 @@ async def test_a_matched_job_links_to_practice_and_shows_a_queued_request(
     )
     session.flush()
 
-    assert "Role interview research is queued" in (await client.get(f"/jobs/{job.id}/interview")).text
+    assert "Researching interviews for this role" in (await client.get(f"/jobs/{job.id}/interview")).text

@@ -140,7 +140,7 @@ def _render(report: QualityReport) -> str:
 <h3>Jobs by freshness</h3>
 {_counts(collection.jobs_by_freshness)}
 <h2>Summaries</h2>
-<p>Written: {report.summaries.accepted}. Rejected by the check: {report.summaries.rejected}. Being written: {report.summaries.in_progress}. AI cost: £{report.summaries.cost:.4f}.</p>
+<p>Job summaries are no longer generated. Written: {report.summaries.accepted}. Rejected: {report.summaries.rejected}. Being written: {report.summaries.in_progress}. AI cost: £{report.summaries.cost:.4f}.</p>
 <h2 id="relevance">Relevance</h2>
 <p>How well jobs fit each applicant. This is not one of the four quality measures above, so poor matching can be told apart from poor data.</p>
 {_table(("Measure", "Now"), (

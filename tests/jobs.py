@@ -164,6 +164,16 @@ def _job(session: Session, source_job_id: int | str) -> Job:
 
 def show_to(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> None:
     """Puts the job in this person's listings, so its page and actions open for them."""
+    existing = session.scalar(
+        select(ApplicantJobMatch).where(
+            ApplicantJobMatch.applicant_id == applicant_id, ApplicantJobMatch.job_id == job_id
+        )
+    )
+    if existing is not None:
+        existing.role_match = True
+        existing.location_fit = True
+        session.flush()
+        return
     session.add(
         ApplicantJobMatch(
             applicant_id=applicant_id,

@@ -1,4 +1,4 @@
-"""One job's page. Opening it is what writes the job's summary (D24, D41)."""
+"""One job's page: description, tailor actions, and apply step."""
 
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ from app.models import (
     TailoredCvStatus,
     auto_tailored,
 )
-from app.summaries.generate import Shown, summary_for_view
 from app.tailor.render import render_letter_docx, render_letter_pdf
 from app.tailor.run import request_tailored_cv, tailor_allowed, tailors_outside_locations
 from app.tailor.ui import changes_block, cover_letter_text, listing_tailor
@@ -42,6 +41,7 @@ _DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 
 
 async def get_gateway() -> AsyncIterator[FetchGateway]:
+    """Shared FetchGateway dependency for routes that still call out (profile, extension, …)."""
     gateway = FetchGateway()
     try:
         yield gateway
@@ -49,15 +49,8 @@ async def get_gateway() -> AsyncIterator[FetchGateway]:
         await gateway.aclose()
 
 
-def _body(job: Job, shown: Shown, tailored: str, step: str) -> str:
-    if shown.summary:
-        about = (
-            f"<p>{html.escape(shown.summary)}</p>"
-            "<p><small>Summary written by AI from this posting and checked against it. "
-            "The full advert is at the apply link.</small></p>"
-        )
-    else:
-        about = f'<div style="white-space: pre-line">{html.escape(job.description or "No description was given.")}</div>'
+def _body(job: Job, tailored: str, step: str) -> str:
+    about = f'<div style="white-space: pre-line">{html.escape(job.description or "No description was given.")}</div>'
     last_seen = job.last_seen_at.strftime("%d %b %Y %H:%M UTC") if job.last_seen_at else "not recorded"
     return f"""
 <p><a href="/listings">← Back to your matches</a></p>
@@ -80,16 +73,14 @@ def _tailored_for(db: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> Ta
 
 
 @router.get("/{job_id}", response_class=HTMLResponse)
-async def job_page(
+def job_page(
     request: Request,
     job_id: uuid.UUID,
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
-    gateway: FetchGateway = Depends(get_gateway),
 ) -> HTMLResponse:
     job = visible_job(db, applicant.id, job_id)
     settings = get_settings()
-    shown = await summary_for_view(db, job, gateway=gateway, settings=settings, persist=db.commit)
     csrf = csrf_field(request)
     # Only a listed job in the person's tailoring scope is tailored without a click, so no other job says "queued".
     listed = db.execute(
@@ -117,7 +108,7 @@ async def job_page(
         tailored += changes_block(row.ats_report or {})
     tailored += cover_letter_text(row)
     step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf)
-    return page(job.title, _body(job, shown, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
+    return page(job.title, _body(job, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
 
 
 @router.post("/{job_id}/tailor", dependencies=[Depends(require_csrf)])

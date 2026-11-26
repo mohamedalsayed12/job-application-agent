@@ -50,7 +50,7 @@ from app.models import (
     TailoredCvStatus,
 )
 from tests.auth import sign_up
-from tests.jobs import _li, _store
+from tests.jobs import _li, _store, show_to
 
 EMAIL = "apply-agent@example.com"
 PASSWORD = "correct horse battery"
@@ -91,6 +91,10 @@ def _applicant(session: Session) -> Applicant:
 
 
 def _job(session: Session) -> Job:
+    """Store a job and, when the apply-agent person already exists, put it on their matches.
+
+    /jobs/{id} and /jobs/{id}/applied only open for matched open jobs (visible_job).
+    """
     _store(
         session,
         [
@@ -101,7 +105,11 @@ def _job(session: Session) -> Job:
             )
         ],
     )
-    return session.scalar(select(Job).where(Job.title == "Platform Engineer"))
+    job = session.scalar(select(Job).where(Job.title == "Platform Engineer"))
+    applicant = session.scalar(select(Applicant).where(Applicant.email == EMAIL))
+    if applicant is not None and job is not None:
+        show_to(session, applicant.id, job.id)
+    return job
 
 
 def test_mapper_recognises_common_labels() -> None:

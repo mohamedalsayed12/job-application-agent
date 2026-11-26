@@ -96,13 +96,12 @@ def test_walk_finds_every_known_output_schema() -> None:
     from app.matching.judge import VERDICT_SCHEMA
     from app.matching.report import REPORT_SCHEMA
     from app.outreach.draft import SCHEMA as DRAFT_SCHEMA
-    from app.summaries.generate import SUMMARY_SCHEMA
     from app.tailor.ai import KEYWORDS_SCHEMA
     from app.tailor.improver import CHANGE_SCHEMA
     from app.tailor.resume import RESUME_SCHEMA
 
     known = [CV_READ_SCHEMA, ANALYSE_SCHEMA, PACK_SCHEMA, VERDICT_SCHEMA, REPORT_SCHEMA, DRAFT_SCHEMA,
-             SUMMARY_SCHEMA, KEYWORDS_SCHEMA, CHANGE_SCHEMA, RESUME_SCHEMA]
+             KEYWORDS_SCHEMA, CHANGE_SCHEMA, RESUME_SCHEMA]
     walked = {id(schema) for schema in SCHEMAS.values()}
     assert all(id(schema) in walked for schema in known)
 
