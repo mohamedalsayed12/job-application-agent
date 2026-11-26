@@ -54,7 +54,7 @@ def test_d63_saved_levels_survive_the_migration_both_ways(migrated_engine: Engin
             text("INSERT INTO applicant_profile (applicant_id, experience_levels) VALUES (:id, '{senior,mid}')"),
             {"id": both},
         )
-    command.downgrade(config, "0022_tailored_cover_letter")
+    command.downgrade(config, "0025_careers_spend")
     try:
         with migrated_engine.begin() as conn:
             downgraded = conn.execute(

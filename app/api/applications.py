@@ -67,6 +67,13 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
             f'{_e(app_row.id)}/answers">{csrf_field(request)}{"".join(fields)}'
             '<button type="submit" class="primary">Save answers</button></form>'
         )
+    how = ""
+    if app_row.status in (ApplicationStatus.ready_to_fill.value, ApplicationStatus.needs_input.value):
+        how = (
+            '<p class="hint">Open the apply page and click through to the employer&#39;s form. '
+            "Then press <b>Fill this tab</b> in the Job Agent extension: it reads the form, fills in your "
+            "saved answers and CV, and never presses Submit.</p>"
+        )
     error = f'<p class="error">{_e(app_row.error)}</p>' if app_row.error else ""
     actions = [
         f'<a class="button" href="{_e(app_row.apply_url)}" rel="noopener noreferrer" target="_blank">Open apply page</a>'
@@ -84,7 +91,7 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
 <article class="card">
   <h2>{_e(title)}</h2>
   <p class="muted">{_e(company)} · {_e(status_label)}</p>
-  {error}{missing}
+  {how}{error}{missing}
   <div class="job-foot">{"".join(actions)}</div>
 </article>
 """
@@ -131,7 +138,7 @@ def prepare(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     try:
-        row = prepare_application(db, applicant_id=applicant.id, job_id=job_id)
+        row = prepare_application(db, applicant=applicant, job_id=job_id)
         db.commit()
     except PrepareRefused as exc:
         db.rollback()

@@ -99,7 +99,21 @@ _PATTERNS: list[tuple[str, tuple[str, ...]]] = [
     ("right_to_work_uk", (r"right to work", r"authorized to work", r"authorised to work", r"work authorization", r"work authorisation", r"legally authorized")),
     ("previously_employed", (r"previously employed", r"worked for .{0,20}(us|company|organisation|organization)", r"former employee", r"previously worked")),
     ("heard_about", (r"how did you hear", r"how you heard", r"where did you hear")),
-    ("free_school_meals", (r"free school meal", r"free lunch", r"school meals", r"socio-?economic")),
+    ("free_school_meals", (r"free school meal", r"free lunch", r"school meals")),
+    # Before "socio-economic" questions in general: these are the two the Social Mobility Commission asks.
+    ("parental_occupation", (r"household earner", r"parents?.{0,40}occupation", r"occupation.{0,40}parents?")),
+    ("school_type", (r"type of school", r"school type", r"what school did you (mainly )?attend", r"kind of school")),
+    ("free_school_meals", (r"socio-?economic",)),
+    ("sexual_orientation", (r"sexual orientation", r"\bsexuality\b")),
+    # Not "belief" or "faith" alone: declarations say "to the best of my knowledge and belief", "in good faith".
+    ("religion", (r"\breligio",)),
+    ("caring_responsibilities", (r"caring responsibilit", r"\bcarer\b", r"care for (a|an) (child|adult|relative)")),
+    ("notice_period", (r"notice period",)),
+    # Never a bare "start date": employment-history rows use that for past jobs.
+    ("earliest_start_date", (r"earliest start", r"when (can|could) you start", r"available to start", r"availability to start", r"start date.{0,20}(available|earliest)")),
+    ("willing_to_relocate", (r"\brelocat",)),
+    ("work_hours", (r"full[- ]time or part[- ]time", r"part[- ]time or full[- ]time")),
+    ("work_location", (r"remote,? hybrid", r"hybrid or remote", r"work remotely or", r"preferred work(ing)? (arrangement|location|model)")),
     ("linkedin_url", (r"\blinkedin\b",)),
     ("github_url", (r"\bgithub\b",)),
     ("portfolio_url", (r"\bportfolio\b", r"personal website", r"personal url")),
@@ -127,6 +141,30 @@ def match_answer_key(label: str, name: str = "") -> str | None:
         if any(re.search(needle, hay) for needle in needles):
             return key
     return None
+
+
+# Other wordings employers use for the fixed answers we save. Only whole-option matches count.
+_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "available now": (
+        "immediately", "immediate", "available immediately", "immediately available", "now",
+        "no notice", "no notice period", "none", "0 weeks", "0 days",
+    ),
+    "1 week": ("one week", "7 days", "1 weeks"),
+    "2 weeks": ("two weeks", "14 days", "a fortnight", "fortnight"),
+    "1 month": ("one month", "4 weeks", "four weeks", "30 days", "1 months"),
+    "2 months": ("two months", "8 weeks", "eight weeks", "60 days"),
+    "3 months or more": (
+        "3 months", "three months", "3+ months", "3 months+", "more than 3 months",
+        "3 months or longer", "12 weeks", "90 days",
+    ),
+    "full time": ("fulltime", "full time only"),
+    "part time": ("parttime", "part time only"),
+    "either": ("both", "no preference", "full time or part time", "part time or full time", "open to both"),
+    "on site": ("onsite", "in office", "office based", "in person", "office"),
+    "hybrid": ("hybrid working", "flexible hybrid"),
+    "remote": ("fully remote", "remote only", "work from home", "home based"),
+    "any": ("no preference", "any", "flexible", "open to all", "open to any"),
+}
 
 
 def answer_fact_id(key: str) -> str:
@@ -170,7 +208,8 @@ def matches_from_payload(payload: Mapping[str, object]) -> dict[str, Match]:
 
 
 def _norm(text: str) -> str:
-    return " ".join(text.casefold().split()).strip(" .:*?")
+    cleaned = re.sub(r"[-_]", " ", text.casefold())
+    return " ".join(cleaned.split()).strip(" .:*?")
 
 
 def _pick_option(options: list[str], desired: str) -> str | None:
@@ -178,11 +217,15 @@ def _pick_option(options: list[str], desired: str) -> str | None:
     want = _norm(desired)
     if desired == PREFER_NOT or any(phrase in want for phrase in _PREFER_LABELS):
         hits = [option for option in options if any(phrase in _norm(option) for phrase in _PREFER_LABELS)]
-    else:
-        exact = [option for option in options if _norm(option) == want]
-        if exact:
-            return exact[0]
-        hits = [option for option in options if re.match(rf"{re.escape(want)}\b", _norm(option))]
+        return hits[0] if len(hits) == 1 else None
+    exact = [option for option in options if _norm(option) == want]
+    if exact:
+        return exact[0]
+    wanted = {want, *_SYNONYMS.get(want, ())}
+    syn_hits = [option for option in options if _norm(option) in wanted]
+    if len(syn_hits) == 1:
+        return syn_hits[0]
+    hits = [option for option in options if re.match(rf"{re.escape(want)}\b", _norm(option))]
     return hits[0] if len(hits) == 1 else None
 
 

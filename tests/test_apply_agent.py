@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.accounts import throttle
+from app.applications.fill_safety import assert_plan_has_no_submit_clicks, is_submit_control
 from app.api.forms import require_csrf
 from app.applicants.apply_answers import AnswersInput, save_answers
 from app.applications.extension_device import issue_token
@@ -43,6 +44,7 @@ from app.models import (
     TailoredCv,
     TailoredCvStatus,
 )
+from tests.auth import sign_up
 from tests.jobs import _li, _store
 
 EMAIL = "apply-agent@example.com"
@@ -75,7 +77,8 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def _register(client: httpx.AsyncClient) -> None:
-    assert (await client.post("/register", data={"email": EMAIL, "password": PASSWORD})).status_code == 303
+    response = await sign_up(client, EMAIL, PASSWORD)
+    assert response.status_code == 303
 
 
 def _applicant(session: Session) -> Applicant:
@@ -105,10 +108,17 @@ def test_mapper_recognises_common_labels() -> None:
 
 def test_mapper_does_not_false_match_common_traps() -> None:
     assert match_answer_key("Tell us why you want this role") is None
-    assert match_answer_key("Sexual orientation") is None
+    assert match_answer_key("Sexual orientation") == "sexual_orientation"
     assert match_answer_key("Hotel preferences") is None
     assert match_answer_key("Intelligence") is None
     assert match_answer_key("Gender") == "gender"
+
+
+def test_submit_controls_are_detected() -> None:
+    assert is_submit_control(tag="button", type_attr="submit", text="Save")
+    assert is_submit_control(tag="button", type_attr="button", text="Apply now")
+    assert not is_submit_control(tag="button", type_attr="button", text="Next section")
+    assert_plan_has_no_submit_clicks({"steps": [{"action": "fill", "value": "Ada"}]})
 
 
 def _field(field_id: str, label: str, name: str, field_type: str, required: bool = False, options: list[str] | None = None) -> FormField:
@@ -200,7 +210,7 @@ def test_a_complete_plan_reopens_a_failed_application() -> None:
     assert row.fill_plan_json["steps"][0]["value"] == "Ada"
 
 
-async def test_prepare_readies_the_job_for_the_extension(client: httpx.AsyncClient, session: Session) -> None:
+async def test_prepare_fetches_nothing_and_waits_for_the_extension(client: httpx.AsyncClient, session: Session) -> None:
     await _register(client)
     job = _job(session)
 
@@ -211,6 +221,9 @@ async def test_prepare_readies_the_job_for_the_extension(client: httpx.AsyncClie
     assert response.headers["location"] == f"/applications/{row.id}"
     assert row.status == ApplicationStatus.ready_to_fill.value
     assert row.apply_url == "https://careers.example.com/jobs/12345/apply"
+    assert row.schema_json is None and row.fill_plan_json is None
+    page = await client.get(response.headers["location"])
+    assert "Fill this tab" in page.text
 
 
 async def test_extension_ready_cv_and_status(client: httpx.AsyncClient, session: Session) -> None:
@@ -466,12 +479,13 @@ def test_extension_source_never_submits() -> None:
     assert "https://*/*" not in (root / "manifest.json").read_text(encoding="utf-8")
 
 
-def _plan_fields(*rows: tuple[str, str, str]) -> dict:
+def _form_fields(*rows: tuple[str, str, str]) -> dict:
     return {
+        "page_url": "https://careers.example.com/jobs/12345/apply",
         "fields": [
             {"id": field_id, "label": label, "name": name, "type": "textarea" if name == "why" else "text", "required": True, "options": []}
             for field_id, label, name in rows
-        ]
+        ],
     }
 
 
@@ -513,9 +527,9 @@ async def test_missing_answer_is_named_saved_and_reused(
     token = issue_token(session, applicant.id)
     session.flush()
     headers = {"Authorization": f"Bearer {token}"}
-    asked = _plan_fields(("f0", "First name", "first_name"), ("f1", "Why do you want this role?", "why"))
+    asked = _form_fields(("f0", "First name", "first_name"), ("f1", "Why do you want this role?", "why"))
 
-    first = await client.post(f"/extension/applications/{row.id}/plan", headers=headers, json=asked)
+    first = await client.post(f"/extension/applications/{row.id}/form", headers=headers, json=asked)
     assert first.status_code == 200
     body = first.json()
     assert body["status"] == ApplicationStatus.needs_input.value
@@ -534,7 +548,7 @@ async def test_missing_answer_is_named_saved_and_reused(
     assert row.status == ApplicationStatus.ready_to_fill.value
     assert row.fill_plan_json is None
 
-    again = await client.post(f"/extension/applications/{row.id}/plan", headers=headers, json=asked)
+    again = await client.post(f"/extension/applications/{row.id}/form", headers=headers, json=asked)
     assert again.status_code == 200
     filled = {step["field_id"]: step for step in again.json()["plan"]["steps"]}
     assert filled["f0"]["value"] == "Ada"
@@ -548,8 +562,8 @@ async def test_missing_answer_is_named_saved_and_reused(
     other = session.scalar(select(Job).where(Job.title == "Support Engineer"))
     assert (await client.post("/applications", data={"job_id": str(other.id)})).status_code == 303
     second = session.scalar(select(Application).where(Application.job_id == other.id))
-    reworded = _plan_fields(("f0", "Please tell us why you want this role", "why"))
-    reused = await client.post(f"/extension/applications/{second.id}/plan", headers=headers, json=reworded)
+    reworded = _form_fields(("f0", "Please tell us why you want this role", "why"))
+    reused = await client.post(f"/extension/applications/{second.id}/form", headers=headers, json=reworded)
     assert reused.status_code == 200
     assert reused.json()["plan"]["missing"] == []
     assert reused.json()["plan"]["steps"][0]["value"] == "I like building tools."
@@ -571,9 +585,9 @@ async def test_plan_rejects_an_invented_model_value(
     session.flush()
 
     response = await client.post(
-        f"/extension/applications/{row.id}/plan",
+        f"/extension/applications/{row.id}/form",
         headers={"Authorization": f"Bearer {token}"},
-        json=_plan_fields(("f0", "Why do you want this role?", "why")),
+        json=_form_fields(("f0", "Why do you want this role?", "why")),
     )
     assert response.status_code == 200
     assert response.json()["plan"]["steps"] == []

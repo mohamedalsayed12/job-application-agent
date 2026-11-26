@@ -6,8 +6,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "0022_experience_levels"
-down_revision: str | None = "0022_tailored_cover_letter"
+revision: str = "0026_experience_levels"
+down_revision: str | None = "0025_careers_spend"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

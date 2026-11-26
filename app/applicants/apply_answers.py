@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,7 +16,63 @@ MAX_FIELD = 200
 MAX_URL = 500
 MAX_ANSWER = 2000
 MAX_SAVED = 40
-_DEMO_KEYS = ("free_school_meals", "gender", "ethnicity", "disability", "veteran")
+
+# Choices the forms offer. A stored answer outside these lists (typed before they existed) still shows.
+NOTICE_PERIODS = ("Available now", "1 week", "2 weeks", "1 month", "2 months", "3 months or more")
+WORK_HOURS = ("Full-time", "Part-time", "Either")
+WORK_LOCATIONS = ("On-site", "Hybrid", "Remote", "Any")
+
+# Diversity monitoring questions UK employers ask. Each list ends with prefer not to say, the default.
+# School type and parental occupation follow the Social Mobility Commission's wording.
+DIVERSITY_CHOICES: dict[str, tuple[str, ...]] = {
+    "gender": ("Woman", "Man", "Non-binary", "I describe myself another way", PREFER_NOT),
+    "ethnicity": (
+        "Asian or Asian British",
+        "Black, Black British, Caribbean or African",
+        "Mixed or multiple ethnic groups",
+        "White",
+        "Another ethnic group",
+        PREFER_NOT,
+    ),
+    "disability": ("Yes", "No", PREFER_NOT),
+    "veteran": ("Yes", "No", PREFER_NOT),
+    "free_school_meals": ("Yes", "No", "Not applicable (finished school outside the UK)", "I don't know", PREFER_NOT),
+    "sexual_orientation": ("Bisexual", "Gay or lesbian", "Heterosexual or straight", "Another orientation", PREFER_NOT),
+    "religion": (
+        "No religion",
+        "Buddhist",
+        "Christian",
+        "Hindu",
+        "Jewish",
+        "Muslim",
+        "Sikh",
+        "Another religion or belief",
+        PREFER_NOT,
+    ),
+    "caring_responsibilities": ("Yes", "No", PREFER_NOT),
+    "school_type": (
+        "A state-run or state-funded school",
+        "A state-run or state-funded school that selected on academic, faith or other grounds",
+        "An independent or fee-paying school",
+        "An independent or fee-paying school, with a bursary covering 90% or more of the fees",
+        "A school outside the UK",
+        "I don't know",
+        PREFER_NOT,
+    ),
+    "parental_occupation": (
+        "Modern or traditional professional, such as teacher, nurse, engineer, doctor or lawyer",
+        "Senior, middle or junior manager or administrator",
+        "Clerical or intermediate, such as secretary, call centre agent or nursery nurse",
+        "Technical or craft, such as electrician, plumber or printer",
+        "Routine, semi-routine manual or service, such as driver, cleaner, porter or care worker",
+        "Small business owner with fewer than 25 employees",
+        "Long-term unemployed (claimed benefits for more than a year)",
+        "Other, such as retired, or this question doesn't apply to me",
+        "I don't know",
+        PREFER_NOT,
+    ),
+}
+_DEMO_KEYS = tuple(DIVERSITY_CHOICES)
 # shortcut: two different questions that keep the same content words share a key, upgrade when a saved answer fills the wrong question.
 _STOP_WORDS = frozenset(
     "a about an and are as at be briefly by can could describe do does explain for from has have how i if in is it "
@@ -46,22 +103,6 @@ def _saved(raw: object) -> list[SavedQuestion]:
     return found
 
 
-def _answers_row(session: Session, applicant_id: uuid.UUID) -> ApplicationAnswers:
-    row = load_answers(session, applicant_id)
-    if row is not None:
-        return row
-    row = ApplicationAnswers(
-        applicant_id=applicant_id,
-        free_school_meals=PREFER_NOT,
-        gender=PREFER_NOT,
-        ethnicity=PREFER_NOT,
-        disability=PREFER_NOT,
-        veteran=PREFER_NOT,
-    )
-    session.add(row)
-    return row
-
-
 class AnswersRefused(Exception):
     def __init__(self, message: str) -> None:
         self.message = message
@@ -70,26 +111,40 @@ class AnswersRefused(Exception):
 
 @dataclass(frozen=True, slots=True)
 class AnswersInput:
-    legal_first_name: str
-    legal_last_name: str
-    phone: str
-    address_line: str
-    city: str
-    postcode: str
-    country: str
-    linkedin_url: str
-    github_url: str
-    portfolio_url: str
-    right_to_work_uk: str
-    needs_visa_sponsorship: str
-    nationality: str
-    heard_about: str
-    previously_employed: str
-    free_school_meals: str
-    gender: str
-    ethnicity: str
-    disability: str
-    veteran: str
+    legal_first_name: str = ""
+    legal_last_name: str = ""
+    phone: str = ""
+    address_line: str = ""
+    city: str = ""
+    postcode: str = ""
+    country: str = ""
+    linkedin_url: str = ""
+    github_url: str = ""
+    portfolio_url: str = ""
+    right_to_work_uk: str = "unset"
+    needs_visa_sponsorship: str = "unset"
+    nationality: str = ""
+    heard_about: str = ""
+    previously_employed: str = "unset"
+    free_school_meals: str = PREFER_NOT
+    gender: str = PREFER_NOT
+    ethnicity: str = PREFER_NOT
+    disability: str = PREFER_NOT
+    veteran: str = PREFER_NOT
+    notice_period: str = ""
+    earliest_start_date: str = ""
+    willing_to_relocate: str = "unset"
+    work_hours: str = ""
+    work_location: str = ""
+    sexual_orientation: str = PREFER_NOT
+    religion: str = PREFER_NOT
+    caring_responsibilities: str = PREFER_NOT
+    school_type: str = PREFER_NOT
+    parental_occupation: str = PREFER_NOT
+
+
+ANSWER_FIELDS = tuple(item.name for item in fields(AnswersInput))
+_BOOL_FIELDS = frozenset({"right_to_work_uk", "needs_visa_sponsorship", "previously_employed", "willing_to_relocate"})
 
 
 def _trim(value: str, *, limit: int = MAX_FIELD) -> str | None:
@@ -129,8 +184,56 @@ def _url(value: str) -> str | None:
     return cleaned
 
 
+def _choice(value: str, choices: tuple[str, ...], *, label: str) -> str | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned not in choices:
+        raise AnswersRefused(f"Choose one of the options for {label}.")
+    return cleaned
+
+
+def _date(value: str, *, label: str) -> date | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        return date.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise AnswersRefused(f"Enter {label} as a date.") from exc
+
+
+def _bool_text(value: bool | None) -> str:
+    return "unset" if value is None else "yes" if value else "no"
+
+
 def load_answers(session: Session, applicant_id: uuid.UUID) -> ApplicationAnswers | None:
     return session.scalar(select(ApplicationAnswers).where(ApplicationAnswers.applicant_id == applicant_id))
+
+
+def input_from_row(row: ApplicationAnswers | None) -> AnswersInput:
+    """The saved answers as form text, so a page that shows only some of them keeps the rest."""
+    if row is None:
+        return AnswersInput()
+    values: dict[str, str] = {}
+    for name in ANSWER_FIELDS:
+        value = getattr(row, name)
+        if name in _BOOL_FIELDS:
+            values[name] = _bool_text(value)
+        elif isinstance(value, date):
+            values[name] = value.isoformat()
+        else:
+            values[name] = "" if value is None else str(value)
+    return AnswersInput(**values)
+
+
+def _answers_row(session: Session, applicant_id: uuid.UUID) -> ApplicationAnswers:
+    row = load_answers(session, applicant_id)
+    if row is not None:
+        return row
+    row = ApplicationAnswers(applicant_id=applicant_id)
+    session.add(row)
+    return row
 
 
 def saved_pairs(row: ApplicationAnswers | None) -> list[SavedQuestion]:
@@ -166,27 +269,33 @@ def save_question_answers(
 
 
 def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -> ApplicationAnswers:
+    """Checks every answer before changing anything, so a refused form leaves the saved row alone."""
+    checked = {
+        "legal_first_name": _trim(raw.legal_first_name),
+        "legal_last_name": _trim(raw.legal_last_name),
+        "phone": _trim(raw.phone),
+        "address_line": _trim(raw.address_line),
+        "city": _trim(raw.city),
+        "postcode": _trim(raw.postcode),
+        "country": _trim(raw.country) or "United Kingdom",
+        "linkedin_url": _url(raw.linkedin_url),
+        "github_url": _url(raw.github_url),
+        "portfolio_url": _url(raw.portfolio_url),
+        "right_to_work_uk": _boolish(raw.right_to_work_uk, label="right to work in the UK"),
+        "needs_visa_sponsorship": _boolish(raw.needs_visa_sponsorship, label="visa sponsorship"),
+        "nationality": _trim(raw.nationality),
+        "heard_about": _trim(raw.heard_about),
+        "previously_employed": _boolish(raw.previously_employed, label="previously employed"),
+        "notice_period": _choice(raw.notice_period, NOTICE_PERIODS, label="notice period"),
+        "earliest_start_date": _date(raw.earliest_start_date, label="the earliest start date"),
+        "willing_to_relocate": _boolish(raw.willing_to_relocate, label="willing to relocate"),
+        "work_hours": _choice(raw.work_hours, WORK_HOURS, label="full-time or part-time"),
+        "work_location": _choice(raw.work_location, WORK_LOCATIONS, label="where you want to work"),
+        **{key: _demo(getattr(raw, key)) for key in _DEMO_KEYS},
+    }
     row = _answers_row(session, applicant_id)
-    row.legal_first_name = _trim(raw.legal_first_name)
-    row.legal_last_name = _trim(raw.legal_last_name)
-    row.phone = _trim(raw.phone)
-    row.address_line = _trim(raw.address_line)
-    row.city = _trim(raw.city)
-    row.postcode = _trim(raw.postcode)
-    row.country = _trim(raw.country) or "United Kingdom"
-    row.linkedin_url = _url(raw.linkedin_url)
-    row.github_url = _url(raw.github_url)
-    row.portfolio_url = _url(raw.portfolio_url)
-    row.right_to_work_uk = _boolish(raw.right_to_work_uk, label="right to work in the UK")
-    row.needs_visa_sponsorship = _boolish(raw.needs_visa_sponsorship, label="visa sponsorship")
-    row.nationality = _trim(raw.nationality)
-    row.heard_about = _trim(raw.heard_about)
-    row.previously_employed = _boolish(raw.previously_employed, label="previously employed")
-    row.free_school_meals = _demo(raw.free_school_meals)
-    row.gender = _demo(raw.gender)
-    row.ethnicity = _demo(raw.ethnicity)
-    row.disability = _demo(raw.disability)
-    row.veteran = _demo(raw.veteran)
+    for name, value in checked.items():
+        setattr(row, name, value)
     session.flush()
     return row
 
@@ -211,6 +320,11 @@ def answers_as_map(row: ApplicationAnswers | None, *, email: str) -> dict[str, s
         "nationality": None,
         "heard_about": None,
         "previously_employed": None,
+        "notice_period": None,
+        "earliest_start_date": None,
+        "willing_to_relocate": None,
+        "work_hours": None,
+        "work_location": None,
         "cv": "upload_cv",
         **{key: PREFER_NOT for key in _DEMO_KEYS},
     }
@@ -236,11 +350,12 @@ def answers_as_map(row: ApplicationAnswers | None, *, email: str) -> dict[str, s
             "nationality": row.nationality,
             "heard_about": row.heard_about,
             "previously_employed": row.previously_employed,
-            "free_school_meals": row.free_school_meals,
-            "gender": row.gender,
-            "ethnicity": row.ethnicity,
-            "disability": row.disability,
-            "veteran": row.veteran,
+            "notice_period": row.notice_period,
+            "earliest_start_date": row.earliest_start_date.isoformat() if row.earliest_start_date else None,
+            "willing_to_relocate": row.willing_to_relocate,
+            "work_hours": row.work_hours,
+            "work_location": row.work_location,
+            **{key: getattr(row, key) for key in _DEMO_KEYS},
         }
     )
     return base

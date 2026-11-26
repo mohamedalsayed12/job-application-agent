@@ -13,7 +13,6 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from alembic import command
-
 from app.core.config import Settings, get_settings
 from tests.isolation import ensure_database, resolve_test_database_name, with_database
 
@@ -28,6 +27,9 @@ _source_url = Settings(
     _env_file=str(_ENV_FILE) if _ENV_FILE.is_file() else None
 ).database_url
 os.environ["DATABASE_URL"] = with_database(_source_url, _TEST_DB_NAME)
+# Account emails go to app.accounts.mail.outbox, never to a real mail server.
+os.environ["MAIL_BACKEND"] = "memory"
+os.environ["PUBLIC_BASE_URL"] = "https://testserver"
 get_settings.cache_clear()
 
 from app.core import db as app_db  # noqa: E402
@@ -83,3 +85,12 @@ class WordEmbedder:
 def _no_real_embedding_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests never download or load the embedding model."""
     monkeypatch.setattr(semantic, "local_embedder", WordEmbedder)
+
+
+@pytest.fixture(autouse=True)
+def _empty_outbox() -> Iterator[None]:
+    from app.accounts import mail
+
+    mail.outbox.clear()
+    yield
+    mail.outbox.clear()
