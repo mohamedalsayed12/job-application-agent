@@ -68,6 +68,10 @@ def test_d45_a_required_subject_is_read_from_the_advert(advert: str, fields: lis
         "Degree in Computer Science; experience can replace this.",
         "Computer Science degree, or a portfolio of work that shows your ability.",
         "A computer science or engineering degree, or similar technical experience.",
+        # The Maths is the A-level subject, not the degree's (TPP's graduate advert).
+        "Requirements • 2:1 or above at degree level • AAA at A-level (A in Maths)",
+        "Requirements 2:1 or above at degree level AAA at A-level (A in Maths)",
+        "A 2:1 degree and a B in GCSE Maths",
     ],
 )
 def test_d45_optional_or_subjectless_degrees_require_nothing(advert: str) -> None:
