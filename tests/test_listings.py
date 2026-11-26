@@ -312,19 +312,6 @@ async def test_the_sort_choice_is_remembered_until_changed(client: httpx.AsyncCl
     assert "Sorted by newest." in (await client.get("/listings")).text
 
 
-async def test_best_match_breaks_an_equal_score_by_the_fit_verdict(client: httpx.AsyncClient, session: Session) -> None:
-    await _jobs(session)
-    await _register_with_profile(client)
-    junior = _job(session, 1).id
-    graduate = _job(session, 2).id
-    for job_id, verdict in ((junior, "Consider"), (graduate, "Apply")):
-        match = session.scalars(select(ApplicantJobMatch).where(ApplicantJobMatch.job_id == job_id)).one()
-        match.reasons = {**match.reasons, "report": {"verdict": verdict}}
-    session.commit()
-
-    page = (await client.get("/listings", params={"sort": "score"})).text
-    assert _titles(page)[:2] == ["Graduate Backend Developer", "Junior Backend Developer"]
-
 
 
 async def test_one_persons_sort_choice_does_not_reach_another(client: httpx.AsyncClient, session: Session) -> None:
@@ -345,5 +332,6 @@ def test_the_pager_keeps_the_sort_choice() -> None:
 
     nav = _nav(2, 80, everywhere=False, role="", sort="score", show="roles", search="")
     assert nav.count("sort=score") == 2
-    assert "sort=newest" in _nav(2, 80, everywhere=False, role="", sort="newest", show="roles", search="")
+    # newest is the default, so pager links omit it (D72 query defaults).
+    assert "sort=" not in _nav(2, 80, everywhere=False, role="", sort="newest", show="roles", search="")
 

@@ -195,6 +195,18 @@ class TailoredCvStatus(StrEnum):
     failed = "failed"
 
 
+# Listed jobs with these verdicts are tailored with no click, Apply before Consider.
+TAILOR_VERDICTS = ("Apply", "Consider")
+
+
+def auto_tailored(verdict: str | None, *, location_fit: bool, outside_locations: bool) -> bool:
+    """Whether a listed job gets a tailored CV with no click.
+
+    `location_fit` is the listings' "My locations" rule, so the person's scope setting matches what they see there.
+    """
+    return verdict in TAILOR_VERDICTS and (location_fit or outside_locations)
+
+
 def attempt_failed(status: str, draft: object) -> bool:
     """A ready file whose latest rebuild failed. The previous download stays."""
     return status == TailoredCvStatus.ready.value and isinstance(draft, dict) and bool(draft.get("last_error"))

@@ -69,8 +69,6 @@ score: your overall judgement from 1.0 to 5.0, one decimal place. It is not an a
 matter most, and red flags pull it down. 4.5 or more is a strong match, worth applying straight away. 4.0 to 4.4 is
 a good match, worth applying. 3.5 to 3.9 is decent but not worth applying without a specific reason. Below 3.5, don't apply.
 Location and the person's salary wishes are checked elsewhere: ignore them.
-An apprenticeship never fits anyone. An internship or placement fits only a person who chose the internship level. A job
-asking for 2 or more years of experience never fits a person who chose only entry level.
 
 level is the experience level the advert asks for: entry, mid, senior, or unclear.
 reason is one plain sentence saying why, naming only things the advert or the profile states.

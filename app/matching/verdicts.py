@@ -33,14 +33,6 @@ ADD_LINE = Decimal("3.0")
 DESCRIPTION_CHARS = 6000
 
 
-def auto_tailored(score: Decimal | float | None, *, location_fit: bool, outside_locations: bool) -> bool:
-    """Whether a listed job gets a tailored CV with no click: it scores ADD_LINE or more, whatever its verdict.
-
-    `location_fit` is the listings' "My locations" rule, so the person's scope setting matches what they see there.
-    """
-    return score is not None and score >= ADD_LINE and (location_fit or outside_locations)
-
-
 @dataclass(frozen=True, slots=True)
 class Profile:
     applicant_id: uuid.UUID

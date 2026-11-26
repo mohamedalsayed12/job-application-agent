@@ -17,7 +17,7 @@ from app.fetch.gateway import FetchGateway
 from app.linkedin import store_items
 from app.models import ApplicantJobMatch, Job, JobLink, JobPosting, SalaryStatus
 
-DAY_1 = datetime(2026, 11, 9, 9, 0, tzinfo=UTC)
+DAY_1 = datetime(2026, 11, 25, 9, 0, tzinfo=UTC)
 
 
 def _public_resolve(host: str) -> list[ipaddress.IPv4Address]:

@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import case, func, select
+from sqlalchemy import Numeric, func, select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
@@ -30,13 +30,8 @@ from app.core.db import get_db
 from app.fetch.due import never_searched
 from app.linkedin import searches
 from app.matching import semantic
-from app.matching.report import VERDICTS
-from app.matching.match import AI_SCORE_SQL, listed
 from app.matching.semantic import Embedder, closeness, vectors_for
-from app.matching.verdicts import auto_tailored
 from app.models import (
-    Application,
-    ApplicationStatus,
     Applicant,
     ApplicantJobMatch,
     ApplicantPreference,
@@ -50,11 +45,11 @@ from app.models import (
     ListingVerdict,
     SummaryStatus,
     TailoredCv,
+    auto_tailored,
 )
 from app.tailor.run import tailor_allowed, tailors_outside_locations
 from app.tailor.ui import listing_tailor
 from app.verify.scam_text import scam_reasons
-from app.outreach.ui import JobOutreach, load_outreach, outreach_block
 
 router = APIRouter(prefix="/listings", tags=["listings"])
 
@@ -73,14 +68,6 @@ Show = Literal["roles", "skills", "all"]
 _SKILLS_KIND = "skills"
 _AI_KIND = "ai"
 _AI_AREAS = (("cv_match", "your profile"), ("role_alignment", "your target roles"), ("comp", "pay"), ("culture", "culture"))
-_APPLICATION_LABELS = {
-    ApplicationStatus.needs_input: ("Needs your input", "bad"),
-    ApplicationStatus.ready_to_fill: ("Ready to fill", "blue"),
-    ApplicationStatus.filled_awaiting_review: ("Filled — review before submit", "blue"),
-    ApplicationStatus.submitted: ("Applied", "good"),
-    ApplicationStatus.abandoned: ("Not applying", ""),
-    ApplicationStatus.failed: ("Failed", "bad"),
-}
 
 _STYLE = """<style>
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.75rem; align-items: end; margin-bottom: 1.25rem; }
@@ -134,12 +121,9 @@ class Listing:
     last_seen_at: datetime | None
     source: str
     apply_url: str
-    location_fit: bool
     tailored: TailoredCv | None = None
-    # Tailored with no click: an AI score of 3.0 or more in the person's tailoring scope.
+    # Tailored with no click: an Apply or Consider verdict in the person's tailoring scope.
     auto_tailor: bool = False
-    application_status: str | None = None
-    outreach: JobOutreach = JobOutreach()
 
 
 def salary_text(job: Job) -> str:
@@ -172,17 +156,12 @@ def ai_score(reasons: dict) -> Decimal | None:
     return None
 
 
-# Best match (D54): the AI score out of 5, then the fit report's verdict, then the rules score, then newest. Unscored jobs go last.
-_VERDICT_RANK = case(
-    *((ApplicantJobMatch.reasons["report"]["verdict"].astext == verdict, rank) for rank, verdict in enumerate(VERDICTS)),
-    else_=len(VERDICTS),
+# D53: the same score in SQL, for sorting. Jobs not scored yet sort last, by the rules score (never shown).
+_AI_SCORE_SQL = func.coalesce(
+    ApplicantJobMatch.reasons["report"]["score"].astext.cast(Numeric),
+    ApplicantJobMatch.reasons["ai"]["score"].astext.cast(Numeric),
+    0,
 )
-
-
-def _sort_order(sort: Sort) -> tuple:
-    if sort == "newest":
-        return Job.first_seen_at.desc(), AI_SCORE_SQL.desc()
-    return AI_SCORE_SQL.desc(), _VERDICT_RANK, ApplicantJobMatch.score.desc(), Job.first_seen_at.desc()
 
 
 def _sources(session: Session, jobs: list[Job]) -> dict[uuid.UUID, str]:
@@ -201,12 +180,6 @@ def _sources(session: Session, jobs: list[Job]) -> dict[uuid.UUID, str]:
     return sources
 
 
-def _visible_to(applicant_id: uuid.UUID) -> tuple:
-    """What listings show a person: open jobs matched to them. A job the rules or the quality checks
-    (scam signs, low Real confidence) keep off listings has no match row."""
-    return (ApplicantJobMatch.applicant_id == applicant_id, Job.freshness == JobFreshness.open)
-
-
 class JobUnavailable(Exception):
     """A job this person can't see in listings, so its page and actions are closed too."""
 
@@ -214,7 +187,13 @@ class JobUnavailable(Exception):
 def visible_job(session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID) -> Job:
     """The job behind every /jobs/{id} page and action: on this person's listings and not judged fake (D55)."""
     job = session.scalar(
-        select(Job).join(ApplicantJobMatch, ApplicantJobMatch.job_id == Job.id).where(Job.id == job_id, *_visible_to(applicant_id))
+        select(Job)
+        .join(ApplicantJobMatch, ApplicantJobMatch.job_id == Job.id)
+        .where(
+            Job.id == job_id,
+            ApplicantJobMatch.applicant_id == applicant_id,
+            Job.freshness == JobFreshness.open,
+        )
     )
     if job is None or _is_fake(session, job):
         raise JobUnavailable
@@ -254,15 +233,23 @@ def load_listings(
     search: str = "",
     embedder: Embedder | None = None,
 ) -> tuple[list[Listing], int]:
-    """One page of open matched jobs, newest (or best match) first, and how many there are in all.
+    """One page of open matched jobs, best score (or newest) first, and how many there are in all.
 
     With a search, the same jobs come closest in meaning first (D48).
     """
-    query = _only(listed(everywhere=everywhere).where(ApplicantJobMatch.applicant_id == applicant_id), show)
+    query = (
+        select(ApplicantJobMatch, Job)
+        .join(Job, Job.id == ApplicantJobMatch.job_id)
+        .where(ApplicantJobMatch.applicant_id == applicant_id, Job.freshness == JobFreshness.open)
+    )
+    if not everywhere:
+        query = query.where(ApplicantJobMatch.location_fit.is_(True))
+    query = _only(query, show)
     if role and show != "skills":
         query = query.where(ApplicantJobMatch.reasons["role"]["target"].astext == role)
     total = session.scalar(select(func.count()).select_from(query.subquery()))
-    query = query.order_by(*_sort_order(sort), Job.company_name, Job.title, Job.id)
+    first = (Job.first_seen_at.desc(), _AI_SCORE_SQL.desc()) if sort == "newest" else (_AI_SCORE_SQL.desc(), ApplicantJobMatch.score.desc(), Job.first_seen_at.desc())
+    query = query.order_by(*first, Job.company_name, Job.title, Job.id)
     start = (page_number - 1) * PAGE_SIZE
     if search and embedder is not None:
         everything = session.execute(query).all()
@@ -290,15 +277,6 @@ def load_listings(
         )
     } if jobs else {}
     outside = tailors_outside_locations(session, applicant_id)
-    application_statuses = dict(
-        session.execute(
-            select(Application.job_id, Application.status).where(
-                Application.applicant_id == applicant_id,
-                Application.job_id.in_([job.id for job in jobs]),
-            )
-        ).all()
-    ) if jobs else {}
-    outreach = load_outreach(session, applicant_id, [job.id for job in jobs])
     listings = [
         Listing(
             job_id=job.id,
@@ -316,15 +294,12 @@ def load_listings(
             last_seen_at=job.last_seen_at,
             source=sources[job.id],
             apply_url=job.apply_url,
-            location_fit=match.location_fit,
             tailored=tailored.get(job.id),
             auto_tailor=auto_tailored(
-                ai_score(match.reasons),
+                (match.reasons.get("report") or {}).get("verdict"),
                 location_fit=match.location_fit,
                 outside_locations=outside,
             ),
-            application_status=application_statuses.get(job.id),
-            outreach=outreach[job.id],
         )
         for match, job in rows
     ]
@@ -341,8 +316,19 @@ def _only(query, show: Show):
 
 
 def count_skill_matches(session: Session, applicant_id: uuid.UUID, *, everywhere: bool) -> int:
-    query = _only(listed(everywhere=everywhere).where(ApplicantJobMatch.applicant_id == applicant_id), "skills")
-    return session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    query = (
+        select(func.count())
+        .select_from(ApplicantJobMatch)
+        .join(Job, Job.id == ApplicantJobMatch.job_id)
+        .where(
+            ApplicantJobMatch.applicant_id == applicant_id,
+            Job.freshness == JobFreshness.open,
+            ApplicantJobMatch.reasons["role"]["kind"].astext == _SKILLS_KIND,
+        )
+    )
+    if not everywhere:
+        query = query.where(ApplicantJobMatch.location_fit.is_(True))
+    return session.scalar(query) or 0
 
 
 def _e(value: object) -> str:
@@ -497,7 +483,6 @@ def render_listing(item: Listing, csrf: str = "", *, tailor_ok: bool = True) -> 
       {_SKILLS_TAG if item.reasons.get("role", {}).get("kind") == _SKILLS_KIND else ""}
       {_AI_TAG if item.reasons.get("role", {}).get("kind") == _AI_KIND else ""}
       {_verdict_tag(item)}
-      {_application_tag(item.application_status)}
       <span class="tag good">Open · confirmed {_e(seen)}</span>
       <span class="tag">{_e(_SOURCE_LABEL.get(item.source, item.source))}</span>
     </div>
@@ -511,20 +496,12 @@ def render_listing(item: Listing, csrf: str = "", *, tailor_ok: bool = True) -> 
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 {_fit_report(item)}
 {listing_tailor(item.job_id, item.tailored, csrf, auto=item.auto_tailor, allowed=tailor_ok)}
-{outreach_block(item.job_id, item.outreach, csrf)}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url, item.job_id, csrf)}
 </div>
 </article>
 """
-
-
-def _application_tag(status: str | None) -> str:
-    if status is None:
-        return ""
-    label, style = _APPLICATION_LABELS[ApplicationStatus(status)]
-    return f'<span class="tag {style}">{_e(label)}</span>'
 
 
 def _query(**params: object) -> str:
@@ -619,6 +596,7 @@ def listings_page(
     # D72: every match shows unless the person narrows to their own locations.
     everywhere: bool = Query(True),
     role: str = Query("", max_length=200),
+    # None reads the person's saved choice (migration 0042); a query value updates it.
     sort: Sort | None = Query(None),
     show: Show = Query("roles"),
     q: str = Query("", max_length=200),
