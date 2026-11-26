@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.applicants.apply_answers import answers_as_map, load_answers
+from app.applicants.cv import base_cv
 from app.applications.mapper import FillPlan, build_fill_plan
 from app.applications.schema import classify_ats, fields_from_scan, schema_to_json
 from app.models import Applicant, Application, ApplicationStatus, Job
@@ -74,6 +75,7 @@ def prepare_application(
         row.missing_fields = []
         row.schema_json = None
         row.fill_plan_json = None
+    row.cv_file_id = cv.id if (cv := base_cv(session, applicant.id, job)) else None
     session.flush()
     return row
 

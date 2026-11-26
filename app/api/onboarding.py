@@ -47,7 +47,7 @@ from app.applicants.apply_answers import (
     load_answers,
     save_answers,
 )
-from app.applicants.cv import MAX_CV_BYTES, CvRefused, cv_for, store_cv
+from app.applicants.cv import MAX_CV_BYTES, CvRefused, cv_for, replace_cv, store_cv
 from app.applicants.cv_read import (
     CvSuggestions,
     ReadOutcome,
@@ -275,22 +275,29 @@ def cv_step(request: Request, applicant: Applicant = Depends(require_login), db:
 )
 async def cv_step_upload(
     request: Request,
-    content: bytes | None = Depends(read_cv_upload),
+    upload: tuple[bytes | None, str] = Depends(read_cv_upload),
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
     gateway: FetchGateway = Depends(get_gateway),
 ) -> Response:
     if redirect := _guard(applicant, OnboardingStep.cv):
         return redirect
+    content, _label = upload
     try:
-        cv = store_cv(db, applicant.id, content)
+        # During sign-up there is one CV: a second upload replaces it rather than adding another (D62, D65).
+        existing = cv_for(db, applicant.id)
+        cv = (
+            replace_cv(db, applicant.id, existing.id, content)
+            if existing is not None
+            else store_cv(db, applicant.id, content)
+        )
         db.commit()
     except CvRefused as exc:
         db.rollback()
         return _wizard_page(
             request, applicant, OnboardingStep.cv, _cv_body(request, db, applicant), error=str(exc), status_code=400
         )
-    read = await read_cv(db, applicant.id, content, CvFileType(cv.file_type), gateway=gateway, settings=get_settings())
+    read = await read_cv(db, applicant.id, content or b"", CvFileType(cv.file_type), gateway=gateway, settings=get_settings())
     if read.suggestions is not None:
         cv.suggestions = suggestions_to_json(read.suggestions)
     next_url = _advance(applicant, OnboardingStep.cv)

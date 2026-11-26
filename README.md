@@ -78,13 +78,15 @@ Accounts made before the wizard existed skip it.
 Logging out ends the session on every device. There is no password reset: the app sends no email.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
-certifications and licences, experience levels and optional travel distance. They can upload one
-CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner can download it,
-and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
+certifications and licences, experience levels and optional travel distance. They can keep up to 10
+CVs (PDF or DOCX, up to 5 MB each), label them by target job, and choose a primary CV. Uploading
+a CV or asking to fill the profile sends its text to the AI provider for editable suggestions.
+Tailoring and application preparation choose a CV for the job. Only its owner can download it.
+`/account` also deletes the account and all its CVs. The rules are in decisions D38, D43 and D65.
 
 Before anything is searched, "Suggest roles and places" on the profile asks Claude for job titles that fit the
 person's skills and degrees, and towns near their locations. Each role names the skills or degrees it rests on, and code
-drops any that rest on nothing in the profile or that matching would hide for their level. The suggestions go into the
+drops any that rest on nothing in the profile or that matching would hide at their levels. The suggestions go into the
 form with the number of daily LinkedIn searches the profile will run and their cost cap. Nothing is saved until the
 person presses Save. The rules are in decision D64.
 

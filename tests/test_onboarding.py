@@ -468,9 +468,10 @@ async def test_the_wizard_needs_a_login(client: httpx.AsyncClient) -> None:
 
 async def test_replacing_the_cv_drops_what_was_read_from_the_old_one(client: httpx.AsyncClient, session: Session) -> None:
     await _through_cv(client, session)
-    files = {"cv": ("cv.pdf", b"%PDF-1.7\nmade up contents of a CV", "application/pdf")}
-    await client.post("/profile/cv", files=files)
     cv = session.scalar(select(CvFile))
+    assert cv is not None and cv.suggestions is not None
+    files = {"cv": ("cv.pdf", b"%PDF-1.7\nmade up contents of a CV", "application/pdf")}
+    await client.post(f"/profile/cv/{cv.id}/replace", files=files)
     session.refresh(cv)
     assert cv.suggestions is None
 

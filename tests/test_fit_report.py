@@ -10,12 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.listings import load_listings, render_listing
-from app.applicants.cv import store_cv
+from app.applicants.cv import replace_cv, store_cv
 from app.fetch.gateway import FetchGateway
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.matching.report import write_reports
-from app.models import JobReport, SpendLedger
+from app.models import CvFile, JobReport, SpendLedger
 from tests.jobs import _public_resolve
 from tests.test_cv_read import _docx
 from tests.test_judge import _jobs, _policy, _settings
@@ -186,7 +186,8 @@ async def test_d52_a_report_is_reused_until_the_cv_changes(session: Session) -> 
     await _run(session, ai)
     assert len(ai.reported) == 1
 
-    store_cv(session, applicant, _docx([*CV_LINES, "Built a Django app for a local charity."]))
+    current = session.scalar(select(CvFile).where(CvFile.applicant_id == applicant, CvFile.is_primary.is_(True)))
+    replace_cv(session, applicant, current.id, _docx([*CV_LINES, "Built a Django app for a local charity."]))
     session.flush()
     await _run(session, ai)
 

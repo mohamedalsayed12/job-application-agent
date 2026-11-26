@@ -20,6 +20,7 @@ from app.matching.match import match_all
 from app.matching.report import write_reports
 from app.models import (
     Applicant,
+    CvFile,
     Job,
     JobReport,
     SpendKind,
@@ -328,11 +329,17 @@ async def test_apply_job_gets_ready_package(session: Session) -> None:
     ai = _TailorAi()
     applicant, gateway, settings = await _prepare(session, ai)
 
+    stored = session.scalar(select(CvFile).where(CvFile.applicant_id == applicant))
+    stored.label = "Backend Developer"
+    store_cv(session, applicant, b"%PDF-1.7\nother cv", label="Data Analyst")
+    session.flush()
+
     await write_tailored_cvs(session, gateway=gateway, settings=settings, persist=session.flush, now=SOON)
 
     assert ai.tailor_calls == ["parse", "keywords", "diffs", "inject", "letter"]
     row = _package(session, applicant)
     assert row.status == TailoredCvStatus.ready.value
+    assert row.cv_file_id == stored.id
     text = " ".join(pdf_text(row.pdf_content).split())
     assert "Led a REST API web service in Python with FastAPI and PostgreSQL for a student society." in text
     assert "Spearheaded" not in text
@@ -552,13 +559,17 @@ async def test_people_outside_the_ai_list_get_no_button(
     assert session.scalars(select(TailoredCv)).first() is None
 
 
-async def test_download_is_owner_only(session: Session) -> None:
+async def test_download_is_owner_only(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
     from fastapi.testclient import TestClient
 
     from app.api.accounts import require_csrf
     from app.core.config import get_settings
     from app.core.db import get_db
     from app.main import app
+
+    monkeypatch.setenv("SESSION_SECRET", "s" * 40)
+    monkeypatch.setenv("ADMIN_KEY", "test-admin-key-not-default")
+    get_settings.cache_clear()
 
     ai = _TailorAi()
     applicant, gateway, settings = await _prepare(session, ai)
