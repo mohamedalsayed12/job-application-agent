@@ -32,6 +32,7 @@ from app.models import (
     CvFileType,
     ExperienceLevel,
 )
+from tests.auth import sign_up
 
 EMAIL = "person@example.com"
 OTHER_EMAIL = "other@example.com"
@@ -90,7 +91,7 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def _register(client: httpx.AsyncClient, email: str = EMAIL) -> None:
-    assert (await client.post("/register", data={"email": email, "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, email, PASSWORD)).status_code == 303
 
 
 async def _upload(client: httpx.AsyncClient, content: bytes, name: str = "my cv.pdf", kind: str = "application/pdf") -> httpx.Response:
@@ -427,10 +428,8 @@ async def test_t31_uploading_needs_a_login(client: httpx.AsyncClient) -> None:
 
 
 async def test_t31_upload_works_with_the_real_form_token(client: httpx.AsyncClient, session: Session) -> None:
+    await _register(client)
     app.dependency_overrides.pop(require_csrf)
-    opened = await client.get("/register")
-    token = re.search(r'name="csrf_token" value="([^"]+)"', opened.text).group(1)
-    await client.post("/register", data={"email": EMAIL, "password": PASSWORD, "csrf_token": token})
     assert (await _upload(client, PDF)).status_code == 403
     assert _count(session, CvFile, _applicant(session).id) == 0
 

@@ -1,20 +1,17 @@
-"""Create or refresh an Application: extract schema, map answers, set status."""
+"""Create or refresh an Application, and turn the form the extension read into a fill plan (D70)."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.applicants.apply_answers import answers_as_map, load_answers
 from app.applicants.cv import base_cv
-from app.applications.extract import extract_form_schema
-from app.applications.mapper import build_fill_plan
-from app.applications.schema import schema_to_json
-from app.core.config import Settings
-from app.fetch.gateway import FetchGateway
+from app.applications.mapper import FillPlan, build_fill_plan
+from app.applications.schema import classify_ats, fields_from_scan, schema_to_json
 from app.models import Applicant, Application, ApplicationStatus, Job
 
 
@@ -47,16 +44,17 @@ def list_applications(session: Session, applicant_id: uuid.UUID) -> list[Applica
     )
 
 
-async def prepare_application(
+def prepare_application(
     session: Session,
     *,
     applicant: Applicant,
     job_id: uuid.UUID,
-    gateway: FetchGateway,
-    settings: Settings,
-    persist,
-    now=lambda: datetime.now(UTC),
 ) -> Application:
+    """Ready to fill: the person opens the apply page and the extension reads the form there.
+
+    Nothing is fetched here. The employer's form is often several clicks past the job board, needs
+    the person logged in, or is built by JavaScript, so only their own browser sees it (D70).
+    """
     job = session.get(Job, job_id)
     if job is None:
         raise PrepareRefused("That job was not found.")
@@ -68,59 +66,44 @@ async def prepare_application(
     if row is not None and row.status == ApplicationStatus.submitted.value:
         raise PrepareRefused("You have already applied for this job.")
     if row is None:
-        row = Application(
-            applicant_id=applicant.id,
-            job_id=job_id,
-            apply_url=apply_url,
-            status=ApplicationStatus.preparing.value,
-        )
+        row = Application(applicant_id=applicant.id, job_id=job_id, apply_url=apply_url, status=ApplicationStatus.ready_to_fill.value)
         session.add(row)
     else:
         row.apply_url = apply_url
-        row.status = ApplicationStatus.preparing.value
+        row.status = ApplicationStatus.ready_to_fill.value
         row.error = None
         row.missing_fields = []
         row.schema_json = None
         row.fill_plan_json = None
     row.cv_file_id = cv.id if (cv := base_cv(session, applicant.id, job)) else None
     session.flush()
-    persist()
+    return row
 
-    extracted = await extract_form_schema(
-        session,
-        apply_url=apply_url,
-        gateway=gateway,
-        settings=settings,
-        persist=persist,
-        now=now,
-    )
-    if extracted.budget_blocked:
-        # BudgetWait must not fail the work (T3): leave it waiting for a later prepare.
-        row.status = ApplicationStatus.preparing.value
-        row.error = extracted.error or "Waiting on monthly budget."
-        session.flush()
-        return row
-    if extracted.schema is None:
-        row.status = ApplicationStatus.failed.value
-        row.error = extracted.error or "Could not read the application form."
-        session.flush()
-        return row
 
-    schema = extracted.schema
-    row.ats_kind = schema.ats_kind.value
-    row.schema_json = schema_to_json(schema)
+def plan_for_scanned_form(
+    session: Session,
+    application: Application,
+    applicant: Applicant,
+    *,
+    page_url: str,
+    fields: list[dict[str, Any]],
+) -> FillPlan:
+    """Map the fields the extension read to the person's saved answers; unanswered required ones are listed."""
+    schema = fields_from_scan(fields, ats=classify_ats(page_url))
     answers = answers_as_map(load_answers(session, applicant.id), email=applicant.email)
     plan = build_fill_plan(schema, answers)
-    row.fill_plan_json = plan.to_json()
-    row.missing_fields = plan.missing
+    application.ats_kind = schema.ats_kind.value
+    application.schema_json = {**schema_to_json(schema), "page_url": page_url}
+    application.fill_plan_json = plan.to_json()
+    application.missing_fields = plan.missing
     if plan.missing:
-        row.status = ApplicationStatus.needs_input.value
-        row.error = "Some required fields need answers on your apply profile."
+        application.status = ApplicationStatus.needs_input.value
+        application.error = "Some required questions on this form have no saved answer. They are listed below."
     else:
-        row.status = ApplicationStatus.ready_to_fill.value
-        row.error = None
+        application.status = ApplicationStatus.ready_to_fill.value
+        application.error = None
     session.flush()
-    return row
+    return plan
 
 
 def set_application_status(

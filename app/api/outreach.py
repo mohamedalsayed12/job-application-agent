@@ -111,10 +111,13 @@ def _contacts_html(
         name = html.escape(contact.full_name)
         kind = html.escape(contact.role_kind.replace("_", " "))
         email = html.escape(contact.email) if contact.email else "no email found"
+        # People are found by company name, so another firm with the same name can slip in: show whose staff they are.
+        employer = html.escape(contact.company_name or job.company_name)
         rows.append(
             f"""
 <div class="card">
   <p><b>{name}</b> · {title} · {kind}</p>
+  <p class="muted">Works at: {employer}. Check their LinkedIn shows the employer behind this job before you write.</p>
   <p class="muted">{email}</p>
   <form method="post" action="/jobs/{job.id}/outreach/{contact.id}/draft">
     {csrf_field(request)}

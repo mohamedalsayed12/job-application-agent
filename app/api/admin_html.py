@@ -64,6 +64,12 @@ input, textarea, select { display: block; width: 100%; margin-top: 0.3rem; paddi
   border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 0.9rem; background: #fff; color: var(--text); }
 input:focus, textarea:focus, select:focus { outline: 2px solid var(--primary-soft); border-color: var(--primary); }
 input[type=file] { padding: 0.4rem; }
+.pw-wrap { display: flex; gap: 0.4rem; align-items: stretch; }
+.pw-wrap input { flex: 1; }
+.pw-wrap button { margin-top: 0.3rem; white-space: nowrap; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.notice { color: var(--good); background: var(--good-soft); padding: 0.5rem 0.75rem; border-radius: 6px; }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0 0.75rem; }
 
 button, .button { display: inline-block; padding: 0.5rem 0.95rem; border-radius: 6px; border: 1px solid var(--line);

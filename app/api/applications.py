@@ -13,9 +13,7 @@ from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.api.jobs import get_gateway
 from app.applications.extension_device import issue_token
-from app.applications.ui import applied_button
 from app.applications.prepare import (
     PrepareRefused,
     get_application,
@@ -23,9 +21,8 @@ from app.applications.prepare import (
     mark_submitted,
     prepare_application,
 )
-from app.core.config import get_settings
+from app.applications.ui import applied_button
 from app.core.db import get_db
-from app.fetch.gateway import FetchGateway
 from app.models import Applicant, Application, ApplicationStatus, Job, JobFreshness
 
 router = APIRouter(tags=["applications"])
@@ -54,8 +51,16 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
     if app_row.missing_fields:
         items = "".join(f"<li>{_e(m)}</li>" for m in app_row.missing_fields)
         missing = (
-            f'<p class="hint">Missing required answers:</p><ul>{items}</ul>'
+            f'<p class="hint">This form asks questions you have no saved answer for. '
+            f'Answer them on the employer&#39;s page:</p><ul>{items}</ul>'
             '<p><a href="/profile/apply-answers">Update apply answers</a></p>'
+        )
+    how = ""
+    if app_row.status in (ApplicationStatus.ready_to_fill.value, ApplicationStatus.needs_input.value):
+        how = (
+            '<p class="hint">Open the apply page and click through to the employer&#39;s form. '
+            "Then press <b>Fill this tab</b> in the Job Agent extension: it reads the form, fills in your "
+            "saved answers and CV, and never presses Submit.</p>"
         )
     error = f'<p class="error">{_e(app_row.error)}</p>' if app_row.error else ""
     actions = [
@@ -74,7 +79,7 @@ def _card(request: Request, app_row: Application, job: Job | None) -> str:
 <article class="card">
   <h2>{_e(title)}</h2>
   <p class="muted">{_e(company)} · {_e(status_label)}</p>
-  {error}{missing}
+  {how}{error}{missing}
   <div class="job-foot">{"".join(actions)}</div>
 </article>
 """
@@ -112,21 +117,13 @@ def applications_page(
 
 
 @router.post("/applications", dependencies=_CSRF)
-async def prepare(
+def prepare(
     job_id: uuid.UUID = Form(...),
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
-    gateway: FetchGateway = Depends(get_gateway),
 ) -> RedirectResponse:
     try:
-        row = await prepare_application(
-            db,
-            applicant=applicant,
-            job_id=job_id,
-            gateway=gateway,
-            settings=get_settings(),
-            persist=db.commit,
-        )
+        row = prepare_application(db, applicant=applicant, job_id=job_id)
         db.commit()
     except PrepareRefused as exc:
         db.rollback()
