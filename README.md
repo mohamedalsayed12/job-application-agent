@@ -1,3 +1,11 @@
+> **Portfolio overview** — A job-discovery and application-management backend built around a real applicant workflow. It collects listings from LinkedIn and Indeed through Apify, manages accounts and candidate preferences, and enforces a budget limit before paid collection runs. This repository is an evolving MVP, not a claim of production deployment.
+>
+> **Why this matters:** job searches fragment across sources, repeat the same searches, and make it difficult to track relevant opportunities. I structured the API around user profiles, repeatable collection jobs, explicit cost controls, and testable persistence.
+>
+> **Engineering decisions:** FastAPI with SQLAlchemy 2 and PostgreSQL 16; Alembic migrations; scheduled collection with persisted outcomes; authentication and per-user data access; external scraper cost safeguards.
+
+---
+
 # Job Application Agent (MVP)
 
 Step 0 scaffold: FastAPI + SQLAlchemy 2 + PostgreSQL 16 + Alembic + uv.

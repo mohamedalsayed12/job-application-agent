@@ -34,7 +34,7 @@ from app.models import (
 from app.summaries.generate import Shown, summary_for_view
 from app.tailor.render import render_letter_docx, render_letter_pdf
 from app.tailor.run import request_tailored_cv, tailor_allowed, tailors_outside_locations
-from app.tailor.ui import cover_letter_text, listing_tailor
+from app.tailor.ui import changes_block, cover_letter_text, listing_tailor
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -115,7 +115,10 @@ async def job_page(
         csrf,
         auto=auto,
         allowed=tailor_allowed(settings, applicant.id),
-    ) + cover_letter_text(row)
+    )
+    if row is not None and row.status == TailoredCvStatus.ready.value:
+        tailored += changes_block(row.ats_report or {})
+    tailored += cover_letter_text(row)
     step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf)
     return page(job.title, _body(job, shown, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
 
