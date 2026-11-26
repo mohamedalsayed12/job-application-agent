@@ -157,7 +157,7 @@ async def analyse_evidence(
             timeout_s=INTERVIEW_TIMEOUT_S,
         )
         if isinstance(answer, AiCallFailure):
-            gate.settle(reservation, actual_cost=Decimal("0"))
+            gate.settle(reservation, consumed=answer.billed)
             persist()
             report.stopped_by = answer.reason
             break

@@ -1,4 +1,9 @@
-/* Reads the open apply form and fills it from a fill plan. Never clicks Submit. */
+/* Reads the open apply form and fills it from a fill plan. Never clicks Submit or Next (D70/D75).
+
+   Custom dropdowns (Workday, Greenhouse, Lever, Ashby) are opened and the matching option is clicked.
+   Answers the AI drafted are outlined so the person reads them first. After a fill, new questions that
+   appear (the next page of a multi-step form) are reported to the background worker, which fills them
+   too, without touching anything already answered. */
 (() => {
   if (window.__jaaContentLoaded) return;
   window.__jaaContentLoaded = true;
@@ -7,6 +12,8 @@
   const SKIP_TYPES = new Set(["hidden", "submit", "button", "reset", "image", "password"]);
   const SUBMIT_TEXT = /\b(submit|apply now|send application|complete application|finish application)\b/i;
   const MAX_TEXT = 300;
+  const DRAFT_OUTLINE = "2px solid #e8a317";
+  const PLACEHOLDER = /^(select|choose|please select|please choose|--|select one|select\.\.\.)?$/i;
   const fields = new Map();
 
   function ownText(el) {
@@ -43,7 +50,6 @@
   }
 
   function questionFor(el) {
-    // A radio or checkbox group's question is its fieldset legend or group label, not one option's label.
     if (el.type === "radio" || (el.type === "checkbox" && el.name && document.querySelectorAll(`input[type=checkbox][name="${CSS.escape(el.name)}"]`).length > 1)) {
       const group = el.closest("fieldset, [role=radiogroup], [role=group]");
       const legend = group?.querySelector("legend")?.innerText
@@ -77,21 +83,26 @@
   }
 
   function visible(el) {
-    if (el.type === "file") return true; // Upload inputs are often hidden behind a styled button.
+    if (el.type === "file") return true;
     const style = window.getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden" && (el.offsetParent !== null || style.position === "fixed");
+  }
+
+  function isCombo(el) {
+    return el.getAttribute?.("role") === "combobox" || el.getAttribute?.("aria-haspopup") === "listbox";
   }
 
   function fieldType(el) {
     const tag = el.tagName;
     if (tag === "TEXTAREA") return "textarea";
     if (tag === "SELECT") return "select";
+    if (isCombo(el)) return "combobox";
     const type = (el.getAttribute("type") || "text").toLowerCase();
     if (SKIP_TYPES.has(type)) return null;
     if (type === "radio") return "radio";
     if (type === "checkbox") return "checkbox";
     if (type === "file") return "file";
-    if (["email", "tel", "url", "number", "date"].includes(type)) return type;
+    if (["email", "tel", "url", "number", "date", "month"].includes(type)) return type;
     return "text";
   }
 
@@ -105,15 +116,6 @@
         .filter(Boolean);
     }
     return [];
-  }
-
-  function findNext() {
-    for (const el of document.querySelectorAll("button, div, span")) {
-      if (isSubmitControl(el) || el.id === "jaa-fill-notice") continue;
-      if (el.tagName === "BUTTON" && (el.getAttribute("type") || "submit").toLowerCase() !== "button") continue;
-      if (/^(next|continue)$/i.test(ownText(el))) return el;
-    }
-    return null;
   }
 
   /** Every field a person would answer, with a stable id for the fill plan (D70 scan + D66 ids). */
@@ -145,7 +147,36 @@
         options: optionsFor(el, type),
       });
     }
-    return { ok: true, url: location.href, fields: found, hasNext: Boolean(findNext()) };
+    for (const el of document.querySelectorAll("[role=combobox], [aria-haspopup=listbox]")) {
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) || el.disabled || isSubmitControl(el) || !visible(el)) continue;
+      const label = questionFor(el);
+      if (!label) continue;
+      const id = `f${index}`;
+      index += 1;
+      fields.set(id, el);
+      found.push({ id, label, name: el.id || el.getAttribute("name") || id, type: "combobox", required: isRequired(el, label), options: [] });
+    }
+    return { ok: true, url: location.href, fields: found };
+  }
+
+  function hasAnswer(el) {
+    if (el.tagName === "SELECT") return el.selectedIndex > 0 || Boolean(el.value && !PLACEHOLDER.test(clean(el.options[el.selectedIndex]?.text)));
+    if (el.type === "radio") return [...document.querySelectorAll(`input[type=radio][name="${CSS.escape(el.name)}"]`)].some((r) => r.checked);
+    if (el.type === "checkbox") return el.checked;
+    if (el.type === "file") return el.files?.length > 0;
+    if (/^(INPUT|TEXTAREA)$/.test(el.tagName)) return Boolean(el.value && el.value.trim());
+    return !PLACEHOLDER.test(clean(el.innerText));
+  }
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const norm = (text) => clean(text).toLowerCase();
+
+  function listOptions(el) {
+    const id = el.getAttribute("aria-controls") || el.getAttribute("aria-owns");
+    const scope = (id && document.getElementById(id)) || document;
+    return [...scope.querySelectorAll("[role=option], [data-automation-id=promptOption]")].filter(
+      (option) => option.offsetParent !== null && !isSubmitControl(option),
+    );
   }
 
   function setNative(el, value) {
@@ -153,6 +184,31 @@
     const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
     if (setter) setter.call(el, value);
     else el.value = value;
+  }
+
+  async function pickFromList(el, value) {
+    const want = norm(value);
+    if (el.tagName === "INPUT") {
+      el.focus();
+      setNative(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      el.click();
+    }
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      await sleep(100);
+      const options = listOptions(el);
+      const hit = options.find((o) => norm(o.innerText) === want) || options.find((o) => norm(o.innerText).startsWith(want));
+      if (hit) {
+        hit.click();
+        return true;
+      }
+    }
+    if (el.tagName === "INPUT") {
+      setNative(el, "");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    return false;
   }
 
   function selectValue(el, value) {
@@ -204,29 +260,11 @@
     return true;
   }
 
-  function applySteps(steps, cv) {
-    let filled = 0;
-    const skipped = [];
-    for (const step of steps || []) {
-      if (!ALLOWED_ACTIONS.has(step.action)) continue;
-      const el = fields.get(step.field_id);
-      if (!el || isSubmitControl(el)) {
-        skipped.push(step.field_id || step.label || "");
-        continue;
-      }
-      let done = false;
-      try {
-        if (step.action === "upload_cv") done = uploadCv(el, cv);
-        else if (step.action === "select") done = selectValue(el, step.value);
-        else if (step.action === "check") done = checkValue(el, step.value);
-        else done = setText(el, String(step.value || ""));
-      } catch (_) {
-        done = false;
-      }
-      if (done) filled += 1;
-      else skipped.push(step.field_id || step.label || "");
-    }
-    return { filled, skipped };
+  function markDraft(el, note) {
+    const target = el.type === "radio" ? el.closest("fieldset, [role=radiogroup]") || el : el;
+    target.style.outline = DRAFT_OUTLINE;
+    target.style.outlineOffset = "2px";
+    target.title = note || "Drafted by Job Agent. Read it before you submit.";
   }
 
   function showNotice(text) {
@@ -253,6 +291,61 @@
     return "";
   }
 
+  async function applySteps(steps, cv, onlyEmpty) {
+    let filled = 0;
+    let drafted = 0;
+    const skipped = [];
+    for (const step of steps || []) {
+      if (!ALLOWED_ACTIONS.has(step.action)) continue;
+      const el = fields.get(step.field_id);
+      if (!el || isSubmitControl(el)) {
+        skipped.push(step.field_id || step.label || "");
+        continue;
+      }
+      if (onlyEmpty && hasAnswer(el)) continue;
+      let done = false;
+      try {
+        if (step.action === "upload_cv") done = uploadCv(el, cv);
+        else if (isCombo(el)) done = await pickFromList(el, step.value);
+        else if (step.action === "select") done = selectValue(el, step.value);
+        else if (step.action === "check") done = checkValue(el, step.value);
+        else done = setText(el, String(step.value || ""));
+      } catch (_) {
+        done = false;
+      }
+      if (done) {
+        filled += 1;
+        if (step.source === "ai") {
+          drafted += 1;
+          markDraft(el, step.note);
+        }
+      } else skipped.push(step.field_id || step.label || "");
+    }
+    return { filled, drafted, skipped };
+  }
+
+  function fieldKeys() {
+    return new Set(scanForm().fields.map((field) => `${field.name}|${field.label}`));
+  }
+
+  let known = null;
+  let observer = null;
+  let timer = null;
+  function watchForNewQuestions() {
+    known = fieldKeys();
+    if (observer) return;
+    observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const now = fieldKeys();
+        const added = [...now].filter((key) => !known.has(key));
+        known = now;
+        if (added.length) chrome.runtime.sendMessage({ type: "jaa-page-changed", added: added.length }).catch(() => {});
+      }, 1500);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "jaa-ping") {
       sendResponse({ ok: true });
@@ -268,20 +361,14 @@
       return false;
     }
     if (message?.type !== "jaa-fill") return false;
-    try {
-      const result = applySteps(message.steps || message.plan?.steps, message.cv);
-      const next = !message.final && findNext();
-      if (next) {
-        next.click();
-        sendResponse({ ok: true, advanced: true, ...result });
-        return false;
-      }
-      const highlighted = highlightSubmit();
-      showNotice(message.notice || "Everything is filled in. Review the form and click Submit yourself.");
-      sendResponse({ ok: true, advanced: false, highlighted, ...result });
-    } catch (err) {
-      sendResponse({ ok: false, error: String(err) });
-    }
-    return false;
+    applySteps(message.steps || message.plan?.steps, message.cv, Boolean(message.onlyEmpty))
+      .then((result) => {
+        const highlighted = highlightSubmit();
+        showNotice(message.notice || "Everything is filled in. Review the form and click Submit yourself.");
+        watchForNewQuestions();
+        sendResponse({ ok: true, advanced: false, highlighted, ...result });
+      })
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
   });
 })();

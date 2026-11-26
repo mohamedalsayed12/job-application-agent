@@ -6,6 +6,7 @@ import html
 
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
@@ -19,6 +20,7 @@ from app.api.answer_fields import (
     extra_keys,
     yes_no_select,
 )
+from app.api.applications import question_form
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
 from app.applicants.apply_answers import (
@@ -31,7 +33,7 @@ from app.applicants.apply_answers import (
 )
 from app.applicants.questions import GROUP_TITLES
 from app.core.db import get_db
-from app.models import Applicant
+from app.models import Applicant, FormQuestion
 
 router = APIRouter(prefix="/profile/apply-answers", tags=["apply-answers"])
 _CSRF = [Depends(require_csrf)]
@@ -45,7 +47,21 @@ def _group(answers: AnswersInput, group: str) -> str:
     return f'<section class="card"><h2>{esc(GROUP_TITLES[group])}</h2>{extra_fields(answers, group)}</section>'
 
 
-def _page(request: Request, answers: AnswersInput, *, message: str = "", status_code: int = 200) -> HTMLResponse:
+def _bank(request: Request, rows: list[FormQuestion]) -> str:
+    """Questions employers' forms asked that the answers above don't cover (D74). Separate forms, outside the main one."""
+    if not rows:
+        return ""
+    forms = "".join(question_form(request, row, "/profile/apply-answers") for row in rows)
+    return f"""<section class="card">
+  <h2>Questions from employers' forms</h2>
+  <p class="hint">Forms you filled asked these. An answer here fills the same question on every later form.</p>
+  {forms}
+</section>"""
+
+
+def _page(
+    request: Request, answers: AnswersInput, *, message: str = "", status_code: int = 200, bank: str = ""
+) -> HTMLResponse:
     return page(
         "Apply answers",
         f"""
@@ -103,6 +119,7 @@ def _page(request: Request, answers: AnswersInput, *, message: str = "", status_
     <button type="submit" class="primary">Save apply answers</button>
   </div>
 </form>
+{bank}
 """,
         status_code=status_code,
         header=applicant_bar(request, "profile"),
@@ -112,7 +129,12 @@ def _page(request: Request, answers: AnswersInput, *, message: str = "", status_
 
 @router.get("", response_class=HTMLResponse)
 def show_answers(request: Request, applicant: Applicant = Depends(require_login), db: Session = Depends(get_db)) -> HTMLResponse:
-    return _page(request, input_from_row(load_answers(db, applicant.id)))
+    rows = list(
+        db.scalars(
+            select(FormQuestion).where(FormQuestion.applicant_id == applicant.id).order_by(FormQuestion.created_at)
+        )
+    )
+    return _page(request, input_from_row(load_answers(db, applicant.id)), bank=_bank(request, rows))
 
 
 @router.post("", response_model=None, dependencies=_CSRF)

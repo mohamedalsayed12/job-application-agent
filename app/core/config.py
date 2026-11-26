@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     # Apply fill: matching form questions the patterns miss to the person's own answers or CV text.
     ai_apply_map_unit_price: Decimal = Decimal("0.002")
     ai_apply_map_model: str = ""
-    ai_apply_map_max_output_tokens: int = 800
+    ai_apply_map_max_output_tokens: int = 2500
 
     # Outreach: people discovery and profile research through Apify (still never fetch linkedin.com here).
     apify_outreach_hm_actor: str = "automation_studio/linkedin-job-hiring-manager-finder"

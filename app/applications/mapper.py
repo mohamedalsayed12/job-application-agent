@@ -22,7 +22,8 @@ FieldType = Literal[
     "text", "email", "tel", "url", "number", "date", "month", "textarea", "select", "radio", "checkbox", "file"
 ]
 Action = Literal["fill", "select", "check", "upload_cv"]
-Source = Literal["answers", "saved", "account", "cv"]
+# bank / ai: autofill question bank and checked drafts (D75), outlined for the person to review.
+Source = Literal["answers", "saved", "account", "cv", "bank", "ai"]
 
 MAX_QUOTE = 200
 _PREFER_LABELS = ("prefer not", "decline", "do not wish", "do not want to answer", "rather not")
@@ -69,6 +70,8 @@ class FillStep:
     action: Action
     value: str
     source: Source
+    # Set for AI drafts so the extension can show why it was kept or corrected (D75).
+    note: str = ""
 
 
 @dataclass(frozen=True, slots=True)

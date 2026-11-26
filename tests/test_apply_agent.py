@@ -533,7 +533,8 @@ async def test_missing_answer_is_named_saved_and_reused(
     assert first.status_code == 200
     body = first.json()
     assert body["status"] == ApplicationStatus.needs_input.value
-    assert body["plan"]["steps"] == []
+    # D75: fill what we can; only the unanswered question is missing.
+    assert [s["field_id"] for s in body["plan"]["steps"]] == ["f0"]
     assert "Why do you want this role?" in body["notice"]
     page = await client.get("/applications")
     assert "Why do you want this role?" in page.text

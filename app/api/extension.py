@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.jobs import get_gateway
 from app.applications.cv_choice import choose_cv
 from app.applications.extension_device import applicant_for_token
 from app.applications.fill_safety import assert_plan_has_no_submit_clicks
@@ -22,6 +23,7 @@ from app.applications.prepare import (
     set_application_status,
 )
 from app.core.db import get_db
+from app.fetch.gateway import FetchGateway
 from app.models import Applicant, ApplicationStatus, CvFileType, Job
 
 router = APIRouter(prefix="/extension", tags=["extension"])
@@ -45,8 +47,13 @@ class StatusBody(BaseModel):
     error: str | None = Field(default=None, max_length=500)
 
 
-# Applications the extension may fill: prepared, or waiting on answers the person has since given.
-_OPEN = (ApplicationStatus.ready_to_fill.value, ApplicationStatus.needs_input.value)
+# Applications the extension may fill: prepared, waiting on answers the person has since given, or
+# filled on one page with more pages of the form still to come.
+_OPEN = (
+    ApplicationStatus.ready_to_fill.value,
+    ApplicationStatus.needs_input.value,
+    ApplicationStatus.filled_awaiting_review.value,
+)
 
 
 @router.get("/applications/ready")
@@ -103,6 +110,8 @@ _SCAN_TYPES = {
     "radio": "radio",
     "checkbox": "checkbox",
     "file": "file",
+    # Custom dropdowns (Workday, Greenhouse, Ashby): options are read once opened (D75).
+    "combobox": "select",
 }
 
 
@@ -136,8 +145,13 @@ async def plan_from_form(
     body: ScannedForm,
     applicant_id: uuid.UUID = Depends(_bearer_applicant),
     db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
 ) -> dict:
-    """The fields the extension read on the open page in, the fill plan out (D70 + D66)."""
+    """The fields the extension read on the open page in, the fill plan out (D70 + D66 + D75).
+
+    Saved answers and CV quotes first, then the question bank, then AI drafts that were checked before
+    they come back. The extension highlights the drafts; the person reviews and submits.
+    """
     row = get_application(db, application_id, applicant_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -151,7 +165,7 @@ async def plan_from_form(
     fields = _as_form_fields(body.fields)
     if not fields:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="No form fields on this page")
-    plan = await build_application_plan(db, applicant, row, fields)
+    plan = await build_application_plan(db, applicant, row, fields, gateway=gateway)
     row.schema_json = {
         "page_url": body.page_url,
         "source": "extension",

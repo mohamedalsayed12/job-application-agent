@@ -161,7 +161,7 @@ async def draft_for_contact(
     }
     call = await _call(gateway, **ask)
     if isinstance(call, AiCallFailure):
-        gate.settle(reservation, consumed=False)
+        gate.settle(reservation, consumed=call.billed)
         persist()
         return DraftResult(problem=call.reason)
 

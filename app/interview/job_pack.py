@@ -247,7 +247,7 @@ async def build_job_pack(
         timeout_s=INTERVIEW_TIMEOUT_S,
     )
     if isinstance(answer, AiCallFailure):
-        gate.settle(reservation, actual_cost=Decimal(0))
+        gate.settle(reservation, consumed=answer.billed)
         session.commit()
         return JobPackResult(stopped_by=answer.reason)
     gate.settle(reservation, actual_cost=cost)

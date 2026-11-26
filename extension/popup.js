@@ -7,7 +7,7 @@ async function loadApplications() {
   const { apps, guess } = await chrome.runtime.sendMessage({ type: "jaa-list" });
   application.replaceChildren();
   if (!apps.length) {
-    application.append(new Option("No prepared applications. Press Prepare apply on a job first.", ""));
+    application.append(new Option("No open applications. Press Prepare apply on a job first.", ""));
     return;
   }
   for (const row of apps) {
@@ -36,6 +36,7 @@ document.getElementById("fill").addEventListener("click", async () => {
     return;
   }
   const lines = [`Filled ${result.filled} field(s). Review the form and press Submit yourself.`];
+  if (result.drafted) lines.push(`${result.drafted} answer(s) were drafted for you and are outlined in orange: read them first.`);
   if (result.missing?.length) lines.push(`No saved answer for: ${result.missing.join("; ")}`);
   if (result.skipped?.length) lines.push(`Could not fill: ${result.skipped.join("; ")}`);
   status.textContent = lines.join("\n");

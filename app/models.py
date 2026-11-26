@@ -920,6 +920,26 @@ class ExtensionDevice(_UuidPk, Base):
     rotated_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
 
 
+class FormQuestion(_UuidPk, Base):
+    """A question an employer's form asked that the saved answers don't cover (D75).
+
+    Kept per person under the question's wording without case or punctuation, so an answer given once
+    fills the same question on every later form. A null answer is still waiting for the person.
+    """
+
+    __tablename__ = "form_question"
+    __table_args__ = (UniqueConstraint("applicant_id", "question_key", name="uq_form_question_applicant_key"),)
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    question_key: Mapped[str] = mapped_column(Text())
+    label: Mapped[str] = mapped_column(Text())
+    field_type: Mapped[str] = mapped_column(Text())
+    options: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    answer: Mapped[str | None] = mapped_column(Text())
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
 class OutreachContact(_UuidPk, Base):
     """A person found for outreach on one job, for one applicant."""
 
