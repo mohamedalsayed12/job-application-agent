@@ -11,7 +11,8 @@ from app.models import Application, ApplicationStatus, Job
 def applied_button(csrf: str, job_id: uuid.UUID) -> str:
     return (
         f'<form method="post" action="/jobs/{html.escape(str(job_id))}/applied" class="inline">'
-        f'{csrf}<button type="submit">I&#39;ve applied</button></form>'
+        f'{csrf}<button type="submit" title="Press after you have submitted the application on the employer&#39;s site">'
+        "Submitted</button></form>"
     )
 
 

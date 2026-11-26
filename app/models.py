@@ -106,6 +106,7 @@ class SpendKind(StrEnum):
     linkedin_people = "linkedin_people"
     linkedin_profile = "linkedin_profile"
     ai_outreach = "ai_outreach"
+    email_lookup = "email_lookup"
     interview_collect = "interview_collect"
     ai_interview_analyse = "ai_interview_analyse"
     ai_interview_plan = "ai_interview_plan"
@@ -887,6 +888,9 @@ class Application(_UuidPk, Base):
     __table_args__ = (
         UniqueConstraint("applicant_id", "job_id", name="uq_application_applicant_job"),
         _text_in("status", ApplicationStatus),
+        CheckConstraint(
+            "outreach_state IS NULL OR outreach_state IN ('queued', 'ready', 'no_contacts')", name="outreach_state"
+        ),
         Index("ix_application_applicant_status", "applicant_id", "status"),
     )
 
@@ -898,6 +902,8 @@ class Application(_UuidPk, Base):
     fill_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     missing_fields: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     error: Mapped[str | None] = mapped_column(Text())
+    # D77: None until the person marks it submitted; then queued, ready (drafts written) or no_contacts.
+    outreach_state: Mapped[str | None] = mapped_column(Text())
     # The person's CV the extension uploads when no tailored one is ready (D65).
     cv_file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("cv_file.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = _created()

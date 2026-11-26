@@ -27,6 +27,7 @@ from app.matching import semantic
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.matching.report import write_reports
+from app.outreach.auto import prepare_outreach
 from app.quality import store_results
 from app.skills.taxonomy import map_job_skills
 from app.summaries.generate import summarise_matches
@@ -86,6 +87,9 @@ async def run_cycle(
     semantic.embed_matches(session, semantic.local_embedder())
     save()
     await process_requests(session, gateway=gateway, settings=get_settings(), persist=save)
+    save()
+    # D77: people and outreach drafts for applications the person marked submitted.
+    await prepare_outreach(session, gateway=gateway, settings=get_settings(), persist=save)
     save()
     return CycleReport(linkedin=linkedin, indeed=indeed, google_jobs=google, careers=careers)
 

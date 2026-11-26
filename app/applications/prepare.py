@@ -147,6 +147,9 @@ def mark_submitted(session: Session, applicant_id: uuid.UUID, job: Job) -> Appli
     else:
         row.status = ApplicationStatus.submitted.value
         row.error = None
+    # D77: the worker now finds the hiring manager and people in this role and drafts outreach.
+    if row.outreach_state is None:
+        row.outreach_state = "queued"
     session.flush()
     return row
 

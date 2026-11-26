@@ -34,6 +34,7 @@ from app.models import (
     OutreachResearch,
 )
 from app.outreach.draft import current_body, draft_for_contact
+from app.outreach.email_find import email_note, find_email
 from app.outreach.find import find_contacts
 from app.outreach.gmail import (
     active_connection,
@@ -122,7 +123,7 @@ def _contacts_html(
         title = html.escape(contact.title or "Title unknown")
         name = html.escape(contact.full_name)
         kind = html.escape(contact.role_kind.replace("_", " "))
-        email = html.escape(contact.email) if contact.email else "no email found"
+        email = f"{html.escape(contact.email or 'No email')}. {html.escape(email_note(contact))}"
         # People are found by company name, so another firm with the same name can slip in: show whose staff they are.
         employer = html.escape(contact.company_name or job.company_name)
         rows.append(
@@ -214,6 +215,7 @@ async def outreach_draft_create(
         raise HTTPException(status_code=404)
     if not has_applied(db, applicant.id, job.id):
         return _apply_first(job)
+    await find_email(db, contact, job, gateway=gateway, settings=settings, persist=db.commit)
     researched = await research_contact(db, contact, gateway=gateway, settings=settings, persist=db.commit)
     if researched.stopped_by == "budget":
         return RedirectResponse(f"/jobs/{job.id}/outreach?notice=budget", status_code=_SEE_OTHER)
@@ -318,7 +320,9 @@ def _draft_html(
             else '<p class="muted">Connect Gmail on <a href="/account/gmail">your account</a> first.</p>'
         )
         if not contact.email:
-            connect_hint += '<p class="muted">No email on this contact — Gmail send needs one from Apify.</p>'
+            connect_hint += '<p class="muted">No email for this person, so Gmail can\'t send. Use the LinkedIn note.</p>'
+        else:
+            connect_hint += f'<p class="muted">To: {html.escape(contact.email)}. {html.escape(email_note(contact))}</p>'
         if not gmail_ready:
             connect_hint = '<p class="muted">Gmail OAuth is not configured on this server.</p>'
         gmail_form = f"""
@@ -338,8 +342,14 @@ def _draft_html(
     note_form = "<p class=\"muted\">No LinkedIn note yet.</p>"
     if note_draft:
         note_body = html.escape(current_body(note_draft))
-        profile = (
-            f'<p><a class="button" href="{html.escape(contact.linkedin_url, quote=True)}" rel="noopener noreferrer" target="_blank">Open LinkedIn profile</a></p>'
+        linkedin_send = (
+            f"""<form method="post" action="/jobs/{job.id}/outreach/{contact.id}/linkedin" target="_blank">
+  {csrf_field(request)}
+  <input type="hidden" name="draft_id" value="{note_draft.id}"/>
+  <button type="submit" class="primary">Open on LinkedIn with the note typed in</button>
+</form>
+<p class="muted">The Job Agent extension opens Connect, adds the note and stops: you read it and press Send.
+Save any edits first.</p>"""
             if contact.linkedin_url
             else '<p class="muted">No LinkedIn profile URL.</p>'
         )
@@ -350,11 +360,11 @@ def _draft_html(
   <label>LinkedIn note <textarea name="body" rows="4" maxlength="300">{note_body}</textarea></label>
   <p><button type="submit">Save note</button></p>
 </form>
-{profile}
+{linkedin_send}
 <form method="post" action="/jobs/{job.id}/outreach/{contact.id}/copy">
   {csrf_field(request)}
   <input type="hidden" name="draft_id" value="{note_draft.id}"/>
-  <button type="submit" class="primary">Copy LinkedIn note</button>
+  <button type="submit">Just copy the note</button>
 </form>
 <pre id="note-text" style="display:none">{note_body}</pre>
 """
@@ -485,6 +495,31 @@ navigator.clipboard.writeText(box.value).catch(() => {{}});
         header=applicant_bar(request, "matches"),
         narrow=True,
     )
+
+
+@router.post("/jobs/{job_id}/outreach/{contact_id}/linkedin", dependencies=_CSRF)
+def outreach_linkedin(
+    job_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    draft_id: uuid.UUID = Form(...),
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Opens the profile; the extension sees the note chosen here and types it into LinkedIn's Connect box (D77)."""
+    _open_matched_job(db, applicant, job_id)
+    contact = _own_contact(db, applicant, contact_id)
+    draft = db.get(OutreachDraft, draft_id)
+    if (
+        draft is None
+        or draft.applicant_id != applicant.id
+        or draft.contact_id != contact.id
+        or draft.channel != OutreachChannel.linkedin_note.value
+        or not (contact.linkedin_url or "").startswith("https://")
+    ):
+        raise HTTPException(status_code=404)
+    record_copy(db, draft)
+    db.commit()
+    return RedirectResponse(contact.linkedin_url, status_code=_SEE_OTHER)
 
 
 @router.get("/account/gmail", response_class=HTMLResponse)

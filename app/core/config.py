@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     )
     api_allowlist: str = (
         "api.apify.com,api.anthropic.com,"
-        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,serpapi.com"
+        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,serpapi.com,api.hunter.io"
     )
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     outreach_ai_unit_price: Decimal = Decimal("0.002")
     outreach_daily_send_cap: int = 20
     outreach_gmail_dry_run: bool = True
+    # D77: after "Submitted", this many applications per worker cycle get people found and drafts written,
+    # for this many people each (the hiring manager first, then people doing the same job).
+    outreach_auto_per_cycle: int = 2
+    outreach_auto_contacts: int = 3
+    # D77: optional email lookups through Hunter (provider "hunter" in the budget); without a key, guessed.
+    hunter_api_key: str = ""
+    email_lookup_unit_price: Decimal = Decimal("0.025")
 
     # Gmail OAuth (send only after the person connects and approves a draft).
     gmail_client_id: str = ""
@@ -236,6 +243,7 @@ class Settings(BaseSettings):
         "outreach_people_unit_price",
         "outreach_profile_unit_price",
         "outreach_ai_unit_price",
+        "email_lookup_unit_price",
         "ai_ideas_unit_price",
         mode="before",
     )
