@@ -65,6 +65,8 @@ router = APIRouter(prefix="/profile", tags=["profile"])
 _SEE_OTHER = status.HTTP_303_SEE_OTHER
 _SPARE_CERTIFICATION_ROWS = 3
 _SALARY_PERIODS = ("year", "month", "day", "hour")
+_MY_LOCATIONS = "my_locations"
+_EVERYWHERE = "everywhere"
 # Session-only copy of the filled form after a CV read. Not the saved profile (D43).
 _PROFILE_DRAFT = "profile_draft"
 _CSRF = [Depends(require_csrf)]
@@ -126,6 +128,7 @@ class ProfileFields:
         cert_kind: list[str] = Form(default=[]),
         cert_expiry: list[str] = Form(default=[]),
         degrees: str = Form(""),
+        tailor_scope: str = Form(_MY_LOCATIONS),
         cv_id: list[str] = Form(default=[]),
         cv_label: list[str] = Form(default=[]),
         cv_primary: str = Form(""),
@@ -139,6 +142,7 @@ class ProfileFields:
         self.travel_distance = travel_distance
         self.skills = skills
         self.degrees = degrees
+        self.tailor_scope = tailor_scope
         self.certifications = [
             tuple(row) for row in zip_longest(cert_name, cert_issuer, cert_kind, cert_expiry, fillvalue="")
         ]
@@ -193,6 +197,7 @@ def saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
         cert_kind=["licence" if item.is_licence else "certification" for item in certifications],
         cert_expiry=[str(item.expires_on or "") for item in certifications],
         degrees="\n".join(profile.degrees) if profile else "",
+        tailor_scope=_EVERYWHERE if profile and profile.tailor_outside_locations else _MY_LOCATIONS,
     )
 
 
@@ -373,6 +378,10 @@ def preference_sections(fields: ProfileFields, *, first_number: int) -> str:
         for level, facts in LEVELS.items()
     )
     periods = _options([(period, f"a {period}") for period in _SALARY_PERIODS], fields.salary_period)
+    scopes = _options(
+        [(_MY_LOCATIONS, "Only jobs in my locations"), (_EVERYWHERE, "Also jobs outside my locations")],
+        fields.tailor_scope,
+    )
     rows = [*fields.certifications, *[("", "", "certification", "")] * _SPARE_CERTIFICATION_ROWS]
     return f"""
   <section class="card">
@@ -405,6 +414,11 @@ def preference_sections(fields: ProfileFields, *, first_number: int) -> str:
       <textarea name="degrees" rows="2" placeholder="BSc Business Management">{html.escape(fields.degrees)}</textarea>
     </label>
     <p class="hint">Used when scoring how well a job fits you.</p>
+    <label>Tailor my CV automatically for
+      <select name="tailor_scope">{scopes}</select>
+    </label>
+    <p class="hint">When the AI says Apply or Consider for a job, we write a CV tailored to it without you asking.
+    Each one uses some of the monthly AI budget. You can still ask for a tailored CV on any open job.</p>
   </section>
 
   <section class="card">
@@ -446,6 +460,7 @@ def save_profile_fields(db: Session, applicant: Applicant, fields: ProfileFields
         skills=fields.skills.splitlines(),
         certifications=certifications,
         degrees=fields.degrees.splitlines(),
+        tailor_outside_locations=fields.tailor_scope == _EVERYWHERE,
     )
     save_profile(db, applicant.id, profile)
 
@@ -636,6 +651,7 @@ def fill_from_cv(fields: ProfileFields, found: CvSuggestions) -> tuple[ProfileFi
         cert_kind=[row[2] for row in rows],
         cert_expiry=[row[3] for row in rows],
         degrees="\n".join([*degrees, *new_degrees]),
+        tailor_scope=fields.tailor_scope,
     )
     return merged, filled
 

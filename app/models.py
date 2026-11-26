@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     LargeBinary,
     Numeric,
     Text,
@@ -187,8 +188,12 @@ class TailoredCvStatus(StrEnum):
 TAILOR_VERDICTS = ("Apply", "Consider")
 
 
-def auto_tailored(verdict: str | None) -> bool:
-    return verdict in TAILOR_VERDICTS
+def auto_tailored(verdict: str | None, *, location_fit: bool, outside_locations: bool) -> bool:
+    """Whether a listed job gets a tailored CV with no click.
+
+    `location_fit` is the listings' "My locations" rule, so the person's scope setting matches what they see there.
+    """
+    return verdict in TAILOR_VERDICTS and (location_fit or outside_locations)
 
 
 def attempt_failed(status: str, draft: object) -> bool:
@@ -404,6 +409,8 @@ class ApplicantProfile(_UuidPk, Base):
     travel_distance_miles: Mapped[int | None] = mapped_column(Integer())
     # As typed, such as "BSc Business Management". Studying for one counts. Used only in the AI score (D62).
     degrees: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    # Automatic tailoring spends the AI budget, so by default it covers only jobs in the person's locations.
+    tailor_outside_locations: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
     updated_at: Mapped[datetime] = _updated()
 
 
@@ -792,6 +799,27 @@ class TailoredCv(_UuidPk, Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     completion_tokens: Mapped[int] = mapped_column(Integer(), server_default=text("0"))
     cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
+
+
+class TailorRun(_UuidPk, Base):
+    """The paid steps of an unfinished tailored CV package, so a crash resumes instead of paying again.
+
+    One per package and input. It is deleted when the package finishes, and with the package or the account.
+    """
+
+    __tablename__ = "tailor_run"
+    __table_args__ = (UniqueConstraint("tailored_cv_id", name="uq_tailor_run_tailored_cv_id"),)
+
+    tailored_cv_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("tailored_cv.id", ondelete="CASCADE"))
+    input_hash: Mapped[str] = mapped_column(Text())
+    # Step name to its parsed output, model, tokens, cost and spend_ledger id. JSON, not JSONB:
+    # JSONB reorders keys, and a reused step must give the CV the same shape a fresh call would.
+    steps: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict, server_default=text("'{}'"))
+    # Attempts that started on this input and never finished.
+    crashes: Mapped[int] = mapped_column(Integer(), default=0, server_default=text("0"))
+    last_error: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
 

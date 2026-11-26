@@ -35,7 +35,9 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
   from my CV", its text is read to suggest entries for your profile form and your contact details. On the profile page the
   suggestions aren't stored. During sign-up they are kept with your CV only until you finish the last step, so each step
   can show them for you to check, and are then deleted: only what you save is kept. For jobs the fit report marks Apply or Consider, a tailored CV copy (PDF and DOCX) may also be stored
-  for you to download; it never replaces your uploaded CV.</li>
+  for you to download; it never replaces your uploaded CV. While a tailored copy is being written, each finished AI
+  step is saved so a crash does not repeat it. Those steps are deleted once the copy is finished or has failed, and
+  always with the copy itself.</li>
   <li><b>Your job matches:</b> which jobs fit your profile, with a score and the reasons.</li>
   <li><b>Apply answers:</b> legal name, phone, address, work authorisation, visa sponsorship need, links, notice
   period, start date, whether you'd relocate, and full-time or part-time and on-site, hybrid or remote. Used only to
@@ -103,7 +105,8 @@ no tracking or advertising cookie to accept or refuse.</p>
 <div class="card">
 <h2>How long we keep it</h2>
 <p>Until you delete your account. Deleting it on <a href="/account">your account page</a> removes your profile, CV, preferences,
-apply answers, applications, extension token, matches, outreach contacts, drafts, send log and Gmail connection at once.</p>
+apply answers, applications, extension token, matches, tailored CVs and their unfinished steps, outreach contacts, drafts,
+send log and Gmail connection at once.</p>
 <p>Copies of the database are kept as backups. Only the latest two are kept, and none for more than 30 days, so your data has
 left every backup within 30 days of deletion.</p>
 </div>
