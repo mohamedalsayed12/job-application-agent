@@ -13,8 +13,9 @@ from sqlalchemy.orm import Session
 from app.api.listings import load_listings, render_listing
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.matching.judge import judge_jobs
-from app.matching.match import match_all
+from app.matching.judge import facts_text, judge_jobs
+from app.matching.match import match_all, showable
+from app.matching.verdicts import PROMPT_VERSION, digest, load_profiles
 from app.models import (
     ApplicantProfile,
     ApplicantSkill,
@@ -135,6 +136,77 @@ async def test_d50_matches_follow_the_ai_verdict_over_the_rules(session: Session
     assert len(spent) == 2
 
 
+def _ai_says_it_fits(session: Session, applicant_id, job_id) -> None:
+    """A current verdict, as if the AI had judged this job a fit for this person."""
+    profile = load_profiles(session, {applicant_id})[applicant_id]
+    facts = next(facts for facts in showable(session, SOON) if facts.job_id == job_id)
+    session.add(
+        JobVerdict(
+            applicant_id=applicant_id,
+            job_id=job_id,
+            fits=True,
+            level="entry",
+            score=Decimal("4.2"),
+            ratings={},
+            job_hash=digest(facts_text(facts)),
+            profile_hash=profile.digest,
+            model="test",
+            prompt_version=PROMPT_VERSION,
+        )
+    )
+    session.flush()
+
+
+async def test_d63_an_ai_fit_never_shows_an_apprenticeship_and_shows_an_internship_only_to_those_who_chose_it(
+    session: Session,
+) -> None:
+    await _jobs(
+        session,
+        ("Software Engineering Apprenticeship", "Manchester, UK"),
+        ("Payments Intern", "Manchester, UK"),
+        ("Payments Developer", "Manchester, UK"),
+    )
+    apprenticeship, internship, ordinary = (_job(session, n).id for n in (1, 2, 3))
+    entry = _applicant(session, roles=["Software Engineer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=entry, experience_levels=[ExperienceLevel.entry]))
+    student = _applicant(session, roles=["Software Engineer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=student, experience_levels=[ExperienceLevel.entry, ExperienceLevel.internship]))
+    session.flush()
+    for person in (entry, student):
+        for job_id in (apprenticeship, internship, ordinary):
+            _ai_says_it_fits(session, person, job_id)
+
+    match_all(session, now=SOON)
+
+    assert set(_matches(session, entry)) == {ordinary}
+    assert set(_matches(session, student)) == {internship, ordinary}
+
+
+async def test_d63_an_apprenticeship_is_never_sent_to_the_judge(session: Session) -> None:
+    _policy(session, Decimal("1"))
+    await _jobs(session, ("Backend Developer Apprentice", "Manchester, UK"), ("Backend Developer", "Manchester, UK"))
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    judge = _Judge({"Backend Developer": (True, "mid", "It is a backend role.")})
+
+    await _judge(session, judge)
+
+    assert len(judge.sent) == 1
+
+
+async def test_d63_the_judge_is_told_every_level_the_person_wants(session: Session) -> None:
+    _policy(session, Decimal("1"))
+    await _jobs(session, ("Backend Developer", "Manchester, UK"))
+    applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=applicant, experience_levels=[ExperienceLevel.mid, ExperienceLevel.entry]))
+    session.flush()
+    judge = _Judge({"Backend Developer": (True, "mid", "It is a backend role.")})
+
+    await _judge(session, judge)
+
+    assert "Experience levels wanted: entry, mid" in judge.sent[0]
+    assert session.scalars(select(JobVerdict)).one().prompt_version == "job-judge-v3"
+
+
 async def test_d46_an_entry_level_seeker_gets_ai_matches_only_for_entry_level_adverts(session: Session) -> None:
     """A "fits" verdict on an advert the AI reads as unclear or mid level stays off an entry-level page."""
     _policy(session, Decimal("1"))
@@ -145,7 +217,7 @@ async def test_d46_an_entry_level_seeker_gets_ai_matches_only_for_entry_level_ad
         ("Integrations Engineer", "Manchester, UK"),
     )
     graduate = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    session.add(ApplicantProfile(applicant_id=graduate, experience_level=ExperienceLevel.entry))
+    session.add(ApplicantProfile(applicant_id=graduate, experience_levels=[ExperienceLevel.entry]))
     session.flush()
     judge = _Judge(
         {

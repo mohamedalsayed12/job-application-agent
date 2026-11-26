@@ -26,13 +26,12 @@ This starts `postgres:16` on port `5436` with user/password/db `jaa` / `jaa` / `
 cp .env.example .env
 ```
 
-Job listings come from LinkedIn and Indeed (Apify) and Google Jobs (SerpAPI). Set `APIFY_API_TOKEN`
+Job listings come from LinkedIn and Indeed, scraped once a day through Apify. Set `APIFY_API_TOKEN`
 in `.env` to the API token from
-[Apify integrations](https://console.apify.com/settings/integrations), and optionally
-`SERPAPI_API_KEY` from [SerpAPI](https://serpapi.com/manage-api-key). Without the Apify token the
-worker skips LinkedIn and Indeed; without the SerpAPI key it skips Google Jobs. Each search is
-paid, so it also needs a monthly money cap in `budget_policy`. Until that cap is set, paid calls
-stay blocked. The scrapers and the search limits have defaults; see `.env.example`.
+[Apify integrations](https://console.apify.com/settings/integrations). Without that token the
+worker does not search. Each search is a paid Apify run, so it also needs a monthly money cap
+in `budget_policy`. Until that cap is set, paid calls stay blocked. The scrapers and the search
+limits have defaults; see `.env.example`.
 
 ### 3. Install dependencies
 
@@ -79,9 +78,19 @@ Accounts made before the wizard existed skip it.
 Logging out ends the session on every device. There is no password reset: the app sends no email.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
-certifications and licences, experience level and optional travel distance. They can upload one
-CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner can download it,
-and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
+certifications and licences, experience levels and optional travel distance. They can keep up to 10
+CVs (PDF or DOCX, up to 5 MB each), label them by target job, and choose a primary CV. Uploading
+a CV or asking to fill the profile sends its text to the AI provider for editable suggestions.
+When AI reads a CV, the job titles it suggests appear as checkboxes under the target roles, and ticked ones are
+added on save. Under the box the page lists the related titles that are searched as well (D67). Tailoring and
+application preparation choose a CV for the job. Only its owner can download it.
+`/account` also deletes the account and all its CVs. The rules are in decisions D38, D43 and D65.
+
+Before anything is searched, "Suggest roles and places" on the profile asks Claude for job titles that fit the
+person's skills and degrees, and towns near their locations. Each role names the skills or degrees it rests on, and code
+drops any that rest on nothing in the profile or that matching would hide at their levels. The suggestions go into the
+form with the number of daily LinkedIn searches the profile will run and their cost cap. Nothing is saved until the
+person presses Save. The rules are in decision D64.
 
 Admins log in at `/admin/login` with `ADMIN_KEY`. The session lasts 12 hours. Scripts can send
 the key in an `X-Admin-Key` header instead. The key is not accepted in a URL.
@@ -100,25 +109,27 @@ uv run pytest
 
 ## Daily collection
 
-Jobs come from LinkedIn, Indeed and Google Jobs. Once a day the worker runs one LinkedIn
-search per target role and location, and Indeed and Google Jobs searches for the graduate,
-junior and entry-level forms of each role in each location. The same query is searched once
-per source, however many people want it. LinkedIn uses the Black Falcon Data scraper
-(`blackfalcondata/linkedin-job-scraper`): entry-level, last 3 days, newest first, up to
-50 jobs. Indeed uses `valig/indeed-jobs-scraper` with country `uk`, those entry title
-forms, a 3-day window and the same limit; D46 still filters on the match side. Google Jobs
-uses SerpAPI (`engine=google_jobs`, `gl=uk`), one page of up to 10 results per search, never
-fetching google.com directly. The worker stores every run and every raw job, then cleans
-them into postings.
+Jobs come from LinkedIn, Indeed and Google Jobs (D73). Each role and location is due on its
+own (D72), so a title added today is searched on the worker's next cycle. A person's LinkedIn
+titles are their target roles, then related titles Claude suggests for them, up to 10 in each
+location (D68), at the experience levels they chose (D63). Indeed and Google Jobs search the
+graduate, junior and entry-level forms of each role in each location. The same query is searched
+once per source, however many people want it. LinkedIn uses the Black Falcon Data scraper
+(`blackfalcondata/linkedin-job-scraper`): the person's levels, up to 100 jobs; the first search
+of a role and location looks back 14 days, repeats keep 3. Indeed uses `valig/indeed-jobs-scraper`
+with country `uk` and the same windows. Google Jobs uses SerpAPI (`engine=google_jobs`, `gl=uk`),
+one page of up to 10 results per search, never fetching google.com directly. The worker stores
+every run and every raw job, then cleans them into postings.
 
-A search is due 24 hours after the last one for that source, so a machine that was off
-catches up the next time the worker runs. A failed Apify run is recorded and the next
-attempt waits until the following day; a SerpAPI call that returns no billable body is not
-charged and does not block the day. A run that does not finish within 15 minutes is stopped.
+A search that worked waits the source's usual hours before running again. A search that failed
+is tried again after an hour, not every cycle and not a whole day later. A run that does not
+finish within 15 minutes is stopped.
 
-Set `APIFY_API_TOKEN` and optionally `SERPAPI_API_KEY` first. Each run is reserved against
-the monthly money cap before it starts. Apify costs settle at what Apify reports; SerpAPI
-settles at the configured search ceiling (the response has no cost field).
+Set `APIFY_API_TOKEN` and optionally `SERPAPI_API_KEY` first. Each run is reserved against the
+monthly money cap before it starts. Apify costs settle at what Apify reports; SerpAPI settles at
+the configured search ceiling. A LinkedIn run reserves up to £0.07, so 10 titles a day for one
+person in one place come to about £21 a month. Raise `budget_policy.money_cap` to suit.
+
 
 ### Jobs on company websites (D69)
 
@@ -187,8 +198,9 @@ because anyone can post there.
 After a cycle that collects LinkedIn jobs or closes stale ones, the worker matches stored jobs to every applicant
 on role, location, salary status, skills and required licences. Each match lists the skills
 the applicant has, the skills they don't, and any licence the advert requires that they don't
-hold. This uses rules only, so it costs nothing and makes no requests. The rules are in
-`MVP.md` decisions D35 and D40. To run it now and print the best matches for each
+hold. A job fits a role when its title has every word of one of the person's titles (their
+target roles and the related titles), or is close to one in meaning, compared on this machine.
+This costs nothing and makes no requests. The rules are in `MVP.md` decisions D35, D40 and D67. To run it now and print the best matches for each
 applicant, run:
 
 ```bash
@@ -208,7 +220,7 @@ The rules are in `MVP.md` decision D42.
 The first time a logged-in person opens a job at `/jobs/{id}`, the app asks Claude for a short
 summary of the posting. Code rejects it if it contains a number, date or name the posting doesn't,
 and saves one per job for everyone. Summaries spend from the AI budget, so nothing is called until
-a monthly `money_cap` is set in `budget_policy` (`uv run python -m app.budget recommended`, or `set apify 15`) and `ANTHROPIC_API_KEY` is in `.env`. Until then,
+a monthly `money_cap` is set in `budget_policy` and `ANTHROPIC_API_KEY` is in `.env`. Until then,
 and whenever a summary is rejected, the page shows the description. The rules are in `MVP.md`
 decision D41.
 

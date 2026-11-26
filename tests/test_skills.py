@@ -200,7 +200,7 @@ async def test_t33_saving_a_profile_links_skills_and_keeps_what_was_typed(
     data = {
         "target_roles": "Backend Developer",
         "locations": "Manchester",
-        "experience_level": "entry",
+        "experience_levels": "entry",
         "skills": "Postgres\nK8s\nKnitting patterns",
     }
     assert (await client.post("/profile", data=data)).status_code == 303
@@ -215,7 +215,7 @@ async def test_skills_saved_before_the_list_was_loaded_are_linked_by_loading_it(
     client: httpx.AsyncClient, session: Session
 ) -> None:
     await _register(client)
-    data = {"target_roles": "Developer", "locations": "Leeds", "experience_level": "mid", "skills": "Postgres"}
+    data = {"target_roles": "Developer", "locations": "Leeds", "experience_levels": "mid", "skills": "Postgres"}
     await client.post("/profile", data=data)
     assert session.scalar(select(ApplicantSkill)).skill_id is None
     load_taxonomy(session)

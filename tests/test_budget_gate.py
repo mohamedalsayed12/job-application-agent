@@ -15,18 +15,11 @@ from app.budget.gate import (
     SpendEstimate,
     SpendReservation,
 )
-from app.core.config import Settings
 from app.models import (
     BudgetPolicy,
     SpendKind,
     SpendLedger,
 )
-
-
-def _settings() -> Settings:
-    return Settings(
-        ai_summary_unit_price=Decimal("0.25"),
-    )
 
 
 def _gate(session: Session, now: datetime) -> BudgetGate:

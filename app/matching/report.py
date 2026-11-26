@@ -22,20 +22,20 @@ from decimal import Decimal
 from itertools import islice
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.ai.anthropic import AiCallResponse, anthropic_api_key, messages_body
+from app.ai.anthropic import AiCallResponse
+from app.applicants.cv import cvs_by_applicant, pick_base_cv
 from app.applicants.cv_read import CvUnreadable, cv_text
 from app.budget.pricing import estimate_cost
-from app.budget.tokens import tokens_used_today
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.matching.batches import Ask, Spend, ask_in_batches
 from app.matching.match import showable
 from app.matching.verdicts import REPORT_PROMPT_VERSION as PROMPT_VERSION
 from app.matching.verdicts import current_verdicts, digest, job_text, load_profiles
-from app.models import ApplicantPreference, CvFile, JobReport, SpendKind
+from app.models import ApplicantPreference, JobReport, SpendKind
 from app.quality.checks import JobFacts
 from app.summaries.check import unsupported
 
@@ -185,7 +185,7 @@ def load_readers(session: Session, *, cv_chars: int, applicant_ids: set[uuid.UUI
     """The profile the judge uses, plus salary wish and locations, plus the CV's text when one is uploaded."""
     profiles = load_profiles(session, applicant_ids)
     preferences = {row.applicant_id: row for row in session.scalars(select(ApplicantPreference))}
-    cvs = {row.applicant_id: row for row in session.scalars(select(CvFile).where(CvFile.applicant_id.in_(profiles)))}
+    cvs = {applicant_id: pick_base_cv(rows) for applicant_id, rows in cvs_by_applicant(session, profiles).items()}
     readers: dict[uuid.UUID, Reader] = {}
     for applicant_id, profile in profiles.items():
         preference = preferences[applicant_id]
@@ -211,16 +211,22 @@ def build_body(reader: Reader, posting: str, *, model: str, max_tokens: int) -> 
     profile = json.dumps({"profile": reader.profile}, ensure_ascii=False)
     cv = json.dumps({"cv": reader.cv or "No CV uploaded."}, ensure_ascii=False)
     job = json.dumps({"job_posting": posting}, ensure_ascii=False)
-    return messages_body(
-        system=SYSTEM_INSTRUCTIONS,
-        user=(
-            f"<PROFILE_DATA>\n{profile}\n</PROFILE_DATA>\n<CV_DATA>\n{cv}\n</CV_DATA>\n"
-            f"<JOB_POSTING_DATA>\n{job}\n</JOB_POSTING_DATA>"
-        ),
-        schema=REPORT_SCHEMA,
-        model=model,
-        max_tokens=max_tokens,
-    )
+    return {
+        "model": model,
+        "max_tokens": max_tokens,
+        "thinking": {"type": "disabled"},
+        "system": SYSTEM_INSTRUCTIONS,
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    f"<PROFILE_DATA>\n{profile}\n</PROFILE_DATA>\n<CV_DATA>\n{cv}\n</CV_DATA>\n"
+                    f"<JOB_POSTING_DATA>\n{job}\n</JOB_POSTING_DATA>"
+                ),
+            }
+        ],
+        "output_config": {"format": {"type": "json_schema", "schema": REPORT_SCHEMA}},
+    }
 
 
 def _squash(text: str) -> str:
@@ -256,10 +262,7 @@ def checked_report(payload: dict[str, Any], *, posting: str, reader: Reader) -> 
         item = criteria.get(key)
         if not isinstance(item, dict) or item.get("evidence") not in EVIDENCE:
             return None
-        assessment = str(item.get("assessment", "")).strip()
-        if assessment and unsupported(assessment, sources):
-            assessment = ""
-        checked_criteria[key] = {"assessment": assessment, "evidence": item["evidence"]}
+        checked_criteria[key] = {"assessment": str(item.get("assessment", "")).strip(), "evidence": item["evidence"]}
     requirements = []
     for row in payload.get("requirements") or []:
         if not isinstance(row, dict) or row.get("importance") not in IMPORTANCE or row.get("basis") not in BASIS:
@@ -273,8 +276,6 @@ def checked_report(payload: dict[str, Any], *, posting: str, reader: Reader) -> 
         evidence = str(row.get("evidence", "")).strip()
         if match == "Strong" and not _quoted(quote, f"{reader.profile}\n{reader.cv}"):
             match, quote, evidence = "Partial", "", _UNQUOTED + evidence
-        if evidence and unsupported(evidence, sources):
-            evidence = ""
         requirements.append(
             {
                 "requirement": str(row.get("requirement", "")).strip(),
@@ -293,7 +294,6 @@ def checked_report(payload: dict[str, Any], *, posting: str, reader: Reader) -> 
     if verdict == "Apply" and (score < APPLY_SCORE or blockers):
         verdict = "Consider"
     reason = str(payload.get("verdict_reason", "")).strip()
-    pay = str(payload.get("advertised_pay", "")).strip()
     return {
         "verdict": verdict,
         "score": str(score),
@@ -301,13 +301,23 @@ def checked_report(payload: dict[str, Any], *, posting: str, reader: Reader) -> 
         "hard_blockers": blockers,
         "requirements": requirements[:MAX_REQUIREMENTS],
         "criteria": checked_criteria,
-        "advertised_pay": pay if pay and not unsupported(pay, posting) else "not stated",
+        "advertised_pay": str(payload.get("advertised_pay", "")).strip() or "not stated",
         "market_estimate": str(payload.get("market_estimate", "")).strip() or "none given",
         "assumptions": _strings(payload.get("assumptions"), 5),
         "confidence": confidence,
         "questions": _strings(payload.get("questions"), 3),
         "cv_read": bool(reader.cv),
     }
+
+
+def tokens_used_today(session: Session, now: datetime) -> int:
+    day_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+    used = session.scalar(
+        select(func.coalesce(func.sum(JobReport.prompt_tokens + JobReport.completion_tokens), 0)).where(
+            JobReport.updated_at >= day_start
+        )
+    )
+    return int(used or 0)
 
 
 def _todo(session: Session, now: datetime, readers: dict[uuid.UUID, Reader]) -> list[_Work]:
@@ -351,11 +361,11 @@ async def write_reports(
     """Write up to a cycle's worth of missing reports, until a cap stops it. The next run carries on."""
     now = now or datetime.now(UTC)
     run = ReportRun()
-    api_key = anthropic_api_key(settings)
-    if api_key is None:
+    api_key = settings.anthropic_api_key.strip()
+    if settings.ai_provider.strip().lower() != "anthropic" or not api_key:
         run.stopped_by = "not_configured"
         return run
-    model = settings.resolved_model(settings.ai_report_model)
+    model = settings.resolved_ai_report_model()
     max_tokens = settings.ai_report_max_output_tokens
     readers = load_readers(session, cv_chars=settings.ai_report_cv_chars, applicant_ids=settings.ai_applicants())
     asks = (
@@ -369,7 +379,7 @@ async def write_reports(
         )
         for item in islice(_todo(session, now, readers), settings.ai_report_per_cycle)
     )
-    cost = estimate_cost(kind=SpendKind.ai_fit_report, units=Decimal(1), settings=settings)
+    cost = estimate_cost(provider=settings.ai_provider, kind=SpendKind.ai_fit_report, units=Decimal(1), settings=settings)
 
     def record(ask: Ask[_Work], call: AiCallResponse) -> int:
         item = ask.item
@@ -391,7 +401,7 @@ async def write_reports(
         spend=Spend(SpendKind.ai_fit_report, "fit_report", cost, settings.ai_provider),
         max_output_tokens=max_tokens,
         daily_token_cap=settings.ai_report_daily_token_cap,
-        used_today=tokens_used_today(session, JobReport, now),
+        used_today=tokens_used_today(session, now),
         concurrency=settings.ai_judge_concurrency,
         outcomes=run.outcomes,
         record=record,
