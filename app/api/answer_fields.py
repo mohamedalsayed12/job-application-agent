@@ -15,7 +15,11 @@ from app.applicants.apply_answers import (
     WORK_LOCATIONS,
     AnswersInput,
 )
+from app.applicants.questions import Question, questions_in
 from app.models import PREFER_NOT
+
+# Extra questions post as extra_<key>, apart from the answers that have their own column.
+EXTRA_PREFIX = "extra_"
 
 DIVERSITY_LABELS = {
     "gender": "Gender",
@@ -86,7 +90,39 @@ def diversity_fields(answers: AnswersInput) -> str:
     )
 
 
-def answers_from_form(form: FormData, base: AnswersInput, names: tuple[str, ...]) -> AnswersInput:
+def _extra_field(question: Question, current: str, *, from_cv: bool) -> str:
+    name = EXTRA_PREFIX + question.key
+    tag = ' <span class="from-cv">from your CV</span>' if from_cv else ""
+    hint = f' <span class="hint">{esc(question.hint)}</span>' if question.hint else ""
+    if question.kind == "choice":
+        chosen = current or (PREFER_NOT if question.prefer_not else "")
+        control = choice_select(name, question.choices, chosen, blank=None if question.prefer_not else "Not set")
+    elif question.kind == "yes_no":
+        control = yes_no_select(name, current or "unset")
+    else:
+        kind = {"date": "date", "month": "month"}.get(question.kind, "text")
+        placeholder = ' placeholder="YYYY-MM"' if kind == "month" else ""
+        control = f'<input name="{name}" id="{name}" type="{kind}"{placeholder} value="{esc(current)}"/>'
+    return f"<label>{esc(question.label)}{tag}{hint} {control}</label>"
+
+
+def extra_fields(answers: AnswersInput, group: str, *, from_cv: set[str] | frozenset[str] = frozenset()) -> str:
+    """Every extra question in one group, showing what is saved. Each one is optional."""
+    return "".join(
+        _extra_field(question, answers.extra.get(question.key, ""), from_cv=question.key in from_cv)
+        for question in questions_in(group)
+    )
+
+
+def extra_keys(*groups: str) -> tuple[str, ...]:
+    return tuple(question.key for group in groups for question in questions_in(group))
+
+
+def answers_from_form(
+    form: FormData, base: AnswersInput, names: tuple[str, ...], extras: tuple[str, ...] = ()
+) -> AnswersInput:
     """`base` with the named answers replaced by what was sent. Answers a page doesn't show are kept."""
-    sent = {name: str(form.get(name) or "") for name in names if name in ANSWER_FIELDS}
+    sent: dict[str, object] = {name: str(form.get(name) or "") for name in names if name in ANSWER_FIELDS}
+    if extras:
+        sent["extra"] = {**base.extra, **{key: str(form.get(EXTRA_PREFIX + key) or "") for key in extras}}
     return replace(base, **sent)

@@ -248,6 +248,7 @@ class OnboardingStep(StrEnum):
     cv = "cv"
     details = "details"
     preferences = "preferences"
+    education = "education"
     availability = "availability"
     diversity = "diversity"
 
@@ -871,6 +872,8 @@ class ApplicationAnswers(_UuidPk, Base):
     caring_responsibilities: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     school_type: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     parental_occupation: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    # The extra questions in app.applicants.questions (D74), keyed by question. A blank answer is left out.
+    extra: Mapped[dict[str, Any]] = mapped_column(JSONB(), default=dict, server_default=text("'{}'::jsonb"))
     saved_questions: Mapped[list[dict[str, str]]] = mapped_column(
         JSONB(), default=list, server_default=text("'[]'::jsonb")
     )

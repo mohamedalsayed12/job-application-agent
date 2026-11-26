@@ -94,6 +94,7 @@ _SCAN_TYPES = {
     "url": "url",
     "number": "number",
     "date": "date",
+    "month": "month",
     "search": "text",
     "textarea": "textarea",
     "select": "select",
