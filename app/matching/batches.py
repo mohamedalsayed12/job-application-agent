@@ -113,7 +113,7 @@ async def ask_in_batches[T](
             for (ask, reservation), call in zip(batch, calls, strict=True):
                 if isinstance(call, AiCallFailure):
                     logger.warning("%s failed for job %s: %s", spend.unit_label, ask.job_id, call.reason)
-                    gate.settle(reservation, consumed=False)
+                    gate.settle(reservation, consumed=call.billed)
                     outcomes["failed"] += 1
                 else:
                     gate.settle(reservation, actual_cost=spend.cost, units=Decimal(1))

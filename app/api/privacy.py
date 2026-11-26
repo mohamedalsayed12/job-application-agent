@@ -29,13 +29,15 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
   <li><b>Your email and password.</b> To let you log in. The password is stored only as an Argon2 hash, never as text.
   We email you a link to confirm your address and, if you ask, a link to reset your password; each works once,
   expires within 24 hours (1 hour for a reset), and only a hash of it is stored.</li>
-  <li><b>Your profile:</b> target roles, locations, experience level, travel distance, minimum salary, degrees, skills,
+  <li><b>Your profile:</b> target roles, locations, experience levels, travel distance, minimum salary, degrees, skills,
   certifications and licences. To find jobs that fit you and explain each match.</li>
   <li><b>Your CV, if you upload one.</b> Stored so you can download it again. When you upload it, or press "Fill my profile
   from my CV", its text is read to suggest entries for your profile form and your contact details. On the profile page the
   suggestions aren't stored. During sign-up they are kept with your CV only until you finish the last step, so each step
   can show them for you to check, and are then deleted: only what you save is kept. For jobs the fit report marks Apply or Consider, a tailored CV copy (PDF and DOCX) may also be stored
-  for you to download; it never replaces your uploaded CV.</li>
+  for you to download; it never replaces your uploaded CV. While a tailored copy is being written, each finished AI
+  step is saved so a crash does not repeat it. Those steps are deleted once the copy is finished or has failed, and
+  always with the copy itself.</li>
   <li><b>Your job matches:</b> which jobs fit your profile, with a score and the reasons.</li>
   <li><b>Apply answers:</b> legal name, phone, address, work authorisation, visa sponsorship need, links, notice
   period, start date, whether you'd relocate, and full-time or part-time and on-site, hybrid or remote. Used only to
@@ -68,10 +70,16 @@ below.</p>
 <p>The service uses Anthropic's Claude AI to summarise job adverts and to read your CV when you upload it or ask it to.
 So the text of your CV is sent to Anthropic at those times. When you ask for an outreach draft, Claude also receives the
 job text, a CV excerpt, and public research snippets about the contact; your login email and name are not sent.</p>
-<p>To judge which jobs suit you, the service also sends Anthropic your target roles, experience level, skills and degrees,
+<p>To judge which jobs suit you, the service also sends Anthropic your target roles, experience levels, skills and degrees,
 together with each job advert. Your email address, name, locations, salary and CV are not part of that.</p>
+<p>To search more widely, the service sends Anthropic each of your target roles on its own and asks which other job
+titles employers use for the same work. Nothing else about you is sent with it, and the answer is kept for anyone who
+wants the same role.</p>
+<p>When you press "Suggest roles and places" on your profile, the service sends Anthropic your skills, degrees, experience
+level, target roles, locations and travel distance, so it can suggest job titles and nearby towns to search. Your email
+address, name, salary and CV are not part of that.</p>
 <p>For each job that first check scores 3.0 or more, the service writes a fuller fit report. For that it sends Anthropic
-the job advert with your target roles, experience level, skills, degrees, salary wish, wanted locations and the text of
+the job advert with your target roles, experience levels, skills, degrees, salary wish, wanted locations and the text of
 your CV, if you uploaded one. Your email address and name are never sent.</p>
 <p>When that fit report says Apply or Consider, or when you ask for one, the service may tailor a CV for that job. It
 sends Anthropic the job advert and your CV text, so Claude can suggest edits that each quote the CV line they change.
@@ -87,10 +95,10 @@ diversity answers), so Claude can draft an answer, then sends the drafts back to
 check each one against your CV. Questions about health, disability, identity, age, convictions, immigration, pay and
 declarations are never sent: only you answer those. Drafts are outlined on the form for you to read, and this service
 never clicks Submit for you.</p>
-<p>Finding job listings runs through Apify (LinkedIn and Indeed) and SerpAPI (Google Jobs). The service sends only
-search queries (role and location), never your email, name or CV. Finding contacts and public profile research runs
-through Apify's LinkedIn people actors (not by this app fetching linkedin.com). Sending approved mail uses Google's
-Gmail API when you have connected Gmail.</p>
+<p>Finding job listings runs through Apify (LinkedIn and Indeed) and SerpAPI (Google Jobs and company-site search).
+The service sends only search queries (role and location), never your email, name or CV.</p>
+<p>Finding contacts and public profile research runs through Apify's LinkedIn people actors (not by this app fetching
+linkedin.com). Sending approved mail uses Google's Gmail API when you have connected Gmail.</p>
 <p>When you ask for interview intel on a target role, the service collects public posts through Apify and sends those
 short snippets to Anthropic so it can label success vs failure stories and draft a practice plan. Your email address,
 name and CV are not part of that.</p>
@@ -105,7 +113,8 @@ no tracking or advertising cookie to accept or refuse.</p>
 <div class="card">
 <h2>How long we keep it</h2>
 <p>Until you delete your account. Deleting it on <a href="/account">your account page</a> removes your profile, CV, preferences,
-apply answers, applications, extension token, matches, outreach contacts, drafts, send log and Gmail connection at once.</p>
+apply answers, applications, extension token, matches, tailored CVs and their unfinished steps, outreach contacts, drafts,
+send log and Gmail connection at once.</p>
 <p>Copies of the database are kept as backups. Only the latest two are kept, and none for more than 30 days, so your data has
 left every backup within 30 days of deletion.</p>
 </div>

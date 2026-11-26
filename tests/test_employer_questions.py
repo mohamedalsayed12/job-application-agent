@@ -1,4 +1,4 @@
-"""D73: the extra questions employers' forms ask, with the choices UK forms use, saved once and used to fill forms."""
+"""D74: the extra questions employers' forms ask, with the choices UK forms use, saved once and used to fill forms."""
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ from app.applicants.apply_answers import (
 )
 from app.applicants.cv_read import grounded_education
 from app.applicants.questions import EXTRA_QUESTIONS
-from app.applications.mapper import build_fill_plan, match_answer_key
-from app.applications.schema import FormField, FormSchema
+from app.applications.mapper import FormField, build_fill_plan, facts_from_profile, match_answer_key
 from app.models import PREFER_NOT, ApplicationAnswers
 from tests.test_cv_read import FOUND, _Claude
 from tests.test_onboarding import (  # noqa: F401  (fixtures)
@@ -56,10 +55,28 @@ def claude() -> _Claude:
     return _Claude({**FOUND, "contact": CONTACT, "education": EDUCATION})
 
 
+def _field(
+    name: str,
+    field_type: str,
+    required: bool = False,
+    options: list[str] | None = None,
+    *,
+    label: str | None = None,
+) -> FormField:
+    return FormField(
+        id=name,
+        label=label if label is not None else name.replace("_", " ").title(),
+        name=name,
+        type=field_type,  # type: ignore[arg-type]
+        required=required,
+        options=options or [],
+    )
+
+
 def _form(answers: ApplicationAnswers, *fields: FormField) -> list[tuple[str, str]]:
-    schema = FormSchema(ats_kind="unknown", source="stub", fields=list(fields))
-    plan = build_fill_plan(schema, answers_as_map(answers, email="sam@example.com"))
-    return [(step.name, step.value) for step in plan.steps]
+    by_id = {field.id: field for field in fields}
+    plan = build_fill_plan(list(fields), facts_from_profile(answers_as_map(answers, email="sam@example.com"), []))
+    return [(by_id[step.field_id].name, step.value) for step in plan.steps]
 
 
 def _row(**extra: str) -> ApplicationAnswers:
@@ -264,13 +281,13 @@ def test_extras_fill_in_the_forms_own_format() -> None:
     row = _row(graduation_date="2027-06", date_of_birth="2004-03-09", over_18="yes", heard_about_source="LinkedIn")
     assert _form(
         row,
-        FormField("Graduation date", "grad_text", "text", True),
-        FormField("Expected graduation", "grad_month", "month", True),
-        FormField("Graduation year", "grad_year", "select", True, ["2026", "2027", "2028"]),
-        FormField("Date of birth", "dob", "text", False),
-        FormField("Are you 18 or over?", "adult", "select", True, ["Yes", "No"]),
-        FormField("How did you hear about us?", "source", "select", True, ["Indeed", "LinkedIn", "Other"]),
-        FormField("Age group", "age", "select", False, ["16-24", "25-34", "Prefer not to say"]),
+        _field("grad_text", "text", True, label="Graduation date"),
+        _field("grad_month", "month", True, label="Expected graduation"),
+        _field("grad_year", "select", True, ["2026", "2027", "2028"], label="Graduation year"),
+        _field("dob", "text", False, label="Date of birth"),
+        _field("adult", "select", True, ["Yes", "No"], label="Are you 18 or over?"),
+        _field("source", "select", True, ["Indeed", "LinkedIn", "Other"], label="How did you hear about us?"),
+        _field("age", "select", False, ["16-24", "25-34", "Prefer not to say"], label="Age group"),
     ) == [
         ("grad_text", "06/2027"),
         ("grad_month", "2027-06"),
@@ -296,7 +313,7 @@ def test_extras_fill_in_the_forms_own_format() -> None:
 def test_a_census_ethnic_group_finds_the_forms_wording(saved: str, options: list[str], picked: str) -> None:
     row = _row()
     row.ethnicity = saved
-    assert _form(row, FormField("Ethnicity", "eth", "select", False, options)) == [("eth", picked)]
+    assert _form(row, _field("eth", "select", False, options, label="Ethnicity")) == [("eth", picked)]
 
 
 @pytest.mark.parametrize(
@@ -312,14 +329,15 @@ def test_census_wording_matches_older_wording(column: str, saved: str, options: 
     row = _row()
     setattr(row, column, saved)
     label = "Gender" if column == "gender" else "Sexual orientation"
-    assert _form(row, FormField(label, "f", "select", False, options)) == [("f", picked)]
+    assert _form(row, _field("f", "select", False, options, label=label)) == [("f", picked)]
 
 
 def test_a_choice_the_form_does_not_offer_is_left_for_the_person() -> None:
     row = _row(driving_licence="Full UK driving licence")
-    schema = FormSchema(ats_kind="unknown", source="stub", fields=[FormField("Driving licence", "dl", "select", True, ["Yes", "No"])])
-    plan = build_fill_plan(schema, answers_as_map(row, email="a@example.com"))
-    assert (plan.steps, plan.missing) == ([], ["Driving licence"])
+    field = _field("dl", "select", True, ["Yes", "No"], label="Driving licence")
+    plan = build_fill_plan([field], facts_from_profile(answers_as_map(row, email="a@example.com"), []))
+    assert plan.steps == []
+    assert [question.label for question in plan.missing] == ["Driving licence"]
 
 
 def test_nothing_saved_leaves_extras_blank_and_diversity_at_prefer_not(session: Session) -> None:

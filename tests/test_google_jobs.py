@@ -1,4 +1,4 @@
-"""Google Jobs searches through SerpAPI feed the job pipeline (D71)."""
+"""Google Jobs searches through SerpAPI feed the job pipeline (D73)."""
 
 from __future__ import annotations
 
@@ -15,15 +15,22 @@ from app.fetch.gateway import FetchGateway
 from app.google_jobs import collect_google_jobs
 from app.indeed import indeed_searches
 from app.linkedin import Search
-from app.models import BudgetPolicy, FetchOutcome, FetchRun, SpendLedger
+from app.models import ApplicantProfile, BudgetPolicy, ExperienceLevel, FetchOutcome, FetchRun, SpendLedger
 from tests.jobs import DAY_1, _google_jobs, _job, _public_resolve
 from tests.test_matching import _applicant
 
+_ENTRY = frozenset({ExperienceLevel.entry})
 _ENTRY_BACKEND = [
-    Search("Graduate Backend Developer", "Manchester"),
-    Search("Junior Backend Developer", "Manchester"),
-    Search("Entry Level Backend Developer", "Manchester"),
+    Search("Graduate Backend Developer", "Manchester", _ENTRY),
+    Search("Junior Backend Developer", "Manchester", _ENTRY),
+    Search("Entry Level Backend Developer", "Manchester", _ENTRY),
 ]
+
+
+def _with_entry_levels(session: Session, applicant_id) -> None:
+    session.add(ApplicantProfile(applicant_id=applicant_id, experience_levels=[ExperienceLevel.entry]))
+    session.flush()
+
 
 
 class _SerpApi:
@@ -99,6 +106,7 @@ async def _collect(
 async def test_a_search_calls_serpapi_and_stores_what_it_found(session: Session) -> None:
     _policy(session)
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     serp = _SerpApi([_google_jobs(1), _google_jobs(2, title="Python Developer")])
 
     report = await _collect(session, serp, applicant_id=applicant_id)
@@ -130,6 +138,7 @@ async def test_a_search_calls_serpapi_and_stores_what_it_found(session: Session)
 async def test_searches_run_once_a_day(session: Session) -> None:
     _policy(session)
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     await _collect(session, _SerpApi([_google_jobs(1)]), applicant_id=applicant_id)
 
     later = _SerpApi([_google_jobs(2)])
@@ -144,6 +153,7 @@ async def test_searches_run_once_a_day(session: Session) -> None:
 
 async def test_without_a_serpapi_key_nothing_is_searched(session: Session) -> None:
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     serp = _SerpApi([_google_jobs(1)])
     report = await _collect(session, serp, applicant_id=applicant_id, serpapi_api_key="")
     assert (report.stopped_by, serp.requests) == ("not_configured", [])
@@ -152,6 +162,7 @@ async def test_without_a_serpapi_key_nothing_is_searched(session: Session) -> No
 async def test_with_no_budget_left_no_search_is_started(session: Session) -> None:
     _policy(session, money_cap="0.001")
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     serp = _SerpApi([_google_jobs(1)])
     report = await _collect(session, serp, applicant_id=applicant_id)
     assert (report.stopped_by, serp.requests) == ("budget", [])
@@ -160,6 +171,7 @@ async def test_with_no_budget_left_no_search_is_started(session: Session) -> Non
 async def test_a_failed_search_is_not_charged_and_does_not_block_the_day(session: Session) -> None:
     _policy(session)
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     report = await _collect(session, _SerpApi([], status=500), applicant_id=applicant_id)
 
     assert report.failed == [f"{search.role} in Manchester: SerpAPI answered 500" for search in _ENTRY_BACKEND]
@@ -176,6 +188,7 @@ async def test_a_failed_search_is_not_charged_and_does_not_block_the_day(session
 async def test_an_api_error_message_is_recorded_without_a_fetch_run(session: Session) -> None:
     _policy(session)
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     report = await _collect(session, _SerpApi([], error="Invalid API key."), applicant_id=applicant_id)
     assert report.failed == [f"{search.role} in Manchester: Invalid API key." for search in _ENTRY_BACKEND]
     assert {(run.outcome, run.jobs_returned) for run in session.scalars(select(FetchRun))} == {(FetchOutcome.failed, 0)}
@@ -184,6 +197,7 @@ async def test_an_api_error_message_is_recorded_without_a_fetch_run(session: Ses
 async def test_empty_results_are_a_successful_empty_run(session: Session) -> None:
     _policy(session)
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     report = await _collect(session, _SerpApi([]), applicant_id=applicant_id)
     assert (report.searches, report.jobs, report.postings_new, report.failed) == (3, 0, 0, [])
     assert {(run.outcome, run.jobs_returned) for run in session.scalars(select(FetchRun))} == {
@@ -193,13 +207,15 @@ async def test_empty_results_are_a_successful_empty_run(session: Session) -> Non
 
 
 async def test_google_jobs_reuses_indeed_entry_title_searches(session: Session) -> None:
-    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     assert indeed_searches(session, None) == _ENTRY_BACKEND
 
 
 async def test_items_without_a_job_id_are_dropped(session: Session) -> None:
     _policy(session)
     applicant_id = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    _with_entry_levels(session, applicant_id)
     item = _google_jobs("keep-me")
     bare = {"title": "No id", "company_name": "Acme", "location": "Manchester"}
     report = await _collect(session, _SerpApi([item, bare]), applicant_id=applicant_id)

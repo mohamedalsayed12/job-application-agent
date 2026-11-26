@@ -14,7 +14,7 @@ from typing import Any
 from app.tailor.prompts import AI_PHRASE_REPLACEMENTS, PLURAL_REPLACEMENTS
 from app.tailor.resume import all_text, keyword_in_text
 
-KEYWORD_FIELDS = ("required_skills", "preferred_skills", "keywords")
+KEYWORD_FIELDS = ("required_skills", "preferred_skills", "keywords", "company_keywords")
 
 
 @dataclass(frozen=True, slots=True)

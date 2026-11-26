@@ -1,4 +1,4 @@
-"""Questions employers' forms asked that the saved answers don't cover, answered once and reused (D74)."""
+"""Questions employers' forms asked that the saved answers don't cover, answered once and reused (D75)."""
 
 from collections.abc import Sequence
 
@@ -7,8 +7,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "0029_form_questions"
-down_revision: str | None = "0028_extra_answers"
+revision: str = "0039_form_questions"
+down_revision: str | None = "0038_extra_answers"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

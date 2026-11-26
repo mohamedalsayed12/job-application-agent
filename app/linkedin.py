@@ -1,10 +1,11 @@
 """D54: LinkedIn is the one job source, read through the Black Falcon Data scraper on Apify.
 
-Once a day each person the AI works for gets one LinkedIn search per target role and
-location, for entry-level jobs posted in the last few days. Each search is one Apify run:
-the gateway allows 30 seconds a request, so the run is started, then checked until it
-ends, then its results are read. Every run is reserved against the budget first and
-settled at what Apify says it cost.
+Each person the AI works for gets one LinkedIn search per title and location: their target roles,
+then the titles related to them, up to `linkedin_titles_per_person`. The searches are for jobs at
+the levels they chose (D63). Each role and location is due on its own (D72), so a title added today
+is searched on the worker's next cycle. Each search is one Apify run: the gateway allows 30 seconds
+a request, so the run is started, then checked until it ends, then its results are read. Every run
+is reserved against the budget first and settled at what Apify says it cost.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -23,12 +24,14 @@ from urllib.parse import quote, urlencode
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.applicants.levels import Levels, chosen_or_inferred, linkedin_levels, saved_levels
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
 from app.fetch.apify import run_actor, settle_cost
 from app.fetch.due import due_searches, failed_run
 from app.fetch.gateway import FetchGateway
+from app.matching.related_titles import expand_titles, with_related
 from app.models import (
     ApplicantPreference,
     FetchOutcome,
@@ -38,19 +41,19 @@ from app.models import (
 )
 
 SOURCE = "linkedin"
-ENTRY_LEVEL = "2"  # LinkedIn f_E code for entry level; 3 is associate.
 
 
 @dataclass(frozen=True, slots=True)
 class Search:
     role: str
     location: str
+    levels: Levels
 
-    def url(self, *, posted_within_days: int, levels: str = ENTRY_LEVEL) -> str:
+    def url(self, *, posted_within_days: int) -> str:
         query = {
             "keywords": self.role,
             "location": self.location,
-            "f_E": ",".join(part.strip() for part in levels.split(",") if part.strip()) or ENTRY_LEVEL,
+            "f_E": linkedin_levels(self.levels),
             "f_TPR": f"r{posted_within_days * 86400}",
             "sortBy": "DD",
         }
@@ -67,18 +70,30 @@ class LinkedinReport:
     stopped_by: str | None = None
 
 
-def searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Search]:
-    """Every target role in every wanted location, once each however many people share it."""
+def searches(session: Session, applicant_ids: set[uuid.UUID] | None, *, per_person: int | None) -> list[Search]:
+    """Each person's titles in every wanted location at the person's levels (D63).
+
+    With `per_person`, the titles are their target roles and then the related titles, up to that many.
+    Without it, only their target roles.
+
+    People share a search when LinkedIn would be asked the same thing; it then carries all of their levels.
+    """
     query = select(ApplicantPreference)
     if applicant_ids is not None:
         query = query.where(ApplicantPreference.applicant_id.in_(applicant_ids))
-    found: dict[tuple[str, str], Search] = {}
+    saved = saved_levels(session)
+    found: dict[tuple[str, str, str], Search] = {}
     for preference in session.scalars(query):
-        for role in preference.target_roles:
+        levels = chosen_or_inferred(saved.get(preference.applicant_id, frozenset()), preference.target_roles)
+        titles = with_related(session, preference.target_roles)[:per_person] if per_person else preference.target_roles
+        for role in titles:
             for location in preference.locations or ["United Kingdom"]:
-                search = Search(role.strip(), location.strip())
-                found.setdefault((search.role.lower(), search.location.lower()), search)
-    return sorted(found.values(), key=lambda search: (search.role.lower(), search.location.lower()))
+                key = (role.strip().lower(), location.strip().lower(), linkedin_levels(levels))
+                earlier = found.get(key)
+                found[key] = (
+                    replace(earlier, levels=earlier.levels | levels) if earlier else Search(role.strip(), location.strip(), levels)
+                )
+    return [found[key] for key in sorted(found)]
 
 
 async def collect_linkedin(
@@ -95,16 +110,22 @@ async def collect_linkedin(
     if not token:
         report.stopped_by = "not_configured"
         return report
+    people = settings.ai_applicants()
     due = due_searches(
         session,
         SOURCE,
-        searches(session, settings.ai_applicants()),
+        searches(session, people, per_person=settings.linkedin_titles_per_person),
         now=now(),
         every_hours=settings.linkedin_every_hours,
         settings=settings,
     )
     if not due:
         return report
+    roles = select(ApplicantPreference.target_roles)
+    if people is not None:
+        roles = roles.where(ApplicantPreference.applicant_id.in_(people))
+    wanted = [role for row in session.scalars(roles) for role in row]
+    await expand_titles(session, wanted, gateway=gateway, settings=settings, persist=persist, now=now())
     gate = BudgetGate(session, clock=now)
     for item in due:
         search = item.search
@@ -131,7 +152,7 @@ async def collect_linkedin(
             token=token,
             actor=settings.linkedin_actor,
             body={
-                "startUrls": [{"url": search.url(posted_within_days=days, levels=settings.linkedin_levels)}],
+                "startUrls": [{"url": search.url(posted_within_days=days)}],
                 "maxResults": settings.linkedin_max_results,
                 "includeDetails": True,
                 "enrichDetails": True,
