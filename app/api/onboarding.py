@@ -441,13 +441,13 @@ async def details_save(request: Request, applicant: Applicant = Depends(require_
 # Step 4: the jobs they want (the same fields as the profile page).
 
 
-def _preferences_body(request: Request, fields: ProfileFields) -> str:
+def _preferences_body(request: Request, fields: ProfileFields, db: Session) -> str:
     return f"""
 <h1>Jobs you want</h1>
 <p class="muted">We search for jobs with these and score each one against your CV.</p>
 <form method="post" action="/onboarding/preferences" id="profile-form">
   {csrf_field(request)}
-  {preference_sections(fields, first_number=1)}
+  {preference_sections(fields, first_number=1, db=db)}
   <div class="wizard-foot">{_back(OnboardingStep.preferences)}<button type="submit" class="primary">Continue</button></div>
 </form>
 {SKILL_SEARCH_SCRIPT}
@@ -461,10 +461,10 @@ def preferences_step(request: Request, applicant: Applicant = Depends(require_lo
     fields = saved_fields(db, applicant)
     notice = None
     if (found := _suggestions(db, applicant)) is not None:
-        fields, filled = fill_from_cv(fields, found)
+        fields, filled, _offer = fill_from_cv(fields, found)
         if filled:
             notice = f"From your CV we filled in {', '.join(filled)}. Check them and change anything that's wrong."
-    return _wizard_page(request, applicant, OnboardingStep.preferences, _preferences_body(request, fields), notice=notice)
+    return _wizard_page(request, applicant, OnboardingStep.preferences, _preferences_body(request, fields, db), notice=notice)
 
 
 @router.post("/onboarding/preferences", response_model=None, dependencies=_CSRF)
@@ -481,7 +481,7 @@ def preferences_save(
     except PreferenceValidationError as exc:
         db.rollback()
         return _wizard_page(
-            request, applicant, OnboardingStep.preferences, _preferences_body(request, fields), error=str(exc), status_code=400
+            request, applicant, OnboardingStep.preferences, _preferences_body(request, fields, db), error=str(exc), status_code=400
         )
     next_url = _advance(applicant, OnboardingStep.preferences)
     db.commit()

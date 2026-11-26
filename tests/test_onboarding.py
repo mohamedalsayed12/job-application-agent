@@ -217,7 +217,8 @@ async def test_the_whole_wizard_saves_every_step_then_opens_the_matches(client: 
     assert details.headers["location"] == "/onboarding/preferences"
 
     preferences_page = await client.get("/onboarding/preferences")
-    assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in preferences_page.text
+    assert 'name="cv_roles" value="Junior Python Developer"/>' in preferences_page.text
+    assert 'name="cv_roles" value="Graduate Software Engineer"/>' in preferences_page.text
     assert "From your CV we filled in" in preferences_page.text
     preferences = await client.post("/onboarding/preferences", data=PREFERENCES)
     assert preferences.headers["location"] == "/onboarding/availability"

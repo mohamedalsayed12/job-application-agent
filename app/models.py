@@ -109,6 +109,7 @@ class SpendKind(StrEnum):
     ai_interview_analyse = "ai_interview_analyse"
     ai_interview_plan = "ai_interview_plan"
     ai_interview_tailor = "ai_interview_tailor"
+    ai_related_titles = "ai_related_titles"
     # Spend recorded under kinds that no longer exist. Kept so the monthly cap still counts it.
     retired = "retired"
 
@@ -1109,4 +1110,17 @@ class InterviewJobPack(_UuidPk, Base):
     cost_amount: Mapped[Decimal] = mapped_column(Numeric(), server_default=text("0"))
     ready_at: Mapped[datetime] = mapped_column(TZ)
     expires_at: Mapped[datetime] = mapped_column(TZ)
+    created_at: Mapped[datetime] = _created()
+
+
+class RelatedTitle(Base):
+    """Job titles employers use for the same work as one target title, kept for everyone who wants it."""
+
+    __tablename__ = "related_title"
+
+    # The title in lower case with any leading level word removed, so "Graduate Software Engineer" shares a row.
+    title_key: Mapped[str] = mapped_column(Text(), primary_key=True)
+    titles: Mapped[list[str]] = mapped_column(ARRAY(Text()))
+    model: Mapped[str] = mapped_column(Text())
+    prompt_version: Mapped[str] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
