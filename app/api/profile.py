@@ -239,8 +239,7 @@ def preference_sections(fields: ProfileFields, *, first_number: int) -> str:
     <label>Degrees <span class="hint">one per line, including one you're studying for, optional</span>
       <textarea name="degrees" rows="2" placeholder="BSc Business Management">{html.escape(fields.degrees)}</textarea>
     </label>
-    <p class="hint">We hide jobs whose advert requires a degree subject you don't list, such as a Computer Science
-    or STEM degree. Adverts that also accept equivalent experience still show.</p>
+    <p class="hint">Used when scoring how well a job fits you.</p>
   </section>
 
   <section class="card">
