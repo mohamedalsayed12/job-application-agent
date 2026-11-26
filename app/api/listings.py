@@ -1,7 +1,6 @@
 """Stage 13: the logged-in person's matched jobs, best first (T36, T37, D42).
 
-Reading this page never calls the AI. A summary is written when someone opens a job, so a job
-nobody has opened yet shows its description here.
+Reading this page never calls the AI. Each listing shows the job description.
 """
 
 from __future__ import annotations
@@ -29,8 +28,6 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.due import never_searched
 from app.linkedin import searches
-from app.matching import semantic
-from app.matching.semantic import Embedder, closeness, vectors_for
 from app.models import (
     Applicant,
     ApplicantJobMatch,
@@ -40,10 +37,8 @@ from app.models import (
     JobFreshness,
     JobLink,
     JobPosting,
-    JobSummary,
     JobVerification,
     ListingVerdict,
-    SummaryStatus,
     TailoredCv,
     auto_tailored,
 )
@@ -72,7 +67,6 @@ _AI_AREAS = (("cv_match", "your profile"), ("role_alignment", "your target roles
 _STYLE = """<style>
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.75rem; align-items: end; margin-bottom: 1.25rem; }
 .filters label { margin: 0; }
-.filters .search { grid-column: 1 / -1; }
 .salary-note { font-size: 0.85rem; color: var(--muted); }
 .job-head { display: flex; justify-content: space-between; gap: 1rem; }
 .job h2 { margin: 0; font-size: 1.1rem; }
@@ -111,7 +105,6 @@ class Listing:
     company: str
     places: str
     salary: str
-    summary: str | None
     description: str | None
     score: Decimal
     reasons: dict[str, Any]
@@ -230,13 +223,8 @@ def load_listings(
     role: str = "",
     sort: Sort = "newest",
     show: Show = "roles",
-    search: str = "",
-    embedder: Embedder | None = None,
 ) -> tuple[list[Listing], int]:
-    """One page of open matched jobs, best score (or newest) first, and how many there are in all.
-
-    With a search, the same jobs come closest in meaning first (D48).
-    """
+    """One page of open matched jobs, best score (or newest) first, and how many there are in all."""
     query = (
         select(ApplicantJobMatch, Job)
         .join(Job, Job.id == ApplicantJobMatch.job_id)
@@ -251,21 +239,8 @@ def load_listings(
     first = (Job.first_seen_at.desc(), _AI_SCORE_SQL.desc()) if sort == "newest" else (_AI_SCORE_SQL.desc(), ApplicantJobMatch.score.desc(), Job.first_seen_at.desc())
     query = query.order_by(*first, Job.company_name, Job.title, Job.id)
     start = (page_number - 1) * PAGE_SIZE
-    if search and embedder is not None:
-        everything = session.execute(query).all()
-        close = closeness(search, vectors_for(session, [job for _, job in everything], embedder), embedder)
-        # sorted() keeps the score order among equally close jobs.
-        rows = sorted(everything, key=lambda row: -close[row[1].id])[start : start + PAGE_SIZE]
-    else:
-        rows = session.execute(query.limit(PAGE_SIZE).offset(start)).all()
+    rows = session.execute(query.limit(PAGE_SIZE).offset(start)).all()
     jobs = [job for _, job in rows]
-    summaries = dict(
-        session.execute(
-            select(JobSummary.job_id, JobSummary.summary_text).where(
-                JobSummary.job_id.in_([job.id for job in jobs]), JobSummary.status == SummaryStatus.accepted
-            )
-        ).all()
-    )
     sources = _sources(session, jobs) if jobs else {}
     tailored = {
         row.job_id: row
@@ -284,7 +259,6 @@ def load_listings(
             company=job.company_name,
             places=place_names(job),
             salary=salary_text(job),
-            summary=summaries.get(job.id),
             description=job.description,
             score=match.score,
             reasons=match.reasons,
@@ -455,13 +429,10 @@ def _plain_list(title: str, items: list[str]) -> str:
 
 
 def render_listing(item: Listing, csrf: str = "", *, tailor_ok: bool = True) -> str:
-    if item.summary:
-        about = f"<p>{_e(item.summary)}</p><p><small>AI summary, checked against the posting.</small></p>"
-    else:
-        about = (
-            f'<details><summary>Description</summary><div class="full">'
-            f"{_e(item.description or 'No description was given.')}</div></details>"
-        )
+    about = (
+        f'<details><summary>Description</summary><div class="full">'
+        f"{_e(item.description or 'No description was given.')}</div></details>"
+    )
     seen = item.last_seen_at.strftime("%d %b %Y") if item.last_seen_at else "not recorded"
     shown = ai_score(item.reasons)
     if shown is None:
@@ -515,14 +486,12 @@ def _option(value: str, label: str, selected: str) -> str:
     return f'<option value="{_e(value)}"{" selected" if value == selected else ""}>{_e(label)}</option>'
 
 
-def _order(search: str, sort: Sort) -> str:
-    if search:
-        return f"Closest in meaning to &ldquo;{_e(search)}&rdquo; first. <a href=\"/listings\">Clear search</a>"
+def _order(sort: Sort) -> str:
     return f"Sorted by {'newest' if sort == 'newest' else 'AI score'}."
 
 
 def _filters(
-    preference: ApplicantPreference | None, *, role: str, everywhere: bool, sort: Sort, show: Show, search: str = ""
+    preference: ApplicantPreference | None, *, role: str, everywhere: bool, sort: Sort, show: Show
 ) -> str:
     roles = "".join(_option(name, name, role) for name in (preference.target_roles if preference else []))
     if preference and preference.salary_amount is not None:
@@ -533,8 +502,6 @@ def _filters(
         salary = "No minimum salary set"
     return f"""
 <form class="filters" method="get" action="/listings">
-  <label class="search">Search your matches<input type="search" name="q" value="{_e(search)}" maxlength="200"
-    placeholder="e.g. python backend fintech, data work with SQL"></label>
   <label>Show<select name="show" onchange="this.form.submit()">
     {_option("roles", "My target roles", show)}{_option("skills", "Roles my skills fit", show)}{_option("all", "Both", show)}
   </select></label>
@@ -550,15 +517,15 @@ def _filters(
 </form>"""
 
 
-def _nav(page_number: int, total: int, *, everywhere: bool, role: str, sort: Sort, show: Show, search: str = "") -> str:
+def _nav(page_number: int, total: int, *, everywhere: bool, role: str, sort: Sort, show: Show) -> str:
     pages = max(1, -(-total // PAGE_SIZE))
     previous = (
-        f'<a href="/listings?{_query(page=page_number - 1, everywhere=int(everywhere), role=role, sort=sort, show=show, q=search)}">← Previous</a>'
+        f'<a href="/listings?{_query(page=page_number - 1, everywhere=int(everywhere), role=role, sort=sort, show=show)}">← Previous</a>'
         if page_number > 1
         else "<span></span>"
     )
     following = (
-        f'<a href="/listings?{_query(page=page_number + 1, everywhere=int(everywhere), role=role, sort=sort, show=show, q=search)}">Next →</a>'
+        f'<a href="/listings?{_query(page=page_number + 1, everywhere=int(everywhere), role=role, sort=sort, show=show)}">Next →</a>'
         if page_number < pages
         else "<span></span>"
     )
@@ -599,9 +566,7 @@ def listings_page(
     # None reads the person's saved choice (migration 0042); a query value updates it.
     sort: Sort | None = Query(None),
     show: Show = Query("roles"),
-    q: str = Query("", max_length=200),
 ) -> HTMLResponse:
-    search = " ".join(q.split())
     preference = db.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant.id))
     if sort is None:
         sort = preference.listing_sort if preference else "newest"
@@ -616,11 +581,7 @@ def listings_page(
         role=role,
         sort=sort,
         show=show,
-        search=search,
-        embedder=semantic.local_embedder() if search else None,
     )
-    if search:
-        db.commit()
     where = "in every location" if everywhere else "in your locations"
     pending = never_searched(db, searches(db, {applicant.id}, per_person=None)) if preference is not None else 0
     searching = (
@@ -645,11 +606,11 @@ def listings_page(
         f"""{_STYLE}
 <div class="page-head"><div>
   <h1>Your matches</h1>
-  <p class="muted">{total} open jobs {where}. {_order(search, sort)}</p>
+  <p class="muted">{total} open jobs {where}. {_order(sort)}</p>
 </div></div>
-{_filters(preference, role=role, everywhere=everywhere, sort=sort, show=show, search=search)}
+{_filters(preference, role=role, everywhere=everywhere, sort=sort, show=show)}
 {searching}{hint}
 {body}
-{_nav(page_number, total, everywhere=everywhere, role=role, sort=sort, show=show, search=search)}""",
+{_nav(page_number, total, everywhere=everywhere, role=role, sort=sort, show=show)}""",
         header=applicant_bar(request, "matches"),
     )

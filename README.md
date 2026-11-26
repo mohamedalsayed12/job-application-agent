@@ -234,15 +234,11 @@ shows its status (Needs your input, Ready to fill, Filled — review before subm
 Saving a profile matches that person straight away.
 The rules are in `MVP.md` decision D42.
 
-## Job summaries
+## Job pages
 
 Job pages at `/jobs/{id}` open only for jobs in the person's listings; any other job shows a
-"not available" page. The first time someone opens a job page, the app asks Claude for a short
-summary of the posting. Code rejects it if it contains a number, date or name the posting doesn't,
-and saves one per job for everyone. Summaries spend from the AI budget, so nothing is called until
-a monthly `money_cap` is set in `budget_policy` and `ANTHROPIC_API_KEY` is in `.env`. Until then,
-and whenever a summary is rejected, the page shows the description. The rules are in `MVP.md`
-decision D41.
+"not available" page. Listings and job pages show the job description (AI job summaries and the
+listings search-by-meaning box are no longer used). Fit reports for strong matches remain (D52).
 
 ## Skills
 

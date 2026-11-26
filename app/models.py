@@ -660,7 +660,7 @@ class ApplicantJobMatch(_UuidPk, Base):
 
 
 class JobSummary(_UuidPk, Base):
-    """D41: one per job, written on first view. Only an accepted summary is ever shown."""
+    """Legacy D41 job summary row. No longer written or shown; table kept without a drop migration."""
 
     __tablename__ = "job_summary"
     __table_args__ = (
@@ -709,7 +709,7 @@ class JobVerification(_UuidPk, Base):
 
 
 class JobEmbedding(Base):
-    """D48: a job's meaning as a vector, for the search box on the listings page."""
+    """Legacy D48 listings-search vector. No longer written or read; table kept without a drop migration."""
 
     __tablename__ = "job_embedding"
 

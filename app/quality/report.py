@@ -21,7 +21,6 @@ from app.models import (
     JobFreshness,
     JobLink,
     JobPosting,
-    JobSummary,
     JobVerification,
     SpendLedger,
 )
@@ -361,10 +360,6 @@ def _relevance_section(session: Session) -> RelevanceSection:
 
 
 def _summaries_section(session: Session) -> SummariesSection:
-    counts = dict(session.execute(select(JobSummary.status, func.count()).group_by(JobSummary.status)).all())
-    return SummariesSection(
-        accepted=counts.get("accepted", 0),
-        rejected=counts.get("rejected", 0),
-        in_progress=counts.get("pending", 0),
-        cost=Decimal(session.scalar(select(func.coalesce(func.sum(JobSummary.cost_amount), 0)))),
-    )
+    """Job summaries (D41) are no longer written; keep the section for the admin page shape."""
+    del session
+    return SummariesSection(accepted=0, rejected=0, in_progress=0, cost=Decimal(0))

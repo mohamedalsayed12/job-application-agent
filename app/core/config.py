@@ -178,11 +178,8 @@ class Settings(BaseSettings):
     # D64: about 0.5k tokens in and 0.4k out on Haiku 5.5, well under £0.001; this is a ceiling.
     ai_ideas_unit_price: Decimal = Decimal("0.002")
 
-    # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
+    # Blank model = provider default. Also used as the outreach draft model fallback.
     ai_summary_model: str = ""
-    ai_summary_max_output_tokens: int = 300
-    ai_summary_per_item_token_cap: int = 8000
-    ai_summary_daily_token_cap: int = 300000
 
     # D43: reading a CV to fill the profile form. Blank model = provider default.
     ai_cv_model: str = ""

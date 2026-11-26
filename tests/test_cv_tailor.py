@@ -506,7 +506,6 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
     monkeypatch.setenv("SESSION_SECRET", "s" * 40)
     monkeypatch.setenv("ADMIN_KEY", "test-admin-key-not-default")
-    # Job pages would otherwise write a summary with a real key.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.setenv("AI_APPLICANT_IDS", "")
     get_settings.cache_clear()

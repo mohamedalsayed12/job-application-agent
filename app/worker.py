@@ -23,14 +23,12 @@ from app.google_jobs import GoogleJobsReport, collect_google_jobs
 from app.indeed import IndeedReport, collect_indeed
 from app.interview.service import process_requests
 from app.linkedin import LinkedinReport, collect_linkedin
-from app.matching import semantic
 from app.matching.judge import judge_jobs
 from app.matching.match import match_all
 from app.matching.report import write_reports
 from app.outreach.auto import prepare_outreach
 from app.quality import store_results
 from app.skills.taxonomy import map_job_skills
-from app.summaries.generate import summarise_matches
 from app.tailor.run import write_tailored_cvs
 from app.verify import verify_jobs
 
@@ -91,11 +89,6 @@ async def run_cycle(
         save()
     # D60: tailor a CV for every listed job scoring 3.0 or more; budget waits leave packages pending.
     await write_tailored_cvs(session, gateway=gateway, settings=get_settings(), persist=save)
-    # Every cycle, not only after collection: a backlog stopped by the day's token cap carries on tomorrow.
-    await summarise_matches(session, gateway=gateway, settings=settings, persist=save)
-    # After summaries, so a job's vector is made from its summary when it has one (D48).
-    semantic.embed_matches(session, semantic.local_embedder())
-    save()
     await process_requests(session, gateway=gateway, settings=get_settings(), persist=save)
     save()
     # D77: people and outreach drafts for applications the person marked submitted.
