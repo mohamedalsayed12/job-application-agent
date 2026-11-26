@@ -47,6 +47,10 @@ def test_common_uk_no_sponsor_phrases_are_detected(phrase: str) -> None:
         "You will need a UK driving licence.",
         "Sponsorship of team events is encouraged.",
         "Must have strong communication skills.",
+        "Must have the right to work from home two days a week.",
+        "Right to work from home is essential for this hybrid role.",
+        "You must be authorised to work on secure client sites.",
+        "You must be eligible to work weekends.",
     ],
 )
 def test_unrelated_wording_is_not_a_sponsorship_refusal(phrase: str) -> None:
@@ -58,6 +62,13 @@ def test_licensed_sponsor_is_only_a_weak_non_binding_signal() -> None:
     assert may_sponsor_signal(text)
     assert not refuses_sponsorship(text)
     assert not job_excluded_for_sponsorship(needs_visa_sponsorship=True, description=text)
+
+
+def test_unable_to_sponsor_is_not_a_may_sponsor_signal() -> None:
+    text = f"{ADVERT} We are unable to sponsor visas for this role."
+    assert refuses_sponsorship(text)
+    assert not may_sponsor_signal(text)
+    assert may_sponsor_signal(f"{ADVERT} We are able to sponsor visas.")
 
 
 def test_exclusion_only_when_the_applicant_needs_sponsorship() -> None:
