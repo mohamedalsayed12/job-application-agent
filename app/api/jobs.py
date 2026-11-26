@@ -22,11 +22,20 @@ from app.applications.ui import apply_step
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
-from app.models import Applicant, Job, JobFreshness, TailoredCv, TailoredCvStatus
+from app.models import (
+    Applicant,
+    ApplicantJobMatch,
+    Job,
+    JobFreshness,
+    JobReport,
+    TailoredCv,
+    TailoredCvStatus,
+    auto_tailored,
+)
 from app.summaries.generate import Shown, summary_for_view
 from app.tailor.render import render_letter_docx, render_letter_pdf
-from app.tailor.run import request_tailored_cv, tailor_allowed
-from app.tailor.ui import tailor_section
+from app.tailor.run import request_tailored_cv, tailor_allowed, tailors_outside_locations
+from app.tailor.ui import changes_block, cover_letter_text, listing_tailor
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -86,9 +95,31 @@ async def job_page(
     settings = get_settings()
     shown = await summary_for_view(db, job, gateway=gateway, settings=settings, persist=db.commit)
     csrf = csrf_field(request)
-    tailored = tailor_section(
-        job_id, _tailored_for(db, applicant.id, job_id), csrf, allowed=tailor_allowed(settings, applicant.id)
+    # Only a listed job in the person's tailoring scope is tailored without a click, so no other job says "queued".
+    listed = db.execute(
+        select(JobReport.verdict, ApplicantJobMatch.location_fit)
+        .join(
+            ApplicantJobMatch,
+            (ApplicantJobMatch.applicant_id == JobReport.applicant_id) & (ApplicantJobMatch.job_id == JobReport.job_id),
+        )
+        .where(JobReport.applicant_id == applicant.id, JobReport.job_id == job_id)
+    ).first()
+    auto = listed is not None and auto_tailored(
+        listed.verdict,
+        location_fit=listed.location_fit,
+        outside_locations=tailors_outside_locations(db, applicant.id),
     )
+    row = _tailored_for(db, applicant.id, job_id)
+    tailored = listing_tailor(
+        job_id,
+        row,
+        csrf,
+        auto=auto,
+        allowed=tailor_allowed(settings, applicant.id),
+    )
+    if row is not None and row.status == TailoredCvStatus.ready.value:
+        tailored += changes_block(row.ats_report or {})
+    tailored += cover_letter_text(row)
     step = apply_step(job, application_for_job(db, applicant.id, job_id), csrf)
     return page(job.title, _body(job, shown, tailored, step), header=applicant_bar(request, "matches"), narrow=True)
 

@@ -6,14 +6,24 @@ from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.linkedin import Search, collect_linkedin, searches
-from app.models import BudgetPolicy, FetchOutcome, FetchRun, SpendLedger
+from app.models import (
+    ApplicantProfile,
+    BudgetPolicy,
+    ExperienceLevel,
+    FetchOutcome,
+    FetchRun,
+    SpendLedger,
+)
 from tests.jobs import DAY_1, _Apify, _job, _li
 from tests.test_matching import _applicant
+
+_ANY = frozenset({ExperienceLevel.entry, ExperienceLevel.mid, ExperienceLevel.senior})
 
 
 def _policy(session: Session, money_cap: str = "1") -> None:
@@ -31,7 +41,7 @@ async def _collect(session: Session, apify: _Apify, *, at=DAY_1, **settings: obj
         return await collect_linkedin(
             session,
             gateway=gateway,
-            settings=Settings(**{"apify_api_token": "test-token", **settings}),  # type: ignore[arg-type]
+            settings=Settings(**{"apify_api_token": "test-token", "anthropic_api_key": "", **settings}),  # type: ignore[arg-type]
             persist=session.flush,
             now=lambda: at,
             sleep=lambda seconds: None,
@@ -44,16 +54,50 @@ def test_each_role_is_searched_in_each_location_once_however_many_people_want_it
     first = _applicant(session, roles=["Backend Developer", "Python Developer"], locations=["Manchester"])
     _applicant(session, roles=["backend developer"], locations=["manchester", "Leeds"])
 
-    assert searches(session, None) == [
-        Search("backend developer", "Leeds"),
-        Search("Backend Developer", "Manchester"),
-        Search("Python Developer", "Manchester"),
+    assert searches(session, None, per_person=10) == [
+        Search("backend developer", "Leeds", _ANY),
+        Search("Backend Developer", "Manchester", _ANY),
+        Search("Python Developer", "Manchester", _ANY),
     ]
-    assert searches(session, {first}) == [Search("Backend Developer", "Manchester"), Search("Python Developer", "Manchester")]
+    assert searches(session, {first}, per_person=10) == [
+        Search("Backend Developer", "Manchester", _ANY),
+        Search("Python Developer", "Manchester", _ANY),
+    ]
 
 
-def test_a_search_asks_linkedin_for_recent_entry_level_jobs_newest_first() -> None:
-    url = Search("Junior Python Developer", "Manchester").url(posted_within_days=3)
+@pytest.mark.parametrize(
+    ("levels", "codes"),
+    [
+        ([ExperienceLevel.entry], "2"),
+        ([ExperienceLevel.internship, ExperienceLevel.entry], "1,2"),
+        ([ExperienceLevel.entry, ExperienceLevel.mid], "2,3,4"),
+        ([ExperienceLevel.mid, ExperienceLevel.senior], "3,4,5"),
+        ([ExperienceLevel.senior], "4,5"),
+    ],
+)
+def test_d63_a_search_asks_for_the_levels_the_person_chose(session: Session, levels: list[ExperienceLevel], codes: str) -> None:
+    applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=applicant, experience_levels=levels))
+    session.flush()
+    [search] = searches(session, None, per_person=10)
+    assert parse_qs(urlsplit(search.url(posted_within_days=3)).query)["f_E"] == [codes]
+
+
+def test_d63_people_share_a_search_only_when_linkedin_would_be_asked_the_same(session: Session) -> None:
+    for levels in (["entry"], ["entry"], ["senior"], ["mid"], ["mid", "senior"]):
+        applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+        session.add(ApplicantProfile(applicant_id=applicant, experience_levels=levels))
+    session.flush()
+    assert searches(session, None, per_person=10) == [
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.entry})),
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.mid})),
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.mid, ExperienceLevel.senior})),
+        Search("Backend Developer", "Manchester", frozenset({ExperienceLevel.senior})),
+    ]
+
+
+def test_a_search_asks_linkedin_for_recent_jobs_at_its_levels_newest_first() -> None:
+    url = Search("Junior Python Developer", "Manchester", frozenset({ExperienceLevel.entry})).url(posted_within_days=3)
     query = parse_qs(urlsplit(url).query)
     assert url.startswith("https://www.linkedin.com/jobs/search/?")
     assert query == {
@@ -79,8 +123,7 @@ async def test_a_search_starts_a_run_waits_for_it_and_stores_what_it_found(sessi
     assert "test-token" not in str(started.url)
     body = apify.bodies()[0]
     assert body["maxResults"] == 100
-    # D72: entry level and associate, and two weeks back the first time a search runs.
-    assert "f_E=2%2C3" in body["startUrls"][0]["url"]
+    assert "f_E=2%2C3%2C4%2C5" in body["startUrls"][0]["url"]
     assert f"f_TPR=r{14 * 86400}" in body["startUrls"][0]["url"]
     assert apify.checks == 2
     assert _job(session, 2).title == "Python Developer"
@@ -100,25 +143,8 @@ async def test_searches_run_once_a_day(session: Session) -> None:
     again = _Apify([_li(2)])
     report = await _collect(session, again, at=DAY_1 + timedelta(hours=24))
     assert report.searches == 1
-    # A repeat search only needs the last few days: the first one already went two weeks back.
     assert f"f_TPR=r{3 * 86400}" in again.bodies()[0]["startUrls"][0]["url"]
 
-
-async def test_d72_a_title_added_today_is_searched_on_the_next_cycle_without_repeating_the_others(
-    session: Session,
-) -> None:
-    _policy(session)
-    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    await _collect(session, _Apify([_li(1)]))
-
-    _applicant(session, roles=["Backend Developer", "Data Analyst"], locations=["Manchester"])
-    later = _Apify([_li(2)])
-    report = await _collect(session, later, at=DAY_1 + timedelta(minutes=5))
-
-    assert report.searches == 1
-    assert "keywords=Data%20Analyst" in later.bodies()[0]["startUrls"][0]["url"]
-    keys = {run.search_key for run in session.scalars(select(FetchRun))}
-    assert keys == {"backend developer|manchester", "data analyst|manchester"}
 
 
 async def test_without_an_apify_token_nothing_is_searched(session: Session) -> None:
@@ -147,22 +173,6 @@ async def test_a_failed_run_is_recorded_and_its_cost_still_counted(session: Sess
     assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal("0.0080")
 
 
-async def test_a_start_that_never_gets_a_run_id_is_free_and_is_tried_again_after_an_hour(session: Session) -> None:
-    _policy(session)
-    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    report = await _collect(session, _Apify([_li(1)], start=False))
-
-    assert report.failed == ["Backend Developer in Manchester: did not start"]
-    assert [run.outcome for run in session.scalars(select(FetchRun))] == [FetchOutcome.failed]
-    assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal("0")
-
-    # D72: not every cycle, so a broken token is not hammered, and not a whole day later either.
-    soon = _Apify([_li(1)])
-    assert (await _collect(session, soon, at=DAY_1 + timedelta(minutes=30))).searches == 0
-    assert soon.requests == []
-    assert (await _collect(session, _Apify([_li(1)]), at=DAY_1 + timedelta(hours=1))).searches == 1
-
-
 async def test_a_run_that_does_not_finish_in_time_is_stopped(session: Session) -> None:
     _policy(session)
     _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
@@ -172,3 +182,35 @@ async def test_a_run_that_does_not_finish_in_time_is_stopped(session: Session) -
 
     assert report.failed == ["Backend Developer in Manchester: did not finish in time"]
     assert apify.requests[-1].url.path.endswith("/abort")
+
+
+async def test_d72_a_title_added_today_is_searched_on_the_next_cycle_without_repeating_the_others(
+    session: Session,
+) -> None:
+    _policy(session)
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    await _collect(session, _Apify([_li(1)]))
+
+    _applicant(session, roles=["Backend Developer", "Data Analyst"], locations=["Manchester"])
+    later = _Apify([_li(2)])
+    report = await _collect(session, later, at=DAY_1 + timedelta(minutes=5))
+
+    assert report.searches == 1
+    assert "keywords=Data%20Analyst" in later.bodies()[0]["startUrls"][0]["url"]
+    keys = {run.search_key for run in session.scalars(select(FetchRun))}
+    assert keys == {"backend developer|manchester", "data analyst|manchester"}
+
+
+async def test_a_start_that_never_gets_a_run_id_is_free_and_is_tried_again_after_an_hour(session: Session) -> None:
+    _policy(session)
+    _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    report = await _collect(session, _Apify([_li(1)], start=False))
+
+    assert report.failed == ["Backend Developer in Manchester: did not start"]
+    assert [run.outcome for run in session.scalars(select(FetchRun))] == [FetchOutcome.failed]
+    assert session.scalars(select(SpendLedger)).one().actual_cost == Decimal("0")
+
+    soon = _Apify([_li(1)])
+    assert (await _collect(session, soon, at=DAY_1 + timedelta(minutes=30))).searches == 0
+    assert soon.requests == []
+    assert (await _collect(session, _Apify([_li(1)]), at=DAY_1 + timedelta(hours=1))).searches == 1

@@ -1,4 +1,4 @@
-"""Find a contact's work email (D76).
+"""Find a contact's work email (D77).
 
 Without a provider key the address is guessed from the employer's domain in the most common company format
 (first.last@) and marked as a guess, with the other usual formats beside it. With HUNTER_API_KEY set, Hunter's

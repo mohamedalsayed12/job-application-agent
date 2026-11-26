@@ -192,7 +192,7 @@ async function fillTab(tabId, applicationId, { auto = false } = {}) {
       // Leave the application open so the person can try again on the same page.
       return { ok: false, error: result?.error || "Fill failed" };
     }
-    const missing = plan.missing || [];
+    const missing = (plan.missing || []).map((m) => (typeof m === "string" ? m : m.label || m));
     if (missing.length === 0) await reportStatus(applicationId, "filled_awaiting_review");
     await chrome.action.setBadgeText({ text: missing.length ? String(missing.length) : "✓", tabId });
     if (result.filled > 0 || missing.length) {

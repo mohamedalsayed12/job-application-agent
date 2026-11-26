@@ -1,59 +1,266 @@
-"""D72: related job titles offered as tick-boxes, and the note that new titles are being searched."""
+"""Related job titles: asked of the AI once per title, kept for everyone, searched and matched."""
 
 from __future__ import annotations
 
+import json
+import re
+import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.fetch.due import search_key
-from app.linkedin import SOURCE, Search
-from app.matching.related_titles import cleaned, related_to, title_key
-from app.models import FetchOutcome, FetchRun, RelatedTitle, SpendKind, SpendLedger
+from app.applicants.service import create_applicant, parse_preference_input
+from app.core.config import Settings
+from app.fetch.gateway import FetchGateway
+from app.linkedin import searches
+from app.matching.match import TitleMeaning, match_all, worth_judging
+from app.matching.related_titles import cleaned, expand_titles, related_to, title_key, with_related
+from app.matching.titles import NOT_ENTRY_TITLE
+from app.models import ApplicantJobMatch, ApplicantProfile, BudgetPolicy, ExperienceLevel, RelatedTitle, SpendKind, SpendLedger
 from tests.auth import sign_up
-from tests.test_cv_read import _Claude, _money, claude, client  # noqa: F401  (fixtures)
+from tests.conftest import WordEmbedder
+from tests.jobs import DAY_1, _job, _li, _public_resolve, _store
+from tests.test_cv_read import claude, client  # noqa: F401
+from tests.test_cv_read import _money as _http_money
 
-PASSWORD = "correct horse battery staple"
-TITLES = {"titles": ["Backend Developer", "Senior Python Developer", "Python Developer", "Software Engineer", "Web Intern"]}
+RELATED = [
+    "Backend Developer",
+    "Python Developer",
+    "Java Developer",
+    "Senior Python Developer",
+    "Engineering Manager",
+    "Software Engineering Intern",
+    "Apprentice Developer",
+    "Graduate Developer",
+    "Full Stack Developer",
+    "Frontend Developer",
+    "Web Developer",
+    "Application Developer",
+    "Platform Engineer",
+    "DevOps Engineer",
+    "Mobile Developer",
+]
+NOW = datetime(2026, 11, 18, 9, 0, tzinfo=UTC)
+
+
+class _Claude:
+    def __init__(self, titles: list[str] | None = None, *, status: int = 200) -> None:
+        self.titles, self.status, self.asked = titles if titles is not None else RELATED, status, []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        sent = json.loads(request.content)["messages"][0]["content"]
+        self.asked.append(json.loads(re.search(r"\{.*\}", sent).group())["title"])
+        if self.status != 200:
+            return httpx.Response(self.status, json={"error": {"type": "overloaded_error"}})
+        return httpx.Response(
+            200,
+            json={
+                "model": "claude-haiku-5-5",
+                "content": [{"type": "text", "text": json.dumps({"titles": self.titles})}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 300, "output_tokens": 100},
+            },
+        )
+
+
+def _settings() -> Settings:
+    return Settings(ai_provider="anthropic", anthropic_api_key="test-key")  # type: ignore[call-arg]
+
+
+async def _expand(session: Session, claude: _Claude, roles: list[str]) -> int:
+    gateway = FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset({"api.anthropic.com"}),
+        resolve=_public_resolve,
+        transport=httpx.MockTransport(claude),
+    )
+    try:
+        return await expand_titles(session, roles, gateway=gateway, settings=_settings(), persist=session.flush, now=NOW)
+    finally:
+        await gateway.aclose()
+
+
+def _money(session: Session, cap: str = "5") -> None:
+    session.add(
+        BudgetPolicy(
+            provider="*", period="month", money_cap=Decimal(cap), request_cap=None, currency="GBP",
+            effective_from=NOW - timedelta(days=1), effective_to=None,
+        )
+    )
+    session.flush()
+
+
+def _applicant(session: Session, roles: list[str], locations: list[str], levels: list[ExperienceLevel]) -> uuid.UUID:
+    preference = parse_preference_input(target_roles=roles, locations=locations)
+    applicant = create_applicant(session, email=f"{uuid.uuid4()}@example.com", preference=preference)
+    session.flush()
+    session.add(ApplicantProfile(applicant_id=applicant.id, experience_levels=levels))
+    session.flush()
+    return applicant.id
+
+
+def _spend(session: Session) -> list[SpendLedger]:
+    return list(session.scalars(select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_related_titles)))
+
 
 
 def test_a_title_is_asked_about_without_its_level_words() -> None:
     assert title_key("  Graduate   Software Engineer ") == "software engineer"
     assert title_key("Junior Entry-Level Python Developer") == "python developer"
+    assert title_key("Senior Software Engineer") == "software engineer"
+
+
+
+def test_level_internship_and_apprenticeship_titles_are_dropped() -> None:
+    titles = cleaned({"titles": [" Python  Developer", "python developer", "Software Engineer", *RELATED]}, "software engineer")
+    assert titles == [
+        "Python Developer",
+        "Backend Developer",
+        "Java Developer",
+        "Full Stack Developer",
+        "Frontend Developer",
+        "Web Developer",
+        "Application Developer",
+        "Platform Engineer",
+        "DevOps Engineer",
+    ]
+
+
+async def test_a_title_is_asked_about_once_and_the_answer_is_kept_for_everyone(session: Session) -> None:
+    _money(session)
+    claude = _Claude()
+
+    assert await _expand(session, claude, ["Graduate Software Engineer", "software engineer"]) == 1
+    assert await _expand(session, claude, ["Junior Software Engineer"]) == 0
+
+    assert claude.asked == ["software engineer"]
+    [spend] = _spend(session)
+    assert spend.actual_cost == Decimal("0.0010")
+    assert with_related(session, ["Junior Software Engineer"])[:3] == ["Junior Software Engineer", "Backend Developer", "Python Developer"]
+
+
+async def test_with_no_money_left_only_the_typed_titles_are_used(session: Session) -> None:
+    _money(session, "0")
+    claude = _Claude()
+
+    assert await _expand(session, claude, ["Software Engineer"]) == 0
+
+    assert claude.asked == []
+    assert with_related(session, ["Software Engineer"]) == ["Software Engineer"]
+
+
+async def test_a_failed_call_keeps_nothing_and_is_asked_again_next_time(session: Session) -> None:
+    _money(session)
+
+    assert await _expand(session, _Claude(status=500), ["Software Engineer"]) == 0
+    assert session.scalar(select(RelatedTitle)) is None
+    assert all(row.actual_cost in (None, Decimal(0)) for row in _spend(session))
+
+    assert await _expand(session, _Claude(), ["Software Engineer"]) == 1
+
+
+async def test_searches_are_capped_at_ten_titles_a_place_and_keep_the_persons_levels(session: Session) -> None:
+    _money(session)
+    roles = ["Graduate Software Engineer", "Junior Data Analyst"]
+    _applicant(session, roles, ["Manchester", "Leeds"], [ExperienceLevel.entry])
+    await _expand(session, _Claude(), roles)
+
+    found = searches(session, None, per_person=10)
+
+    related = cleaned({"titles": RELATED}, "software engineer")
+    for place in ("Manchester", "Leeds"):
+        titles = {search.role for search in found if search.location == place}
+        assert titles == {*roles, *related[:8]}
+        assert not any(NOT_ENTRY_TITLE.search(title) for title in titles)
+    assert {parse_qs(urlsplit(search.url(posted_within_days=3)).query)["f_E"][0] for search in found} == {"2"}
+    assert searches(session, None, per_person=None) == [search for search in found if search.role in roles]
+
+
+def test_a_job_sharing_a_word_with_a_related_title_is_worth_judging() -> None:
+    entry, meaning = frozenset({ExperienceLevel.entry}), TitleMeaning(WordEmbedder)
+    assert not worth_judging("Junior QA Tester", ["Graduate Software Engineer"], entry, meaning)
+    assert worth_judging("Junior QA Tester", ["Graduate Software Engineer", "QA Tester"], entry, meaning)
+
+
+async def test_a_job_with_a_related_title_is_matched(session: Session) -> None:
+    _money(session)
+    roles = ["Graduate Software Engineer"]
+    applicant = _applicant(session, roles, ["Manchester"], [ExperienceLevel.entry])
+    _store(session, [_li(1, title="Junior Python Developer"), _li(2, title="Junior Account Executive")])
+    assert match_all(session, now=DAY_1 + timedelta(hours=1)).matches == 0
+
+    await _expand(session, _Claude(), roles)
+    match_all(session, now=DAY_1 + timedelta(hours=1))
+
+    [row] = session.scalars(select(ApplicantJobMatch).where(ApplicantJobMatch.applicant_id == applicant))
+    assert row.job_id == _job(session, 1).id
+    assert (row.reasons["role"]["target"], row.reasons["role"]["kind"]) == ("Python Developer", "exact")
+
+
+@pytest.mark.parametrize("roles", [["Software Engineer"], []])
+def test_with_related_keeps_the_typed_titles_first(session: Session, roles: list[str]) -> None:
+    assert with_related(session, roles) == roles
 
 
 def test_level_and_training_titles_and_the_title_itself_are_dropped() -> None:
-    assert cleaned(TITLES, "Software Engineer") == ["Backend Developer", "Python Developer"]
+    assert cleaned(
+        {"titles": ["Backend Developer", "Senior Python Developer", "Python Developer", "Software Engineer", "Web Intern"]},
+        "Software Engineer",
+    ) == ["Backend Developer", "Python Developer"]
+
+
+def test_related_titles_come_back_in_the_order_of_the_roles(session: Session) -> None:
+    session.add_all(
+        [
+            RelatedTitle(title_key="data analyst", titles=["BI Analyst"], model="m", prompt_version="related-titles-v1"),
+            RelatedTitle(
+                title_key="software engineer",
+                titles=["Backend Developer", "Data Analyst"],
+                model="m",
+                prompt_version="related-titles-v1",
+            ),
+        ]
+    )
+    session.flush()
+
+    assert related_to(session, ["Software Engineer", "Junior Data Analyst"]) == ["Backend Developer", "BI Analyst"]
+
+
+PASSWORD = "correct horse battery staple"
 
 
 async def test_the_picker_gets_related_titles_and_each_title_is_paid_for_once(
-    client: httpx.AsyncClient, session: Session, claude: _Claude  # noqa: F811
+    client: httpx.AsyncClient, session: Session, claude  # noqa: F811
 ) -> None:
-    claude.payload = TITLES
-    _money(session, "5")
+    _http_money(session, "5")
     assert (await sign_up(client, "titles@example.com", PASSWORD)).status_code == 303
 
     first = await client.post("/profile/titles/related", data={"title": ["Graduate Software Engineer"]})
 
     assert first.status_code == 200
-    assert first.json() == ["Backend Developer", "Python Developer"]
-    # Only the title goes to the AI, never the profile.
-    assert '"title": "software engineer"' in claude.sent
+    # test_cv_read._Claude answers TITLE_DATA with Backend Developer + Senior Python Developer; level words drop.
+    assert first.json() == ["Backend Developer"]
+    assert claude.titles_asked == 1
     assert session.scalars(select(RelatedTitle.title_key)).all() == ["software engineer"]
 
-    again = await client.post("/profile/titles/related", data={"title": ["Junior Software Engineer", "Backend Developer"]})
+    again = await client.post(
+        "/profile/titles/related", data={"title": ["Junior Software Engineer", "Backend Developer"]}
+    )
 
-    # "software engineer" is already stored; "backend developer" is new. A title already picked is not offered.
-    assert claude.calls == 2
-    assert again.json() == ["Python Developer"]
+    # "software engineer" is already stored; "backend developer" is new. The mock's senior title is dropped.
+    assert claude.titles_asked == 2
+    assert again.json() == []
     spent = session.scalars(select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_related_titles)).all()
     assert len(spent) == 2
 
 
 async def test_with_no_money_left_nothing_is_asked_and_nothing_breaks(
-    client: httpx.AsyncClient, session: Session, claude: _Claude  # noqa: F811
+    client: httpx.AsyncClient, session: Session, claude  # noqa: F811
 ) -> None:
     assert (await sign_up(client, "broke@example.com", PASSWORD)).status_code == 303
 
@@ -66,23 +273,19 @@ async def test_the_picker_needs_a_login(client: httpx.AsyncClient) -> None:  # n
     assert (await client.post("/profile/titles/related", data={"title": ["Data Analyst"]})).status_code == 303
 
 
-def test_related_titles_come_back_in_the_order_of_the_roles(session: Session) -> None:
-    session.add_all(
-        [
-            RelatedTitle(title_key="data analyst", titles=["BI Analyst"], model="m", prompt_version="related-titles-v1"),
-            RelatedTitle(title_key="software engineer", titles=["Backend Developer", "Data Analyst"], model="m", prompt_version="related-titles-v1"),
-        ]
-    )
-    session.flush()
-
-    assert related_to(session, ["Software Engineer", "Junior Data Analyst"]) == ["Backend Developer", "BI Analyst"]
-
-
 async def test_the_matches_page_says_when_new_titles_are_still_being_searched(
     client: httpx.AsyncClient, session: Session  # noqa: F811
 ) -> None:
+    from app.fetch.due import search_key
+    from app.linkedin import SOURCE, Search
+    from app.models import FetchOutcome, FetchRun
+
     assert (await sign_up(client, "wait@example.com", PASSWORD)).status_code == 303
-    profile = {"target_roles": "Data Analyst\nBI Analyst", "locations": "Leeds", "experience_level": "entry"}
+    profile = {
+        "target_roles": "Data Analyst\nBI Analyst",
+        "locations": "Leeds",
+        "experience_levels": ["entry"],
+    }
     assert (await client.post("/profile", data=profile)).status_code == 303
 
     assert "We are running 2 searches for your job titles and locations now" in (await client.get("/listings")).text
@@ -97,7 +300,7 @@ async def test_the_matches_page_says_when_new_titles_are_still_being_searched(
                 request_count=1,
                 started_at=now - timedelta(minutes=2),
                 finished_at=now,
-                search_key=search_key(Search(role, "Leeds")),
+                search_key=search_key(Search(role, "Leeds", frozenset({ExperienceLevel.entry}))),
             )
         )
     session.flush()

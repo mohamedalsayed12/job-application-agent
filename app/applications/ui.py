@@ -44,6 +44,8 @@ def apply_step(job: Job, application: Application | None, csrf: str) -> str:
     detail = f'<a href="/applications/{html.escape(str(application.id))}">Your application</a>'
     if application.status == ApplicationStatus.filled_awaiting_review.value:
         note = "The form is filled in your browser. Check the answers, press Submit on the employer's page yourself, then tell us here."
+    elif application.status == ApplicationStatus.needs_input.value and application.missing_fields:
+        note = "Answer these before the form can be filled: " + "; ".join(application.missing_fields)
     else:
         note = "This application is in progress."
     return f"<p>{html.escape(note)} {detail}</p><p>{posting}{applied_button(csrf, job.id)}</p>"

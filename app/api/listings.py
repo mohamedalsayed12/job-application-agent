@@ -25,6 +25,7 @@ from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field
 from app.cleaning.linking import is_primary
+from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.due import never_searched
 from app.linkedin import searches
@@ -42,8 +43,10 @@ from app.models import (
     JobSummary,
     SummaryStatus,
     TailoredCv,
+    auto_tailored,
 )
-from app.tailor.ui import tailored_block
+from app.tailor.run import tailor_allowed, tailors_outside_locations
+from app.tailor.ui import listing_tailor
 
 router = APIRouter(prefix="/listings", tags=["listings"])
 
@@ -116,6 +119,8 @@ class Listing:
     source: str
     apply_url: str
     tailored: TailoredCv | None = None
+    # Tailored with no click: an Apply or Consider verdict in the person's tailoring scope.
+    auto_tailor: bool = False
 
 
 def salary_text(job: Job) -> str:
@@ -227,6 +232,7 @@ def load_listings(
             )
         )
     } if jobs else {}
+    outside = tailors_outside_locations(session, applicant_id)
     listings = [
         Listing(
             job_id=job.id,
@@ -245,6 +251,11 @@ def load_listings(
             source=sources[job.id],
             apply_url=job.apply_url,
             tailored=tailored.get(job.id),
+            auto_tailor=auto_tailored(
+                (match.reasons.get("report") or {}).get("verdict"),
+                location_fit=match.location_fit,
+                outside_locations=outside,
+            ),
         )
         for match, job in rows
     ]
@@ -399,7 +410,7 @@ def _plain_list(title: str, items: list[str]) -> str:
     return f'<p>{_e(title)}</p><ul class="plain">' + "".join(f"<li>{_e(item)}</li>" for item in items) + "</ul>"
 
 
-def render_listing(item: Listing, csrf: str = "") -> str:
+def render_listing(item: Listing, csrf: str = "", *, tailor_ok: bool = True) -> str:
     if item.summary:
         about = f"<p>{_e(item.summary)}</p><p><small>AI summary, checked against the posting.</small></p>"
     else:
@@ -440,7 +451,7 @@ def render_listing(item: Listing, csrf: str = "") -> str:
 {_skills(item)}
 <details class="why"><summary>Why this score?</summary>{_reasons(item)}</details>
 {_fit_report(item)}
-{tailored_block(item.job_id, item.tailored, verdict=(item.reasons.get("report") or {}).get("verdict"))}
+{listing_tailor(item.job_id, item.tailored, csrf, auto=item.auto_tailor, allowed=tailor_ok)}
 <div class="job-foot">
   <span>Last confirmed open {_e(seen)}. Source: {_e(item.source)}.</span>
   {_apply(item.apply_url, item.job_id, csrf)}
@@ -561,7 +572,7 @@ def listings_page(
         db.commit()
     preference = db.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant.id))
     where = "in every location" if everywhere else "in your locations"
-    pending = never_searched(db, searches(db, {applicant.id})) if preference is not None else 0
+    pending = never_searched(db, searches(db, {applicant.id}, per_person=None)) if preference is not None else 0
     searching = (
         # `pending` counts searches (each title in each location), not titles.
         f'<div class="card discover">We are running {pending} {"search" if pending == 1 else "searches"} '
@@ -573,7 +584,8 @@ def listings_page(
     hint = _discover_hint(db, applicant, preference, everywhere=everywhere, sort=sort) if show == "roles" else ""
     if listings:
         csrf = csrf_field(request)
-        body = "".join(render_listing(item, csrf) for item in listings)
+        tailor_ok = tailor_allowed(get_settings(), applicant.id)
+        body = "".join(render_listing(item, csrf, tailor_ok=tailor_ok) for item in listings)
     elif preference is None:
         body = '<div class="card"><p>Fill in <a href="/profile">your profile</a> and we\'ll find your matches.</p></div>'
     else:

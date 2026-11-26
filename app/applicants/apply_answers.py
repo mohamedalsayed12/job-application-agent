@@ -19,6 +19,8 @@ MAX_FIELD = 200
 MAX_EXTRA_TEXT = 500
 _MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
 MAX_URL = 500
+MAX_ANSWER = 2000
+MAX_SAVED = 40
 
 # Choices the forms offer. A stored answer outside these lists (typed before they existed) still shows.
 NOTICE_PERIODS = ("Available now", "1 week", "2 weeks", "1 month", "2 months", "3 months or more")
@@ -26,7 +28,7 @@ WORK_HOURS = ("Full-time", "Part-time", "Either")
 WORK_LOCATIONS = ("On-site", "Hybrid", "Remote", "Any")
 
 # Diversity monitoring questions UK employers ask. Each list ends with prefer not to say, the default.
-# Gender, ethnic group, sexual orientation and religion follow the 2021 Census wording (D73); school type
+# Gender, ethnic group, sexual orientation and religion follow the 2021 Census wording (D74); school type
 # and parental occupation follow the Social Mobility Commission's.
 GENDERS = ("Female", "Male", "Non-binary", "I describe myself another way", PREFER_NOT)
 # The Census's 19 groups, each as "Broad group: group" so a form offering only the broad groups still matches.
@@ -93,6 +95,34 @@ DIVERSITY_CHOICES: dict[str, tuple[str, ...]] = {
     ),
 }
 _DEMO_KEYS = tuple(DIVERSITY_CHOICES)
+# shortcut: two different questions that keep the same content words share a key, upgrade when a saved answer fills the wrong question.
+_STOP_WORDS = frozenset(
+    "a about an and are as at be briefly by can could describe do does explain for from has have how i if in is it "
+    "kindly me my of on or our please s tell the this to us we what when where which who will with would you your".split()
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SavedQuestion:
+    question: str
+    answer: str
+
+
+def question_key(text: str) -> str:
+    """The same question in other words, punctuation, or order gets the same key."""
+    words = re.findall(r"[a-z0-9]+", text.casefold())
+    content = sorted({word for word in words if word not in _STOP_WORDS})
+    return " ".join(content or words)
+
+
+def _saved(raw: object) -> list[SavedQuestion]:
+    if not isinstance(raw, list):
+        return []
+    found: list[SavedQuestion] = []
+    for item in raw:
+        if isinstance(item, dict) and isinstance(item.get("question"), str) and isinstance(item.get("answer"), str):
+            found.append(SavedQuestion(item["question"], item["answer"]))
+    return found
 
 
 class AnswersRefused(Exception):
@@ -133,7 +163,7 @@ class AnswersInput:
     caring_responsibilities: str = PREFER_NOT
     school_type: str = PREFER_NOT
     parental_occupation: str = PREFER_NOT
-    # The extra questions (D73) as form text, keyed by question: "yes"/"no", ISO dates, "YYYY-MM" months.
+    # The extra questions (D74) as form text, keyed by question: "yes"/"no", ISO dates, "YYYY-MM" months.
     extra: dict[str, str] = field(default_factory=dict)
 
 
@@ -266,6 +296,46 @@ def input_from_row(row: ApplicationAnswers | None) -> AnswersInput:
     return AnswersInput(**values, extra=extra)
 
 
+def _answers_row(session: Session, applicant_id: uuid.UUID) -> ApplicationAnswers:
+    row = load_answers(session, applicant_id)
+    if row is not None:
+        return row
+    row = ApplicationAnswers(applicant_id=applicant_id)
+    session.add(row)
+    return row
+
+
+def saved_pairs(row: ApplicationAnswers | None) -> list[SavedQuestion]:
+    if row is None:
+        return []
+    return _saved(row.saved_questions)
+
+
+def save_question_answers(
+    session: Session, applicant_id: uuid.UUID, pairs: list[SavedQuestion]
+) -> ApplicationAnswers:
+    """Remember free-text answers so a later form that asks the same thing can reuse them."""
+    if not pairs:
+        raise AnswersRefused("Write an answer for each question.")
+    if len(pairs) > MAX_SAVED:
+        raise AnswersRefused("Too many saved answers.")
+    row = _answers_row(session, applicant_id)
+    kept: dict[str, SavedQuestion] = {}
+    for item in _saved(row.saved_questions):
+        kept[question_key(item.question)] = item
+    for item in pairs:
+        cleaned_question, cleaned_answer = item.question.strip(), item.answer.strip()
+        if not cleaned_question or not cleaned_answer:
+            raise AnswersRefused("Write an answer for each question.")
+        if len(cleaned_question) > 500 or len(cleaned_answer) > MAX_ANSWER:
+            raise AnswersRefused(f"Keep each question under 500 characters and each answer under {MAX_ANSWER}.")
+        kept[question_key(cleaned_question)] = SavedQuestion(cleaned_question, cleaned_answer)
+    if len(kept) > MAX_SAVED:
+        raise AnswersRefused("Too many saved answers.")
+    row.saved_questions = [{"question": item.question, "answer": item.answer} for item in kept.values()]
+    session.flush()
+    return row
+
 
 def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -> ApplicationAnswers:
     """Checks every answer before changing anything, so a refused form leaves the saved row alone."""
@@ -295,10 +365,7 @@ def save_answers(session: Session, applicant_id: uuid.UUID, raw: AnswersInput) -
         **{key: _demo(getattr(raw, key)) for key in _DEMO_KEYS},
         "extra": _extra(raw.extra),
     }
-    row = load_answers(session, applicant_id)
-    if row is None:
-        row = ApplicationAnswers(applicant_id=applicant_id)
-        session.add(row)
+    row = _answers_row(session, applicant_id)
     for name, value in checked.items():
         setattr(row, name, value)
     session.flush()
