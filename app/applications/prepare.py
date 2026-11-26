@@ -1,8 +1,9 @@
-"""Create or refresh an Application for fill-from-answers (D70 prepare; D66 fill)."""
+"""Create or refresh an Application for fill-from-answers (D70 prepare; D66/D75 fill)."""
 
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -79,21 +80,34 @@ def prepare_application(
     return row
 
 
-def store_fill_outcome(application: Application, plan: FillPlan | None, *, reopen: bool = False) -> None:
-    """Write status, missing questions, and the fill plan together. A submitted application stays submitted."""
+def store_fill_outcome(
+    application: Application,
+    plan: FillPlan | None,
+    *,
+    reopen: bool = False,
+    drafts: dict[str, Any] | None = None,
+) -> None:
+    """Write status, missing questions, and the fill plan together. A submitted application stays submitted.
+
+    Steps stay on the plan even when some questions are still open (D75): the extension fills what it
+    can, outlines AI drafts, and the person answers the rest.
+    """
     if application.status == ApplicationStatus.submitted.value:
         return
+    previous_drafts = ((application.fill_plan_json or {}).get("drafts") or {}) if drafts is None else drafts
     if plan is not None and plan.missing:
-        shown = FillPlan(steps=[], missing=plan.missing, attach=plan.attach)
         application.status = ApplicationStatus.needs_input.value
         application.missing_fields = [question.label for question in plan.missing]
-        application.fill_plan_json = shown.to_json()
+        application.fill_plan_json = {**plan.to_json(), "drafts": previous_drafts}
         application.error = None
         return
     if reopen or application.status != ApplicationStatus.filled_awaiting_review.value:
         application.status = ApplicationStatus.ready_to_fill.value
     application.missing_fields = []
-    application.fill_plan_json = plan.to_json() if plan is not None else None
+    if plan is not None:
+        application.fill_plan_json = {**plan.to_json(), "drafts": previous_drafts}
+    else:
+        application.fill_plan_json = None
     application.error = None
 
 
@@ -109,6 +123,7 @@ def set_application_status(
     if status is ApplicationStatus.filled_awaiting_review and application.status not in (
         ApplicationStatus.ready_to_fill.value,
         ApplicationStatus.filled_awaiting_review.value,
+        ApplicationStatus.needs_input.value,
     ):
         raise PrepareRefused("This application is not ready to mark as filled.")
     application.status = status.value
