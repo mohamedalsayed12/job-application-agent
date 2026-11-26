@@ -35,6 +35,7 @@ from app.models import (
     SpendKind,
     SpendLedger,
 )
+from tests.auth import sign_up
 from tests.jobs import DAY_1, _Apify
 from tests.test_matching import _applicant
 
@@ -396,7 +397,7 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def test_profile_card_and_ready_pack_page(client: httpx.AsyncClient, session: Session) -> None:
-    assert (await client.post("/register", data={"email": "intel@example.com", "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, "intel@example.com", PASSWORD)).status_code == 303
     assert (await client.post("/profile", data=PROFILE)).status_code == 303
     profile = await client.get("/profile")
     assert "Interview intel" in profile.text

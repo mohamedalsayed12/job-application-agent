@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,6 +36,27 @@ from app.outreach.patterns import intent_for, load_patterns
 
 PROMPT_VERSION = "outreach-draft-v1"
 LINKEDIN_MAX = 300
+LINKEDIN_ASK = 270  # The model overshoots a little, so it is asked for less than LinkedIn allows.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def fit_note(body: str) -> str:
+    """A note LinkedIn will take, made of whole sentences: the opening and the closing ask stay,
+    and middle sentences go in, in order, while they fit."""
+    if len(body) <= LINKEDIN_MAX:
+        return body
+    sentences = [s.strip() for s in _SENTENCE_SPLIT.split(body.strip()) if s.strip()]
+    if len(sentences) < 2 or len(sentences[0]) > LINKEDIN_MAX:
+        return body[:LINKEDIN_MAX].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    first, last = sentences[0], sentences[-1]
+    ending = [last] if len(f"{first} {last}") <= LINKEDIN_MAX else []
+    middle: list[str] = []
+    for sentence in sentences[1:-1]:
+        if len(" ".join([first, *middle, sentence, *ending])) <= LINKEDIN_MAX:
+            middle.append(sentence)
+    return " ".join([first, *middle, *ending])
+
+
 GMAIL_WORD_SOFT = 120
 
 SYSTEM = """You write a short, human outreach message for a job seeker.
@@ -55,7 +77,7 @@ SCHEMA = {
     "properties": {
         "subject": {"type": "string"},
         "body": {"type": "string"},
-        "pattern_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+        "pattern_ids": {"type": "array", "items": {"type": "string"}},  # Structured output refuses maxItems.
     },
 }
 
@@ -122,19 +144,19 @@ async def draft_for_contact(
     persist()
 
     model = settings.resolved_ai_outreach_model()
-    call = await _call(
-        gateway,
-        settings=settings,
-        model=model,
-        job=job,
-        contact=contact,
-        about=about,
-        quotes=quotes,
-        cv=cv,
-        patterns=[{"id": p.id, "label": p.label, "rule": p.rule} for p in patterns],
-        channel=channel,
-        intent=intent_for(contact.role_kind),
-    )
+    ask = {
+        "settings": settings,
+        "model": model,
+        "job": job,
+        "contact": contact,
+        "about": about,
+        "quotes": quotes,
+        "cv": cv,
+        "patterns": [{"id": p.id, "label": p.label, "rule": p.rule} for p in patterns],
+        "channel": channel,
+        "intent": intent_for(contact.role_kind),
+    }
+    call = await _call(gateway, **ask)
     if isinstance(call, AiCallFailure):
         gate.settle(reservation, consumed=False)
         persist()
@@ -142,12 +164,18 @@ async def draft_for_contact(
 
     subject = str(call.payload.get("subject") or "").strip() or None
     body = str(call.payload.get("body") or "").strip()
-    pattern_ids = [str(p) for p in call.payload.get("pattern_ids") or [] if str(p) in {x.id for x in patterns}]
+    pattern_ids = [str(p) for p in call.payload.get("pattern_ids") or [] if str(p) in {x.id for x in patterns}][:6]
     if not pattern_ids:
         pattern_ids = [p.id for p in patterns[:3]]
     if channel == OutreachChannel.linkedin_note:
         subject = None
-        body = body[:LINKEDIN_MAX]
+        if len(body) > LINKEDIN_MAX:
+            # Cutting a note loses the role or the ask, so the model gets one go at a shorter one first.
+            shorter = await _call(gateway, **ask, too_long=body)
+            cost += cost
+            if not isinstance(shorter, AiCallFailure):
+                body = str(shorter.payload.get("body") or "").strip() or body
+        body = fit_note(body)
     allowed = [str(q.get("text") or "") for q in quotes if isinstance(q, dict)] + ([about] if about else [])
     problems = outreach_unsupported(body, sources=sources, allowed_quotes=allowed, contact_name=contact.full_name)
     if subject:
@@ -246,11 +274,12 @@ async def _call(
     patterns: list[dict[str, str]],
     channel: OutreachChannel,
     intent: str,
+    too_long: str | None = None,
 ) -> AiCallResponse | AiCallFailure:
     key = settings.anthropic_api_key.strip()
     if not key:
         return AiCallFailure(reason="not_configured")
-    limit = f"LinkedIn note under {LINKEDIN_MAX} characters" if channel == OutreachChannel.linkedin_note else f"Email under about {GMAIL_WORD_SOFT} words with a subject"
+    limit = f"LinkedIn note under {LINKEDIN_ASK} characters" if channel == OutreachChannel.linkedin_note else f"Email under about {GMAIL_WORD_SOFT} words with a subject"
     user = {
         "channel": channel.value,
         "intent": intent,
@@ -280,7 +309,13 @@ async def _call(
                     f"<CONTACT_DATA>\n{json.dumps(user['contact'], ensure_ascii=False)}\n</CONTACT_DATA>\n"
                     f"<CV_DATA>\n{json.dumps({'cv': user['cv_excerpt']}, ensure_ascii=False)}\n</CV_DATA>\n"
                     f"<PATTERN_DATA>\n{json.dumps({'channel': channel.value, 'intent': intent, 'length_rule': limit, 'patterns': patterns}, ensure_ascii=False)}\n</PATTERN_DATA>\n"
-                    "Write the outreach message."
+                    + (
+                        f"<PREVIOUS_NOTE>\n{json.dumps({'note': too_long}, ensure_ascii=False)}\n</PREVIOUS_NOTE>\n"
+                        f"That note is {len(too_long)} characters and LinkedIn allows {LINKEDIN_MAX}. Rewrite it under "
+                        f"{LINKEDIN_ASK - 30} characters: keep the job title and company, one CV fact and the ask."
+                        if too_long
+                        else "Write the outreach message."
+                    )
                 ),
             }
         ],

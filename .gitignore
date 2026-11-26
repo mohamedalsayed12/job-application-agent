@@ -36,3 +36,7 @@ htmlcov/
 
 # uv
 uv.lock.bak
+
+# Env backups (can hold live API keys)
+.env.bak*
+.env.*.bak

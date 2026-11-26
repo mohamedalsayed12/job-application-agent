@@ -104,7 +104,6 @@ _ENTRY_SCORE = Decimal("0.1")
 _LOCATION_SCORE = Decimal("0.3")
 _SALARY_MEETS_SCORE = Decimal("0.1")
 _SKILLS_SCORE = Decimal("0.3")
-MAX_SCORE = _ROLE_SCORE["exact"] + _ENTRY_SCORE + _LOCATION_SCORE + _SALARY_MEETS_SCORE + _SKILLS_SCORE
 _MISSING_LICENCE_COST = Decimal("0.2")
 _SCORE_PLACES = Decimal("0.001")
 # D44: a job outside the target roles matches when the applicant has most of the skills its advert names.
@@ -364,7 +363,7 @@ def _same_city(want: Wanted, place: dict[str, Any]) -> bool:
 
 
 def score(fit: Fit) -> Decimal:
-    """Up to MAX_SCORE, 1.3. Skills add up to 0.3 by the share of the advert's skills the applicant has."""
+    """Up to 1.3. Skills add up to 0.3 by the share of the advert's skills the applicant has."""
     total = _ROLE_SCORE[fit.role.kind]
     if fit.role.level in (ENTRY_IN_TITLE, ENTRY_IN_ADVERT, ENTRY_BY_AI, _INTERNSHIP_LEVEL):
         total += _ENTRY_SCORE
@@ -516,7 +515,9 @@ def _match_applicant(
             internship=level == ExperienceLevel.internship,
             entry=level == ExperienceLevel.entry,
         ) or match_by_skills(facts.title, facts.description, skill_fit, level=level)
-        if role is None and verdict is not None:
+        # D46 holds for the AI too: someone after entry-level roles sees an AI match only when the AI
+        # read the advert as entry level, not "unclear", "mid" or "senior".
+        if role is None and verdict is not None and (level != ExperienceLevel.entry or verdict.level == "entry"):
             role = RoleMatch(target="", kind=RoleKind.ai, level=ENTRY_BY_AI if verdict.level == "entry" else None)
         if role is None or degree_shuts_out(subjects[facts.job_id], degrees):
             continue

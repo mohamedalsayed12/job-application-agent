@@ -14,6 +14,7 @@ from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest
 
 APIFY_API = "https://api.apify.com/v2"
 WAIT_SECONDS = 25
+MIN_CHARGE_USD = Decimal("0.05")  # Apify refuses a run whose maxTotalChargeUsd is lower.
 _FINISHED = frozenset({"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"})
 _HAS_RESULTS = frozenset({"SUCCEEDED", "TIMED-OUT"})
 
@@ -33,7 +34,7 @@ class ApifyRun:
     async def run(self, actor: str, body: dict[str, Any], *, max_charge_usd: Decimal) -> tuple[list[dict[str, Any]] | None, Decimal | None]:
         actor_path = quote(actor.replace("/", "~"), safe="~")
         started = await self._call(
-            f"{APIFY_API}/acts/{actor_path}/runs?{urlencode({'maxTotalChargeUsd': f'{max_charge_usd:.2f}', 'memory': 1024})}",
+            f"{APIFY_API}/acts/{actor_path}/runs?{urlencode({'maxTotalChargeUsd': f'{max(max_charge_usd, MIN_CHARGE_USD):.2f}', 'memory': 1024})}",
             method="POST",
             body=body,
         )

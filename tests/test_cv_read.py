@@ -36,6 +36,7 @@ from app.models import (
     SpendKind,
     SpendLedger,
 )
+from tests.auth import sign_up
 from tests.jobs import _public_resolve
 from tests.test_profile import PASSWORD, WORD_MAIN
 
@@ -219,7 +220,7 @@ def _money(session: Session, cap: str) -> None:
 
 
 async def _register_and_upload(client: httpx.AsyncClient) -> httpx.Response:
-    assert (await client.post("/register", data={"email": "cv@example.com", "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, "cv@example.com", PASSWORD)).status_code == 303
     files = {"cv": ("cv.docx", _docx(CV_LINES), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
     return await client.post("/profile/cv", files=files)
 
@@ -259,6 +260,6 @@ async def test_d43_with_no_money_left_the_cv_is_not_sent(client: httpx.AsyncClie
 
 
 async def test_d43_without_a_cv_the_fill_button_goes_back_to_the_profile(client: httpx.AsyncClient) -> None:
-    assert (await client.post("/register", data={"email": "cv@example.com", "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, "cv@example.com", PASSWORD)).status_code == 303
     response = await client.post("/profile/cv/fill")
     assert (response.status_code, response.headers["location"]) == (303, "/profile")
