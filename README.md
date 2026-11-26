@@ -78,7 +78,7 @@ Accounts made before the wizard existed skip it.
 Logging out ends the session on every device. There is no password reset: the app sends no email.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
-certifications and licences, experience level and optional travel distance. They can upload one
+certifications and licences, experience levels and optional travel distance. They can upload one
 CV (PDF or DOCX, up to 5 MB) to replace or delete at any time. Only its owner can download it,
 and nothing reads its text. `/account` also deletes the account. The rules are in decision D38.
 

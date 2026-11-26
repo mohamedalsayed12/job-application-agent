@@ -1,8 +1,8 @@
 """Indeed jobs through Apify's valig/indeed-jobs-scraper, same daily loop as LinkedIn (D54).
 
 Once a day each person the AI works for gets Indeed searches for every target role and
-location, as graduate, junior and entry-level title forms (Indeed has no LinkedIn-style
-experience filter). Each search is one Apify run: start, wait until it ends, read the
+location, as the title forms of the levels they chose, such as "Graduate Backend Developer"
+or "Senior Backend Developer" (D63). Indeed has no LinkedIn-style experience filter. Each search is one Apify run: start, wait until it ends, read the
 dataset. Every run is reserved against the budget first and settled at what Apify says
 it cost.
 """
@@ -23,20 +23,21 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.applicants.levels import LEVELS, in_order
 from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate, SpendReservation
 from app.cleaning.clean import clean_run, close_stale
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest
 from app.linkedin import Search, searches
-from app.matching.titles import LEADING_ENTRY_LEVEL
-from app.models import FetchOutcome, FetchRun, RawPayload, SpendKind
+from app.matching.titles import LEADING_ENTRY_LEVEL, LEADING_OTHER_LEVEL
+from app.models import ExperienceLevel, FetchOutcome, FetchRun, RawPayload, SpendKind
 
 SOURCE = "indeed"
 APIFY_API = "https://api.apify.com/v2"
 WAIT_SECONDS = 25
 _FINISHED = frozenset({"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"})
 _HAS_RESULTS = frozenset({"SUCCEEDED", "TIMED-OUT"})
-_ENTRY_FORMS = ("Graduate", "Junior", "Entry Level")
+_ENTRY_FORMS = tuple(form.format("").strip() for form in LEVELS[ExperienceLevel.entry].indeed_forms)
 
 
 @dataclass(slots=True)
@@ -58,7 +59,7 @@ def _core_role(role: str) -> str:
     """Strip every leading level word, then Title Case the job core."""
     core = role
     while True:
-        stripped = LEADING_ENTRY_LEVEL.sub("", core).strip()
+        stripped = LEADING_OTHER_LEVEL.sub("", LEADING_ENTRY_LEVEL.sub("", core)).strip()
         if stripped == core:
             break
         core = stripped
@@ -67,16 +68,17 @@ def _core_role(role: str) -> str:
     return " ".join(word[:1].upper() + word[1:] for word in core.split())
 
 
-def entry_titles(role: str) -> list[str]:
-    """Graduate, junior and entry-level title queries for one target role (Indeed has no f_E filter)."""
-    cleaned = " ".join(role.split())
-    if not cleaned:
-        return []
+def level_searches(search: Search) -> list[Search]:
+    """One Indeed search per title form of each of the search's levels, each tagged with its level."""
     # shortcut: a role that is only a level word ("Graduate") is not stripped and gets prefixed again
-    core = _core_role(cleaned)
+    core = _core_role(" ".join(search.role.split()))
     if not core:
         return []
-    return [f"{prefix} {core}" for prefix in _ENTRY_FORMS]
+    return [
+        Search(form.format(core), search.location, frozenset({level}))
+        for level in in_order(search.levels)
+        for form in LEVELS[level].indeed_forms
+    ]
 
 
 def _search_order(search: Search) -> tuple[int, str, str]:
@@ -89,11 +91,10 @@ def _search_order(search: Search) -> tuple[int, str, str]:
 
 
 def indeed_searches(session: Session, applicant_ids: set[uuid.UUID] | None) -> list[Search]:
-    """Each role × location, expanded to graduate / junior / entry-level titles, once each."""
+    """Each role × location, expanded to the title forms of its levels, once each."""
     found: dict[tuple[str, str], Search] = {}
     for search in searches(session, applicant_ids):
-        for title in entry_titles(search.role):
-            expanded = Search(title, search.location)
+        for expanded in level_searches(search):
             found.setdefault((expanded.role.lower(), expanded.location.lower()), expanded)
     return sorted(found.values(), key=_search_order)
 

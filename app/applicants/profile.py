@@ -10,6 +10,7 @@ from decimal import InvalidOperation
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.applicants.levels import Levels, in_order, parse_levels
 from app.applicants.service import (
     PreferenceValidationError,
     parse_preference_input,
@@ -21,16 +22,9 @@ from app.models import (
     ApplicantPreference,
     ApplicantProfile,
     ApplicantSkill,
-    ExperienceLevel,
 )
 from app.skills.taxonomy import label_index, skill_for_text
 
-EXPERIENCE_LABELS = {
-    ExperienceLevel.internship: "Internship",
-    ExperienceLevel.entry: "Entry level (graduate or junior)",
-    ExperienceLevel.mid: "Mid",
-    ExperienceLevel.senior: "Senior",
-}
 MIN_TRAVEL_MILES = 1
 MAX_TRAVEL_MILES = 500
 # Roles and locations become search queries, so these also bound what one profile can ask for.
@@ -53,7 +47,7 @@ class CertificationInput:
 @dataclass(frozen=True, slots=True)
 class ProfileInput:
     preference: PreferenceInput
-    experience_level: ExperienceLevel
+    experience_levels: Levels
     travel_distance_miles: int | None
     skills: tuple[str, ...]
     certifications: tuple[CertificationInput, ...]
@@ -75,11 +69,14 @@ def _check_items(items: list[str], *, label: str, limit: int) -> None:
         raise PreferenceValidationError(f"Keep each of your {label} under {MAX_ITEM_LENGTH} characters.")
 
 
-def _parse_level(value: str) -> ExperienceLevel:
+def _parse_levels(values: list[str]) -> Levels:
     try:
-        return ExperienceLevel(value)
-    except ValueError as exc:
-        raise PreferenceValidationError("Choose an experience level.") from exc
+        levels = parse_levels(values)
+    except ValueError:
+        levels = frozenset()
+    if not levels:
+        raise PreferenceValidationError("Tick at least one experience level.")
+    return levels
 
 
 def _parse_travel(value: str) -> int | None:
@@ -127,7 +124,7 @@ def parse_profile_input(
     salary_amount: str,
     salary_currency: str,
     salary_period: str,
-    experience_level: str,
+    experience_levels: list[str],
     travel_distance: str,
     skills: list[str],
     certifications: list[CertificationInput],
@@ -151,7 +148,7 @@ def parse_profile_input(
         raise PreferenceValidationError("Salary amount must be a number.") from exc
     return ProfileInput(
         preference=preference,
-        experience_level=_parse_level(experience_level),
+        experience_levels=_parse_levels(experience_levels),
         travel_distance_miles=_parse_travel(travel_distance),
         skills=_parse_skills(skills),
         certifications=tuple(certifications),
@@ -175,7 +172,7 @@ def save_profile(session: Session, applicant_id: uuid.UUID, profile: ProfileInpu
     if row is None:
         row = ApplicantProfile(applicant_id=applicant_id)
         session.add(row)
-    row.experience_level = profile.experience_level
+    row.experience_levels = in_order(profile.experience_levels)
     row.travel_distance_miles = profile.travel_distance_miles
     row.degrees = list(profile.degrees)
 

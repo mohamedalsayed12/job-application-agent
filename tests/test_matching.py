@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import worker
+from app.applicants.levels import chosen_or_inferred
 from app.applicants.service import create_applicant, parse_preference_input
 from app.cleaning import close_stale
 from app.core.config import Settings
@@ -53,6 +54,11 @@ def _applicant(session: Session, *, roles: list[str], locations: list[str], **sa
     return applicant.id
 
 
+def _role(title: str, advert: str | None, roles: list[str], levels: list[ExperienceLevel] | None = None):
+    """With no levels given they are read from the roles, as for someone with no saved profile."""
+    return match_role(title, advert, roles, chosen_or_inferred(frozenset(levels or ()), roles))
+
+
 def _matches(session: Session, applicant_id: uuid.UUID) -> dict[uuid.UUID, ApplicantJobMatch]:
     return {
         row.job_id: row
@@ -76,7 +82,7 @@ def _matches(session: Session, applicant_id: uuid.UUID) -> dict[uuid.UUID, Appli
     ],
 )
 def test_titles_that_fit_a_target_role(title: str, roles: list[str], kind: RoleKind) -> None:
-    assert match_role(title, ADVERT, roles).kind == kind
+    assert _role(title, ADVERT, roles).kind == kind
 
 
 @pytest.mark.parametrize(
@@ -104,35 +110,53 @@ def test_titles_that_fit_a_target_role(title: str, roles: list[str], kind: RoleK
     ],
 )
 def test_titles_that_do_not_fit(title: str, roles: list[str]) -> None:
-    assert match_role(title, ADVERT, roles) is None
+    assert _role(title, ADVERT, roles) is None
 
 
 def test_a_manager_title_fits_when_the_applicant_asks_for_one() -> None:
-    assert match_role("Engineering Manager, Data", ADVERT, ["Engineering Manager"]).kind == RoleKind.exact
+    assert _role("Engineering Manager, Data", ADVERT, ["Engineering Manager"]).kind == RoleKind.exact
 
 
-def test_an_internship_fits_only_when_the_applicant_asks_for_one() -> None:
-    assert match_role("Software Engineer, Intern", ADVERT, ["Software Engineer Intern"]) is not None
+def test_an_internship_fits_only_when_the_applicant_chose_internships() -> None:
+    assert _role("Software Engineer, Intern", ADVERT, ["Software Engineer Intern"], [ExperienceLevel.internship]) is not None
+    assert _role("Software Engineer, Intern", ADVERT, ["Software Engineer Intern"]) is None
+
+
+@pytest.mark.parametrize("levels", [[level] for level in ExperienceLevel] + [list(ExperienceLevel)])
+def test_d63_an_apprenticeship_fits_nobody(levels: list[ExperienceLevel]) -> None:
+    for title in ("Software Engineering Apprentice", "Graduate Software Engineer Degree Apprenticeship"):
+        assert _role(title, ADVERT, ["Software Engineer", "Software Engineering Apprentice"], levels) is None
+
+
+def test_d63_someone_who_also_chose_mid_sees_jobs_that_show_no_level() -> None:
+    entry, mid, internship = ExperienceLevel.entry, ExperienceLevel.mid, ExperienceLevel.internship
+    roles = ["Junior Backend Developer"]
+    assert _role("Backend Developer", ADVERT, roles, [entry]) is None
+    assert _role("Backend Developer", ADVERT, roles, [entry, internship]) is None
+    assert _role("Backend Developer", ADVERT, roles, [entry, mid]).level is None
+    assert _role("Junior Backend Developer", ADVERT, roles, [entry, mid]).level == "entry level in the title"
+    assert _role("Backend Developer Intern", ADVERT, roles, [entry, mid]) is None
+    assert _role("Backend Developer Intern", ADVERT, roles, [entry, internship]).level == "internship in the title"
 
 
 def test_an_exact_title_beats_a_similar_one_across_target_roles() -> None:
-    fit = match_role("Junior Python Developer", ADVERT, ["Junior Backend Developer", "Junior Python Developer"])
+    fit = _role("Junior Python Developer", ADVERT, ["Junior Backend Developer", "Junior Python Developer"])
     assert (fit.target, fit.kind) == ("Junior Python Developer", RoleKind.exact)
 
 
 def test_an_entry_level_applicant_loses_jobs_asking_for_3_years() -> None:
     advert = "You will have 5+ years of experience building APIs."
-    assert match_role("Backend Developer", advert, ENTRY_ROLES) is None
-    assert match_role("Backend Developer", advert, ["Backend Developer"]) is not None
-    assert match_role("Graduate Backend Developer", advert, ENTRY_ROLES) is not None
+    assert _role("Backend Developer", advert, ENTRY_ROLES) is None
+    assert _role("Backend Developer", advert, ["Backend Developer"]) is not None
+    assert _role("Graduate Backend Developer", advert, ENTRY_ROLES) is not None
 
 
 def test_d46_an_entry_level_seeker_gets_only_jobs_shown_to_be_entry_level() -> None:
-    assert match_role("Backend Developer", ADVERT, ENTRY_ROLES) is None
-    assert match_role("Backend Developer", ADVERT, ["Backend Developer"], entry=True) is None
-    assert match_role("Junior Backend Developer", ADVERT, ENTRY_ROLES).level == "entry level in the title"
-    assert match_role("Software Engineer, Early Careers", ADVERT, ENTRY_ROLES).level == "entry level in the title"
-    assert match_role("Backend Developer", ADVERT, ["Backend Developer"]).level is None
+    assert _role("Backend Developer", ADVERT, ENTRY_ROLES) is None
+    assert _role("Backend Developer", ADVERT, ["Backend Developer"], [ExperienceLevel.entry]) is None
+    assert _role("Junior Backend Developer", ADVERT, ENTRY_ROLES).level == "entry level in the title"
+    assert _role("Software Engineer, Early Careers", ADVERT, ENTRY_ROLES).level == "entry level in the title"
+    assert _role("Backend Developer", ADVERT, ["Backend Developer"]).level is None
 
 
 @pytest.mark.parametrize(
@@ -149,7 +173,7 @@ def test_d46_an_entry_level_seeker_gets_only_jobs_shown_to_be_entry_level() -> N
     ],
 )
 def test_d46_an_untitled_job_counts_only_when_its_advert_says_entry_level(advert: str, level: str | None) -> None:
-    fit = match_role("Backend Developer", advert, ENTRY_ROLES)
+    fit = _role("Backend Developer", advert, ENTRY_ROLES)
     assert (fit.level if fit else None) == level
 
 
@@ -236,9 +260,9 @@ async def test_t27_one_collection_is_matched_to_every_applicant(session: Session
 
 async def test_only_someone_whose_profile_chose_internship_is_matched_to_internships(session: Session) -> None:
     seeker = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    session.add(ApplicantProfile(applicant_id=seeker, experience_level=ExperienceLevel.internship))
+    session.add(ApplicantProfile(applicant_id=seeker, experience_levels=[ExperienceLevel.internship]))
     graduate = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    session.add(ApplicantProfile(applicant_id=graduate, experience_level=ExperienceLevel.entry))
+    session.add(ApplicantProfile(applicant_id=graduate, experience_levels=[ExperienceLevel.entry]))
     no_profile = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     jobs = [
         _posting(1, title="Backend Developer Intern"),
@@ -255,6 +279,20 @@ async def test_only_someone_whose_profile_chose_internship_is_matched_to_interns
     assert _matches(session, seeker)[internship].reasons["role"]["level"] == "internship in the title"
     assert set(_matches(session, graduate)) == {graduate_job}
     assert set(_matches(session, no_profile)) == {ordinary, graduate_job}
+
+
+async def test_d63_entry_and_mid_together_see_a_plain_job_that_entry_alone_does_not(session: Session) -> None:
+    both = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=both, experience_levels=[ExperienceLevel.entry, ExperienceLevel.mid]))
+    entry_only = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=entry_only, experience_levels=[ExperienceLevel.entry]))
+    _store(session, [_posting(1), _posting(2, title="Junior Backend Developer")])
+
+    match_all(session, now=SOON)
+
+    plain, junior = _job(session, 1).id, _job(session, 2).id
+    assert set(_matches(session, both)) == {plain, junior}
+    assert set(_matches(session, entry_only)) == {junior}
 
 
 async def test_t2_with_no_salary_given_no_job_is_excluded_for_salary(session: Session) -> None:
@@ -407,7 +445,7 @@ async def test_each_match_says_what_fitted_and_what_is_missing(session: Session)
 async def test_d62_a_degree_the_person_lacks_never_hides_a_job(session: Session) -> None:
     applicant = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
     session.add(
-        ApplicantProfile(applicant_id=applicant, experience_level=ExperienceLevel.mid, degrees=["BSc Business Management"])
+        ApplicantProfile(applicant_id=applicant, experience_levels=[ExperienceLevel.mid], degrees=["BSc Business Management"])
     )
     _store(session, [_posting(1, content=f"{ADVERT} You have a degree in Computer Science or STEM.")])
     match_all(session, now=SOON)

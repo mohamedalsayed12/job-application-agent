@@ -70,7 +70,7 @@ DETAILS = {
 PREFERENCES = {
     "target_roles": "Junior Python Developer",
     "locations": "Manchester",
-    "experience_level": "entry",
+    "experience_levels": "entry",
     "skills": "Python\nFastAPI",
 }
 AVAILABILITY = {

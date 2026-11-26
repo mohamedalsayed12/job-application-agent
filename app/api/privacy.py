@@ -29,7 +29,7 @@ Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
   <li><b>Your email and password.</b> To let you log in. The password is stored only as an Argon2 hash, never as text.
   We email you a link to confirm your address and, if you ask, a link to reset your password; each works once,
   expires within 24 hours (1 hour for a reset), and only a hash of it is stored.</li>
-  <li><b>Your profile:</b> target roles, locations, experience level, travel distance, minimum salary, degrees, skills,
+  <li><b>Your profile:</b> target roles, locations, experience levels, travel distance, minimum salary, degrees, skills,
   certifications and licences. To find jobs that fit you and explain each match.</li>
   <li><b>Your CV, if you upload one.</b> Stored so you can download it again. When you upload it, or press "Fill my profile
   from my CV", its text is read to suggest entries for your profile form and your contact details. On the profile page the
@@ -68,10 +68,10 @@ below.</p>
 <p>The service uses Anthropic's Claude AI to summarise job adverts and to read your CV when you upload it or ask it to.
 So the text of your CV is sent to Anthropic at those times. When you ask for an outreach draft, Claude also receives the
 job text, a CV excerpt, and public research snippets about the contact; your login email and name are not sent.</p>
-<p>To judge which jobs suit you, the service also sends Anthropic your target roles, experience level, skills and degrees,
+<p>To judge which jobs suit you, the service also sends Anthropic your target roles, experience levels, skills and degrees,
 together with each job advert. Your email address, name, locations, salary and CV are not part of that.</p>
 <p>For each job that first check scores 3.0 or more, the service writes a fuller fit report. For that it sends Anthropic
-the job advert with your target roles, experience level, skills, degrees, salary wish, wanted locations and the text of
+the job advert with your target roles, experience levels, skills, degrees, salary wish, wanted locations and the text of
 your CV, if you uploaded one. Your email address and name are never sent.</p>
 <p>When that fit report says Apply or Consider, or when you ask for one, the service may tailor a CV for that job. It
 sends Anthropic the job advert and your CV text, so Claude can suggest edits that each quote the CV line they change.

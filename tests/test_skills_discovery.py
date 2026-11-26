@@ -48,7 +48,7 @@ def test_d44_a_job_is_found_by_skills_only_when_most_of_its_skills_are_held(
     title: str, fit: SkillFit, level: str, expected: str | None
 ) -> None:
     """`expected` is the level shown, "" for a match with no level, None for no match."""
-    found = match_by_skills(title, "Work on our data platform.", fit, level=level)
+    found = match_by_skills(title, "Work on our data platform.", fit, frozenset({level}))
     if expected is None:
         assert found is None
         return
@@ -58,12 +58,12 @@ def test_d44_a_job_is_found_by_skills_only_when_most_of_its_skills_are_held(
 
 def test_d44_years_of_experience_rule_out_an_entry_seeker() -> None:
     advert = "Open to recent graduates. You will need 5+ years of experience with Python."
-    assert match_by_skills("Data Engineer", advert, _fit(4, 0), level=ExperienceLevel.entry) is None
+    assert match_by_skills("Data Engineer", advert, _fit(4, 0), frozenset({ExperienceLevel.entry})) is None
 
 
 def test_d44_someone_after_an_internship_sees_only_internships() -> None:
-    assert match_by_skills("Data Engineer", "", _fit(4, 0), level=ExperienceLevel.internship) is None
-    found = match_by_skills("Data Engineering Intern", "", _fit(4, 0), level=ExperienceLevel.internship)
+    assert match_by_skills("Data Engineer", "", _fit(4, 0), frozenset({ExperienceLevel.internship})) is None
+    found = match_by_skills("Data Engineering Intern", "", _fit(4, 0), frozenset({ExperienceLevel.internship}))
     assert found is not None and found.kind == RoleKind.skills
 
 
@@ -104,7 +104,7 @@ async def _register(client: httpx.AsyncClient, skills: list[str]) -> None:
     profile = {
         "target_roles": "Junior Backend Developer",
         "locations": "Manchester",
-        "experience_level": "entry",
+        "experience_levels": "entry",
         "skills": "\n".join(skills),
     }
     assert (await client.post("/profile", data=profile)).status_code == 303
