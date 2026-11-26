@@ -1,4 +1,4 @@
-"""After "Submitted": find people and draft outreach without being asked (D76).
+"""After "Submitted": find people and draft outreach without being asked (D77).
 
 Marking an application submitted queues it. Each worker cycle takes a few queued applications, finds the
 hiring manager and people doing the same job, finds an email for each, researches them and drafts a Gmail

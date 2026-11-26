@@ -88,7 +88,7 @@ async def run_cycle(
     save()
     await process_requests(session, gateway=gateway, settings=get_settings(), persist=save)
     save()
-    # D76: people and outreach drafts for applications the person marked submitted.
+    # D77: people and outreach drafts for applications the person marked submitted.
     await prepare_outreach(session, gateway=gateway, settings=get_settings(), persist=save)
     save()
     return CycleReport(linkedin=linkedin, indeed=indeed, google_jobs=google, careers=careers)

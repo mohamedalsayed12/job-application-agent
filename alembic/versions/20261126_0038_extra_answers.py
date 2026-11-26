@@ -1,4 +1,4 @@
-"""The extra employer questions, an education step in the sign-up wizard, and Census wording (D73)."""
+"""The extra employer questions, an education step in the sign-up wizard, and Census wording (D74)."""
 
 from collections.abc import Sequence
 
@@ -7,8 +7,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "0028_extra_answers"
-down_revision: str | None = "0027_search_keys"
+revision: str = "0038_extra_answers"
+down_revision: str | None = "0037_search_keys"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -7,14 +7,22 @@ import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.accounts import require_login
 from app.api.admin_html import page
 from app.api.chrome import applicant_bar
 from app.api.forms import csrf_field, require_csrf
-from app.applications.drafts import answer_question, question_key
+from sqlalchemy import select
+
+from app.applicants.apply_answers import (
+    MAX_SAVED,
+    AnswersRefused,
+    SavedQuestion,
+    question_key,
+    save_question_answers,
+)
+from app.applications.drafts import answer_question
 from app.applications.extension_device import issue_token
 from app.applications.prepare import (
     PrepareRefused,
@@ -22,24 +30,17 @@ from app.applications.prepare import (
     list_applications,
     mark_submitted,
     prepare_application,
+    store_fill_outcome,
 )
 from app.applications.ui import applied_button
 from app.core.db import get_db
-from app.models import (
-    Applicant,
-    Application,
-    ApplicationStatus,
-    FormQuestion,
-    Job,
-    JobFreshness,
-)
+from app.models import Applicant, Application, ApplicationStatus, FormQuestion, Job, JobFreshness
 from app.outreach.auto import drafts_waiting
 
 router = APIRouter(tags=["applications"])
 _CSRF = [Depends(require_csrf)]
 _SEE_OTHER = status.HTTP_303_SEE_OTHER
 _STATUS_LABEL = {
-    ApplicationStatus.preparing.value: "Preparing",
     ApplicationStatus.ready_to_fill.value: "Ready to fill",
     ApplicationStatus.filled_awaiting_review.value: "Filled — review before submit",
     ApplicationStatus.submitted.value: "Applied",
@@ -47,6 +48,10 @@ _STATUS_LABEL = {
     ApplicationStatus.failed.value: "Failed",
     ApplicationStatus.abandoned.value: "Abandoned",
 }
+
+
+def _e(value: object) -> str:
+    return html.escape(str(value))
 
 
 # The extension can still fill these; a filled one may have more pages to go.
@@ -57,12 +62,8 @@ _FILLABLE = (
 )
 
 
-def _e(value: object) -> str:
-    return html.escape(str(value))
-
-
 def question_form(request: Request, row: FormQuestion, back: str) -> str:
-    """One banked question with a box for the answer, reused on every form that asks it (D74)."""
+    """One banked question with a box for the answer, reused on every form that asks it (D75)."""
     if row.options:
         options = "".join(
             f'<option value="{_e(o)}"{" selected" if o == row.answer else ""}>{_e(o)}</option>' for o in row.options
@@ -95,6 +96,11 @@ def _drafts(app_row: Application) -> str:
     )
 
 
+def _questions(db: Session, applicant_id: uuid.UUID) -> dict[str, FormQuestion]:
+    rows = db.scalars(select(FormQuestion).where(FormQuestion.applicant_id == applicant_id))
+    return {row.question_key: row for row in rows}
+
+
 def _card(
     request: Request, app_row: Application, job: Job | None, questions: dict[str, FormQuestion] | None = None,
     waiting: int = 0,
@@ -104,17 +110,31 @@ def _card(
     status_label = _STATUS_LABEL.get(app_row.status, app_row.status)
     missing = ""
     if app_row.missing_fields:
-        questions = questions or {}
-        answerable = [questions[k] for m in app_row.missing_fields if (k := question_key(m)) in questions]
-        plain = [m for m in app_row.missing_fields if question_key(m) not in questions]
+        bank = questions or {}
+        answerable = [bank[k] for m in app_row.missing_fields if (k := question_key(m)) in bank]
+        plain = [m for m in app_row.missing_fields if question_key(m) not in bank]
         items = "".join(f"<li>{_e(m)}</li>" for m in plain)
         forms = "".join(question_form(request, row, f"/applications/{app_row.id}") for row in answerable)
-        missing = (
-            '<p class="hint">This form asks questions you have no saved answer for. Answer them here once and '
-            "every form that asks the same question is filled from then on, or answer them on the employer&#39;s page:</p>"
-            f"{forms}{f'<ul>{items}</ul>' if items else ''}"
-            '<p><a href="/profile/apply-answers">Update apply answers</a></p>'
-        )
+        if not answerable and plain:
+            fields = []
+            for index, question in enumerate(plain):
+                fields.append(
+                    f"<label>{_e(question)}"
+                    f'<input type="hidden" name="question_{index}" value="{_e(question)}"/>'
+                    f'<textarea name="answer_{index}" required maxlength="2000"></textarea></label>'
+                )
+            missing = (
+                '<form method="post" action="/applications/'
+                f'{_e(app_row.id)}/answers">{csrf_field(request)}{"".join(fields)}'
+                '<button type="submit" class="primary">Save answers</button></form>'
+            )
+        else:
+            missing = (
+                '<p class="hint">This form asks questions you have no saved answer for. Answer them here once and '
+                "every form that asks the same question is filled from then on, or answer them on the employer&#39;s page:</p>"
+                f"{forms}{f'<ul>{items}</ul>' if items else ''}"
+                '<p><a href="/profile/apply-answers">Update apply answers</a></p>'
+            )
     how = ""
     if app_row.status in _FILLABLE:
         how = (
@@ -153,7 +173,7 @@ def _card(
 
 
 def _outreach(app_row: Application, waiting: int) -> str:
-    """After Submitted: where the people and drafts are (D76)."""
+    """After Submitted: where the people and drafts are (D77)."""
     if app_row.status != ApplicationStatus.submitted.value or app_row.outreach_state is None:
         return ""
     link = f'<a href="/jobs/{_e(str(app_row.job_id))}/outreach">'
@@ -179,22 +199,26 @@ def applications_page(
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     rows = list_applications(db, applicant.id)
-    questions = _questions(db, applicant.id)
-    cards = [_card(request, row, db.get(Job, row.job_id), questions, drafts_waiting(db, row)) for row in rows]
+    bank = _questions(db, applicant.id)
+    cards = [_card(request, row, db.get(Job, row.job_id), bank, drafts_waiting(db, row)) for row in rows]
     body = "".join(cards) or '<p class="muted">No applications prepared yet. Use Prepare apply on a listing.</p>'
     awaiting = sum(1 for r in rows if r.status == ApplicationStatus.filled_awaiting_review.value)
-    banner = (
-        f'<p class="notice">{awaiting} application(s) filled and waiting for your review before submit.</p>'
-        if awaiting
-        else ""
-    )
+    questions = [name for r in rows if r.status == ApplicationStatus.needs_input.value for name in r.missing_fields]
+    banner = ""
+    if questions:
+        banner += "<p class=\"notice\">Answer these questions, then fill again: " + ", ".join(_e(name) for name in questions) + "</p>"
+    if awaiting:
+        banner += (
+            f'<p class="notice">{awaiting} application(s) filled and waiting for your review before submit.</p>'
+        )
     return page(
         "Applications",
         f"""
 <div class="page-head"><div>
   <h1>Applications</h1>
-  <p class="muted">The extension fills the form in your browser and stops before Submit.
-  Set <a href="/profile/apply-answers">apply answers</a> and an <a href="/account#extension">extension token</a> first.</p>
+  <p class="muted">The extension fills each page of the form in your browser, drafts open questions from your CV,
+  and stops before Submit. Set <a href="/profile/apply-answers">apply answers</a> and an
+  <a href="/account#extension">extension token</a> first.</p>
 </div></div>
 {banner}
 {body}
@@ -238,30 +262,30 @@ def application_detail(
     )
 
 
-def _questions(db: Session, applicant_id: uuid.UUID) -> dict[str, FormQuestion]:
-    rows = db.scalars(select(FormQuestion).where(FormQuestion.applicant_id == applicant_id))
-    return {row.question_key: row for row in rows}
-
-
-@router.post("/form-questions/{question_id}", dependencies=_CSRF)
-def save_question(
-    question_id: uuid.UUID,
-    answer: str = Form(""),
-    back: str = Form("/applications"),
+@router.post("/applications/{application_id}/answers", dependencies=_CSRF)
+async def save_missing_answers(
+    application_id: uuid.UUID,
+    request: Request,
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
-    """The person's answer to a question a form asked, used on every form that asks it again."""
-    target = back if back.startswith("/") and not back.startswith("//") else "/applications"
+    row = get_application(db, application_id, applicant.id)
+    if row is None or row.status != ApplicationStatus.needs_input.value:
+        return RedirectResponse("/applications", status_code=_SEE_OTHER)
+    form = await request.form()
+    pairs: list[SavedQuestion] = []
+    index = 0
+    while f"question_{index}" in form and index < MAX_SAVED:
+        pairs.append(SavedQuestion(str(form.get(f"question_{index}") or ""), str(form.get(f"answer_{index}") or "")))
+        index += 1
     try:
-        row = answer_question(db, applicant.id, question_id, answer)
-    except ValueError:
+        save_question_answers(db, applicant.id, pairs)
+    except AnswersRefused as exc:
         db.rollback()
-        return RedirectResponse(target, status_code=_SEE_OTHER)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+        return RedirectResponse(f"/applications/{application_id}?answer_error={exc.message}", status_code=_SEE_OTHER)
+    store_fill_outcome(row, None, reopen=True)
     db.commit()
-    return RedirectResponse(target, status_code=_SEE_OTHER)
+    return RedirectResponse(f"/applications/{application_id}", status_code=_SEE_OTHER)
 
 
 @router.post("/applications/{application_id}/open-fill", dependencies=_CSRF)
@@ -274,6 +298,35 @@ def open_fill(
     if row is None or row.status not in _FILLABLE:
         return RedirectResponse("/applications", status_code=_SEE_OTHER)
     return RedirectResponse(row.apply_url, status_code=_SEE_OTHER)
+
+
+
+
+@router.post("/form-questions/{question_id}", dependencies=_CSRF)
+def save_question(
+    question_id: uuid.UUID,
+    answer: str = Form(""),
+    back: str = Form("/applications"),
+    applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """The person's answer to a question a form asked, used on every form that asks it again."""
+    try:
+        row = answer_question(db, applicant.id, question_id, answer)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(f"{back}?answer_error={exc}", status_code=_SEE_OTHER)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    # Reopen every application that was waiting on this question.
+    for app_row in list_applications(db, applicant.id):
+        if app_row.status == ApplicationStatus.needs_input.value and any(
+            question_key(label) == row.question_key for label in app_row.missing_fields
+        ):
+            store_fill_outcome(app_row, None, reopen=True)
+    db.commit()
+    target = back if back.startswith("/") else "/applications"
+    return RedirectResponse(target, status_code=_SEE_OTHER)
 
 
 @router.post("/jobs/{job_id}/applied", dependencies=_CSRF)

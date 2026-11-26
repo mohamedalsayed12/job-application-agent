@@ -24,11 +24,12 @@ class NormalizedItem:
 
 
 def queries_for(role: str) -> list[str]:
+    """First-person offer and rejection searches. Tip queries mostly return coaches."""
     base = role.strip()
     return [
-        f"{base} interview got the offer",
-        f"{base} interview rejected",
-        f"{base} interview preparation tips",
+        f'{base} interview "got the offer"',
+        f'{base} interview "I was rejected"',
+        f'{base} interview "I passed"',
     ]
 
 
@@ -68,7 +69,7 @@ def normalize_item(
 
 
 def _reddit(item: dict[str, Any]) -> tuple[str, str, str, str]:
-    url = str(item.get("url") or item.get("parsedId") or item.get("link") or "").strip()
+    url = str(item.get("url") or item.get("postUrl") or item.get("parsedId") or item.get("link") or "").strip()
     if url and url.startswith("/"):
         url = f"https://www.reddit.com{url}"
     title = str(item.get("title") or "")
@@ -101,7 +102,7 @@ def _youtube(item: dict[str, Any]) -> tuple[str, str, str, str]:
 
 
 def _linkedin(item: dict[str, Any]) -> tuple[str, str, str, str]:
-    url = str(item.get("url") or item.get("postUrl") or item.get("link") or "").strip()
+    url = str(item.get("url") or item.get("postUrl") or item.get("post_url") or item.get("link") or "").strip()
     title = str(item.get("title") or item.get("authorName") or item.get("author") or "LinkedIn post")
     body = str(item.get("text") or item.get("commentary") or item.get("content") or item.get("postText") or "")
     source_id = str(item.get("urn") or item.get("id") or url)

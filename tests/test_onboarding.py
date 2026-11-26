@@ -17,8 +17,7 @@ from app.api.jobs import get_gateway
 from app.applicants.apply_answers import answers_as_map
 from app.applicants.cv_read import grounded_contact
 from app.applicants.service import create_applicant, parse_preference_input
-from app.applications.mapper import build_fill_plan, match_answer_key
-from app.applications.schema import FormField, FormSchema
+from app.applications.mapper import FormField, build_fill_plan, facts_from_profile, match_answer_key
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
@@ -71,7 +70,7 @@ DETAILS = {
 PREFERENCES = {
     "target_roles": "Junior Python Developer",
     "locations": "Manchester",
-    "experience_level": "entry",
+    "experience_levels": "entry",
     "skills": "Python\nFastAPI",
 }
 AVAILABILITY = {
@@ -220,7 +219,8 @@ async def test_the_whole_wizard_saves_every_step_then_opens_the_matches(client: 
     assert details.headers["location"] == "/onboarding/preferences"
 
     preferences_page = await client.get("/onboarding/preferences")
-    assert "Junior Python Developer\nGraduate Software Engineer</textarea>" in preferences_page.text
+    assert 'name="cv_roles" value="Junior Python Developer"/>' in preferences_page.text
+    assert 'name="cv_roles" value="Graduate Software Engineer"/>' in preferences_page.text
     assert "From your CV we filled in" in preferences_page.text
     preferences = await client.post("/onboarding/preferences", data=PREFERENCES)
     assert preferences.headers["location"] == "/onboarding/education"
@@ -475,9 +475,10 @@ async def test_the_wizard_needs_a_login(client: httpx.AsyncClient) -> None:
 
 async def test_replacing_the_cv_drops_what_was_read_from_the_old_one(client: httpx.AsyncClient, session: Session) -> None:
     await _through_cv(client, session)
-    files = {"cv": ("cv.pdf", b"%PDF-1.7\nmade up contents of a CV", "application/pdf")}
-    await client.post("/profile/cv", files=files)
     cv = session.scalar(select(CvFile))
+    assert cv is not None and cv.suggestions is not None
+    files = {"cv": ("cv.pdf", b"%PDF-1.7\nmade up contents of a CV", "application/pdf")}
+    await client.post(f"/profile/cv/{cv.id}/replace", files=files)
     session.refresh(cv)
     assert cv.suggestions is None
 
@@ -569,17 +570,14 @@ def test_saved_availability_fills_the_form() -> None:
     )
     for key in ("gender", "ethnicity", "disability", "veteran", "free_school_meals", "religion", "caring_responsibilities", "school_type", "parental_occupation"):
         setattr(row, key, PREFER_NOT)
-    schema = FormSchema(
-        ats_kind="unknown", source="stub",
-        fields=[
-            FormField(label="Notice period", name="notice", field_type="text", required=True),
-            FormField(label="Earliest start date", name="start", field_type="date", required=True),
-            FormField(label="Willing to relocate?", name="move", field_type="select", required=True, options=["Yes", "No"]),
-            FormField(label="Sexual orientation", name="so", field_type="select", required=False, options=["Gay", "Prefer not to say"]),
-        ],
-    )
-    plan = build_fill_plan(schema, answers_as_map(row, email="a@example.com"))
-    assert [(step.name, step.value) for step in plan.steps] == [
+    fields = [
+        FormField(id="notice", label="Notice period", name="notice", type="text", required=True),
+        FormField(id="start", label="Earliest start date", name="start", type="date", required=True),
+        FormField(id="move", label="Willing to relocate?", name="move", type="select", required=True, options=["Yes", "No"]),
+        FormField(id="so", label="Sexual orientation", name="so", type="select", required=False, options=["Gay", "Prefer not to say"]),
+    ]
+    plan = build_fill_plan(fields, facts_from_profile(answers_as_map(row, email="a@example.com"), []))
+    assert [(step.field_id, step.value) for step in plan.steps] == [
         ("notice", "1 month"),
         ("start", "2027-07-01"),
         ("move", "Yes"),

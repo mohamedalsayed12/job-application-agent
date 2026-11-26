@@ -1,8 +1,9 @@
-"""Job titles related to a target title, offered as tick-boxes when someone picks the jobs they want (D72).
+"""Job titles related to each target title (D68), also offered as tick-boxes on the picker (D72).
 
 Each title goes to the AI on its own, with nothing else from the profile. The answer is kept for
-everyone who types that title and is asked again only when the prompt changes. The titles carry no
-level word: the level comes from the person's profile, the search filters and matching.
+everyone who wants that title and is asked again only when the prompt changes. The titles carry no
+level: each person's levels are applied by the LinkedIn level filter and by matching, so one list
+serves everyone. The picker can show related titles without adding them until the person picks them.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.matching.titles import ENTRY_TITLE, LEADING_ENTRY_LEVEL, NOT_ENTRY_TITLE
+from app.matching.titles import ENTRY_TITLE, LEADING_ENTRY_LEVEL, LEADING_OTHER_LEVEL, NOT_ENTRY_TITLE
 from app.models import RelatedTitle, SpendKind
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ def _plain(title: str) -> str:
 def title_key(title: str) -> str:
     """The title without case or leading level words, so "Graduate Software Engineer" is asked about as "software engineer"."""
     key = _plain(title)
+    key = LEADING_OTHER_LEVEL.sub("", LEADING_ENTRY_LEVEL.sub("", key)).strip()
     while (stripped := LEADING_ENTRY_LEVEL.sub("", key).strip()) != key:
         key = stripped
     return key
@@ -101,6 +103,22 @@ def related_to(session: Session, roles: Sequence[str]) -> list[str]:
     return list(found.values())
 
 
+def with_related(session: Session, roles: Sequence[str]) -> list[str]:
+    """The person's own titles first, then the related titles of each in order, each once."""
+    keys = [title_key(role) for role in roles]
+    stored = dict(
+        session.execute(
+            select(RelatedTitle.title_key, RelatedTitle.titles).where(
+                RelatedTitle.title_key.in_(keys), RelatedTitle.prompt_version == PROMPT_VERSION
+            )
+        ).all()
+    )
+    titles: dict[str, str] = {}
+    for title in [*roles, *(related for key in keys for related in stored.get(key, []))]:
+        titles.setdefault(_plain(title), title.strip())
+    return list(titles.values())
+
+
 async def expand_titles(
     session: Session,
     roles: Iterable[str],
@@ -112,7 +130,8 @@ async def expand_titles(
 ) -> int:
     """Asks the AI about each title not yet asked about and returns how many it asked.
 
-    A spent budget stops it and a failed call skips that title; the next request tries again.
+    A spent budget stops it and a failed call skips that title; the person's own titles are still
+    searched, and the next request tries again.
     """
     api_key = anthropic_api_key(settings)
     if api_key is None:

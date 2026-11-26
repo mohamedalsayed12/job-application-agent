@@ -1,4 +1,4 @@
-/* Reads the open apply form and fills it from a fill plan. Never clicks Submit.
+/* Reads the open apply form and fills it from a fill plan. Never clicks Submit or Next (D70/D75).
 
    Custom dropdowns (Workday, Greenhouse, Lever, Ashby) are opened and the matching option is clicked.
    Answers the AI drafted are outlined so the person reads them first. After a fill, new questions that
@@ -10,21 +10,32 @@
 
   const ALLOWED_ACTIONS = new Set(["fill", "select", "check", "upload_cv"]);
   const SKIP_TYPES = new Set(["hidden", "submit", "button", "reset", "image", "password"]);
+  const SUBMIT_TEXT = /\b(submit|apply now|send application|complete application|finish application)\b/i;
   const MAX_TEXT = 300;
   const DRAFT_OUTLINE = "2px solid #e8a317";
   const PLACEHOLDER = /^(select|choose|please select|please choose|--|select one|select\.\.\.)?$/i;
+  const fields = new Map();
+
+  function ownText(el) {
+    return [...el.childNodes]
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
 
   function isSubmitControl(el) {
-    if (!el) return true;
-    const tag = el.tagName || "";
-    const typeAttr = el.getAttribute?.("type") || "";
-    const text = (el.innerText || el.value || "").trim();
-    const name = el.getAttribute?.("name") || "";
-    const idAttr = el.id || "";
-    if (String(typeAttr).toLowerCase() === "submit") return true;
-    const hay = `${text} ${name} ${idAttr}`;
-    return /\b(submit|apply now|send application|complete application|finish application)\b/i.test(hay)
-      && /^(BUTTON|INPUT|A)$/i.test(tag);
+    if (!el || el.nodeType !== 1 || el.id === "jaa-fill-notice") return false;
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (type === "submit" || type === "image") return true;
+    if (el.tagName === "BUTTON") {
+      if (type !== "button" && type !== "reset") return true;
+      return SUBMIT_TEXT.test(ownText(el));
+    }
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return false;
+    if (!/^(A|DIV|SPAN)$/.test(el.tagName)) return false;
+    return SUBMIT_TEXT.test(ownText(el) || el.innerText || "");
   }
 
   function clean(text) {
@@ -39,7 +50,6 @@
   }
 
   function questionFor(el) {
-    // A radio or checkbox group's question is its fieldset legend or group label, not one option's label.
     if (el.type === "radio" || (el.type === "checkbox" && el.name && document.querySelectorAll(`input[type=checkbox][name="${CSS.escape(el.name)}"]`).length > 1)) {
       const group = el.closest("fieldset, [role=radiogroup], [role=group]");
       const legend = group?.querySelector("legend")?.innerText
@@ -73,7 +83,7 @@
   }
 
   function visible(el) {
-    if (el.type === "file") return true; // Upload inputs are often hidden behind a styled button.
+    if (el.type === "file") return true;
     const style = window.getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden" && (el.offsetParent !== null || style.position === "fixed");
   }
@@ -82,48 +92,73 @@
     return el.getAttribute?.("role") === "combobox" || el.getAttribute?.("aria-haspopup") === "listbox";
   }
 
-  let counter = 0;
-  function keyFor(el) {
-    if (el.dataset.jaaKey) return el.dataset.jaaKey;
-    const key = el.type === "radio" && el.name ? el.name : el.name || el.id || `jaa-${++counter}`;
-    el.dataset.jaaKey = key;
-    return key;
+  function fieldType(el) {
+    const tag = el.tagName;
+    if (tag === "TEXTAREA") return "textarea";
+    if (tag === "SELECT") return "select";
+    if (isCombo(el)) return "combobox";
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    if (SKIP_TYPES.has(type)) return null;
+    if (type === "radio") return "radio";
+    if (type === "checkbox") return "checkbox";
+    if (type === "file") return "file";
+    if (["email", "tel", "url", "number", "date", "month"].includes(type)) return type;
+    return "text";
   }
 
-  /** Every field a person would answer, as label, key, type, required flag and options. */
-  function scanForm() {
-    const fields = [];
-    const seenGroups = new Set();
-    for (const el of document.querySelectorAll("input, textarea, select")) {
-      const type = (el.tagName === "INPUT" ? el.type || "text" : el.tagName).toLowerCase();
-      if (SKIP_TYPES.has(type) || el.disabled || isSubmitControl(el) || !visible(el)) continue;
-      if (type === "radio") {
-        if (!el.name || seenGroups.has(el.name)) continue;
-        seenGroups.add(el.name);
-        const group = [...document.querySelectorAll(`input[type=radio][name="${CSS.escape(el.name)}"]`)];
-        group.forEach((radio) => { radio.dataset.jaaKey = el.name; });
-        const label = questionFor(el);
-        fields.push({ label, name: el.name, type: "radio", required: group.some((r) => isRequired(r, label)), options: group.map(optionLabel).filter(Boolean) });
-        continue;
-      }
-      const label = questionFor(el);
-      const options = type.startsWith("select")
-        ? [...el.options].map((o) => clean(o.text)).filter((t) => t && !/^(select|choose|please select|--)/i.test(t))
-        : [];
-      // A typing box that opens a list (react-select, Ashby) is filled like a dropdown.
-      fields.push({ label, name: keyFor(el), type: isCombo(el) ? "combobox" : type, required: isRequired(el, label), options });
+  function optionsFor(el, type) {
+    if (type === "select") {
+      return [...el.options].map((option) => clean(option.text)).filter((t) => t && !/^(select|choose|please select|--)/i.test(t));
     }
-    // Dropdowns built from buttons or divs: their options exist only once opened.
+    if (type === "radio" && el.name) {
+      return [...document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)]
+        .map(optionLabel)
+        .filter(Boolean);
+    }
+    return [];
+  }
+
+  /** Every field a person would answer, with a stable id for the fill plan (D70 scan + D66 ids). */
+  function scanForm() {
+    fields.clear();
+    const found = [];
+    const seenRadio = new Set();
+    let index = 0;
+    for (const el of document.querySelectorAll("input, textarea, select")) {
+      if (isSubmitControl(el) || el.disabled || !visible(el)) continue;
+      const type = fieldType(el);
+      if (!type) continue;
+      if (type === "radio") {
+        if (!el.name || seenRadio.has(el.name)) continue;
+        seenRadio.add(el.name);
+      }
+      const id = `f${index}`;
+      index += 1;
+      fields.set(id, el);
+      const label = questionFor(el);
+      found.push({
+        id,
+        label,
+        name: el.name || "",
+        type,
+        required: type === "radio"
+          ? [...document.querySelectorAll(`input[type=radio][name="${CSS.escape(el.name)}"]`)].some((r) => isRequired(r, label))
+          : isRequired(el, label),
+        options: optionsFor(el, type),
+      });
+    }
     for (const el of document.querySelectorAll("[role=combobox], [aria-haspopup=listbox]")) {
       if (/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) || el.disabled || isSubmitControl(el) || !visible(el)) continue;
       const label = questionFor(el);
       if (!label) continue;
-      fields.push({ label, name: keyFor(el), type: "combobox", required: isRequired(el, label), options: [] });
+      const id = `f${index}`;
+      index += 1;
+      fields.set(id, el);
+      found.push({ id, label, name: el.id || el.getAttribute("name") || id, type: "combobox", required: isRequired(el, label), options: [] });
     }
-    return fields;
+    return { ok: true, url: location.href, fields: found };
   }
 
-  /** Whether the field holds an answer now. A refill leaves anything already answered alone. */
   function hasAnswer(el) {
     if (el.tagName === "SELECT") return el.selectedIndex > 0 || Boolean(el.value && !PLACEHOLDER.test(clean(el.options[el.selectedIndex]?.text)));
     if (el.type === "radio") return [...document.querySelectorAll(`input[type=radio][name="${CSS.escape(el.name)}"]`)].some((r) => r.checked);
@@ -144,7 +179,13 @@
     );
   }
 
-  /** Opens a custom dropdown (or types into a searchable one) and clicks the option that matches. */
+  function setNative(el, value) {
+    const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(el, value);
+    else el.value = value;
+  }
+
   async function pickFromList(el, value) {
     const want = norm(value);
     if (el.tagName === "INPUT") {
@@ -163,7 +204,6 @@
         return true;
       }
     }
-    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     if (el.tagName === "INPUT") {
       setNative(el, "");
       el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -171,66 +211,34 @@
     return false;
   }
 
-  function findField(step) {
-    const name = step.name;
-    if (name) {
-      const tagged = document.querySelector(`[data-jaa-key="${CSS.escape(name)}"]`);
-      if (tagged) return tagged;
-      const byName = document.querySelector(`[name="${CSS.escape(name)}"]`);
-      if (byName) return byName;
-      const byId = document.getElementById(name);
-      if (byId) return byId;
-    }
-    const label = (step.label || "").toLowerCase();
-    if (!label) return null;
-    for (const lab of document.querySelectorAll("label")) {
-      if ((lab.textContent || "").toLowerCase().includes(label)) {
-        const forId = lab.getAttribute("for");
-        if (forId) {
-          const el = document.getElementById(forId);
-          if (el) return el;
-        }
-        const nested = lab.querySelector("input, textarea, select");
-        if (nested) return nested;
-      }
-    }
-    return null;
-  }
-
-  function setNative(el, value) {
-    // React and similar frameworks track the value themselves; the prototype setter keeps them in step.
-    const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-    if (setter) setter.call(el, value);
-    else el.value = value;
-  }
-
-  async function setValue(el, value) {
-    if (isSubmitControl(el)) return false;
-    if (isCombo(el)) return pickFromList(el, value);
-    const tag = el.tagName.toLowerCase();
+  function selectValue(el, value) {
     const want = clean(value).toLowerCase();
-    if (tag === "select") {
-      const match = [...el.options].find((o) => clean(o.text).toLowerCase() === want);
+    if (el.tagName === "SELECT") {
+      const match = [...el.options].find((option) => clean(option.text).toLowerCase() === want);
       if (!match) return false;
       el.value = match.value;
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return true;
     }
-    if (el.type === "radio") {
-      const group = document.querySelectorAll(`input[type=radio][name="${CSS.escape(el.name)}"]`);
-      for (const radio of group) {
-        if (isSubmitControl(radio) || optionLabel(radio).toLowerCase() !== want) continue;
+    if ((el.getAttribute("type") || "").toLowerCase() !== "radio" || !el.name) return false;
+    for (const radio of document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)) {
+      if (isSubmitControl(radio)) continue;
+      const label = (optionLabel(radio) || radio.value || "").toLowerCase();
+      if (label === want) {
         radio.click();
         return radio.checked;
       }
-      return false;
     }
-    if (el.type === "checkbox") {
-      const on = /^(yes|true|1)$/i.test(value);
-      if (el.checked !== on) el.click();
-      return true;
-    }
+    return false;
+  }
+
+  function checkValue(el, value) {
+    const on = /^(yes|true|1)$/i.test(String(value || "").trim());
+    if (el.checked !== on) el.click();
+    return true;
+  }
+
+  function setText(el, value) {
     el.focus();
     setNative(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -239,11 +247,12 @@
     return true;
   }
 
-  function attachCv(el, cv) {
-    // The background worker downloads the CV: a page script may not call Job Agent (cross-site).
-    if (isSubmitControl(el) || el.type !== "file" || !cv?.base64) return false;
-    const bytes = Uint8Array.from(atob(cv.base64), (c) => c.charCodeAt(0));
-    const file = new File([bytes], cv.name, { type: cv.type });
+  function uploadCv(el, cv) {
+    if (!cv || el.type !== "file" || isSubmitControl(el)) return false;
+    const binary = atob(cv.base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const file = new File([bytes], cv.name, { type: cv.type || "application/pdf" });
     const transfer = new DataTransfer();
     transfer.items.add(file);
     el.files = transfer.files;
@@ -258,24 +267,51 @@
     target.title = note || "Drafted by Job Agent. Read it before you submit.";
   }
 
-  /** Fills the plan. With onlyEmpty (an automatic refill), fields that already hold an answer are left alone. */
-  async function applyPlan(plan, cv, onlyEmpty) {
+  function showNotice(text) {
+    let el = document.getElementById("jaa-fill-notice");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "jaa-fill-notice";
+      el.setAttribute("role", "status");
+      el.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#0a7;color:#fff;padding:12px 16px;font:16px system-ui";
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.textContent = text;
+  }
+
+  function highlightSubmit() {
+    for (const el of document.querySelectorAll("button, input, a, div, span")) {
+      if (!isSubmitControl(el)) continue;
+      el.scrollIntoView({ block: "center" });
+      el.style.setProperty("outline", "3px solid #0a7");
+      el.style.setProperty("outline-offset", "3px");
+      el.setAttribute("data-jaa-highlight", "submit");
+      return el.id || el.tagName;
+    }
+    return "";
+  }
+
+  async function applySteps(steps, cv, onlyEmpty) {
     let filled = 0;
     let drafted = 0;
     const skipped = [];
-    for (const step of plan.steps || []) {
+    for (const step of steps || []) {
       if (!ALLOWED_ACTIONS.has(step.action)) continue;
-      const el = findField(step);
+      const el = fields.get(step.field_id);
       if (!el || isSubmitControl(el)) {
-        skipped.push(step.label);
+        skipped.push(step.field_id || step.label || "");
         continue;
       }
       if (onlyEmpty && hasAnswer(el)) continue;
       let done = false;
       try {
-        done = step.action === "upload_cv" ? attachCv(el, cv) : await setValue(el, String(step.value || ""));
+        if (step.action === "upload_cv") done = uploadCv(el, cv);
+        else if (isCombo(el)) done = await pickFromList(el, step.value);
+        else if (step.action === "select") done = selectValue(el, step.value);
+        else if (step.action === "check") done = checkValue(el, step.value);
+        else done = setText(el, String(step.value || ""));
       } catch (_) {
-        done = false; // One awkward field must not stop the rest of the form.
+        done = false;
       }
       if (done) {
         filled += 1;
@@ -283,23 +319,15 @@
           drafted += 1;
           markDraft(el, step.note);
         }
-      } else skipped.push(step.label);
+      } else skipped.push(step.field_id || step.label || "");
     }
-    for (const el of document.querySelectorAll("button, input[type=submit], a")) {
-      if (isSubmitControl(el)) {
-        el.scrollIntoView({ block: "center", behavior: "smooth" });
-        break;
-      }
-    }
-    watchForNewQuestions();
     return { filled, drafted, skipped };
   }
 
   function fieldKeys() {
-    return new Set(scanForm().map((field) => `${field.name}|${field.label}`));
+    return new Set(scanForm().fields.map((field) => `${field.name}|${field.label}`));
   }
 
-  /** After a fill, questions that appear later (the next step of the form) are reported once they settle. */
   let known = null;
   let observer = null;
   let timer = null;
@@ -324,12 +352,22 @@
       return false;
     }
     if (message?.type === "jaa-scan") {
-      sendResponse({ ok: true, url: location.href, fields: scanForm() });
+      sendResponse(scanForm());
+      return false;
+    }
+    if (message?.type === "jaa-notice") {
+      showNotice(message.text || "");
+      sendResponse({ ok: true });
       return false;
     }
     if (message?.type !== "jaa-fill") return false;
-    applyPlan(message.plan, message.cv, Boolean(message.onlyEmpty))
-      .then((result) => sendResponse({ ok: true, ...result }))
+    applySteps(message.steps || message.plan?.steps, message.cv, Boolean(message.onlyEmpty))
+      .then((result) => {
+        const highlighted = highlightSubmit();
+        showNotice(message.notice || "Everything is filled in. Review the form and click Submit yourself.");
+        watchForNewQuestions();
+        sendResponse({ ok: true, advanced: false, highlighted, ...result });
+      })
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   });
