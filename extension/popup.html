@@ -4,22 +4,27 @@
   <meta charset="utf-8"/>
   <title>Job Agent Apply</title>
   <style>
-    body { font: 13px/1.4 system-ui, sans-serif; margin: 12px; width: 280px; }
+    body { font: 13px/1.4 system-ui, sans-serif; margin: 12px; width: 300px; }
     label { display: block; margin: 8px 0 4px; }
-    input { width: 100%; box-sizing: border-box; }
+    input, select { width: 100%; box-sizing: border-box; }
     button { margin-top: 10px; width: 100%; }
     .hint { color: #555; font-size: 12px; }
-    #status { margin-top: 8px; }
+    #status { margin-top: 8px; white-space: pre-line; }
+    details { margin-top: 12px; }
   </style>
 </head>
 <body>
   <strong>Job Agent Apply Fill</strong>
-  <p class="hint">Fills the open apply tab. Never clicks Submit.</p>
-  <label>API base <input id="apiBase" placeholder="http://127.0.0.1:8000"/></label>
-  <label>Extension token <input id="token" type="password" autocomplete="off"/></label>
-  <button id="save" type="button">Save</button>
+  <p class="hint">Reads the form in this tab, fills your saved answers and CV, and never clicks Submit.</p>
+  <label>Which job is this form for? <select id="application"></select></label>
   <button id="fill" type="button">Fill this tab</button>
   <div id="status"></div>
+  <details>
+    <summary>Connection</summary>
+    <label>Job Agent address <input id="apiBase" placeholder="http://127.0.0.1:8000"/></label>
+    <label>Extension token <input id="token" type="password" autocomplete="off"/></label>
+    <button id="save" type="button">Save</button>
+  </details>
   <script src="popup.js"></script>
 </body>
 </html>

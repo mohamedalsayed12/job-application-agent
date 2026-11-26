@@ -49,7 +49,21 @@ _PATTERNS: list[tuple[str, tuple[str, ...]]] = [
     ("right_to_work_uk", (r"right to work", r"authorized to work", r"authorised to work", r"work authorization", r"work authorisation", r"legally authorized")),
     ("previously_employed", (r"previously employed", r"worked for .{0,20}(us|company|organisation|organization)", r"former employee", r"previously worked")),
     ("heard_about", (r"how did you hear", r"how you heard", r"where did you hear")),
-    ("free_school_meals", (r"free school meal", r"free lunch", r"school meals", r"socio-?economic")),
+    ("free_school_meals", (r"free school meal", r"free lunch", r"school meals")),
+    # Before "socio-economic" questions in general: these are the two the Social Mobility Commission asks.
+    ("parental_occupation", (r"household earner", r"parents?.{0,40}occupation", r"occupation.{0,40}parents?")),
+    ("school_type", (r"type of school", r"school type", r"what school did you (mainly )?attend", r"kind of school")),
+    ("free_school_meals", (r"socio-?economic",)),
+    ("sexual_orientation", (r"sexual orientation", r"\bsexuality\b")),
+    # Not "belief" or "faith" alone: declarations say "to the best of my knowledge and belief", "in good faith".
+    ("religion", (r"\breligio",)),
+    ("caring_responsibilities", (r"caring responsibilit", r"\bcarer\b", r"care for (a|an) (child|adult|relative)")),
+    ("notice_period", (r"notice period",)),
+    # Never a bare "start date": employment-history rows use that for past jobs.
+    ("earliest_start_date", (r"earliest start", r"when (can|could) you start", r"available to start", r"availability to start", r"start date.{0,20}(available|earliest)")),
+    ("willing_to_relocate", (r"\brelocat",)),
+    ("work_hours", (r"full[- ]time or part[- ]time", r"part[- ]time or full[- ]time")),
+    ("work_location", (r"remote,? hybrid", r"hybrid or remote", r"work remotely or", r"preferred work(ing)? (arrangement|location|model)")),
     ("linkedin_url", (r"\blinkedin\b",)),
     ("github_url", (r"\bgithub\b",)),
     ("portfolio_url", (r"\bportfolio\b", r"personal website", r"personal url")),
@@ -79,12 +93,45 @@ def match_answer_key(label: str, name: str = "") -> str | None:
     return None
 
 
+# Other wordings employers use for the fixed answers we save. Only whole-option matches count, so
+# a near miss is still left for the applicant (needs_input) rather than guessed.
+_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "available now": (
+        "immediately", "immediate", "available immediately", "immediately available", "now",
+        "no notice", "no notice period", "none", "0 weeks", "0 days",
+    ),
+    "1 week": ("one week", "7 days", "1 weeks"),
+    "2 weeks": ("two weeks", "14 days", "a fortnight", "fortnight"),
+    "1 month": ("one month", "4 weeks", "four weeks", "30 days", "1 months"),
+    "2 months": ("two months", "8 weeks", "eight weeks", "60 days"),
+    "3 months or more": (
+        "3 months", "three months", "3+ months", "3 months+", "more than 3 months",
+        "3 months or longer", "12 weeks", "90 days",
+    ),
+    "full time": ("fulltime", "full time only"),
+    "part time": ("parttime", "part time only"),
+    "either": ("both", "no preference", "full time or part time", "part time or full time", "open to both"),
+    "on site": ("onsite", "in office", "office based", "in person", "office"),
+    "hybrid": ("hybrid working", "flexible hybrid"),
+    "remote": ("fully remote", "remote only", "work from home", "home based"),
+    "any": ("no preference", "any", "flexible", "open to all", "open to any"),
+}
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[-_]", " ", text.lower())).strip(" .")
+
+
 def _pick_option(options: list[str], desired: str) -> str | None:
     if not options:
         return desired
     lower = desired.lower()
     for option in options:
         if option.lower() == lower:
+            return option
+    wanted = {_norm(desired), *_SYNONYMS.get(_norm(desired), ())}
+    for option in options:
+        if _norm(option) in wanted:
             return option
     if any(p in lower for p in _PREFER_LABELS) or desired == PREFER_NOT:
         for option in options:
@@ -157,20 +204,3 @@ def build_fill_plan(schema: FormSchema, answers: dict[str, object]) -> FillPlan:
             )
         )
     return FillPlan(steps=steps, missing=missing)
-
-
-def plan_from_json(data: dict[str, Any]) -> FillPlan:
-    return FillPlan(
-        steps=[
-            FillStep(
-                label=str(s.get("label") or ""),
-                name=str(s.get("name") or ""),
-                action=str(s.get("action") or "fill"),
-                value=str(s.get("value") or ""),
-                required=bool(s.get("required")),
-            )
-            for s in (data.get("steps") or [])
-            if isinstance(s, dict)
-        ],
-        missing=[str(m) for m in (data.get("missing") or [])],
-    )

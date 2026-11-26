@@ -13,10 +13,7 @@ _APPLICANT_LINKS = (
     ("profile", "Profile", "/profile"),
     ("account", "Account", "/account"),
 )
-_ADMIN_LINKS = (
-    ("quality", "Quality", "/admin/quality"),
-    ("applicants", "Applicants", "/admin/applicants"),
-)
+_ADMIN_LINKS = (("quality", "Quality", "/admin/quality"),)
 
 
 def _bar(request: Request, *, links: tuple[tuple[str, str, str], ...], active: str, brand: str, logout: str, admin: bool) -> str:
@@ -38,6 +35,14 @@ def admin_bar(request: Request, active: str) -> str:
 
 def public_bar() -> str:
     return """<header class="topbar"><div class="topbar-in">
-<a class="brand" href="/login"><span class="brand-mark">J</span>Job Agent</a>
+<a class="brand" href="/"><span class="brand-mark">J</span>Job Agent</a>
 <nav class="nav"><a href="/login">Log in</a><a href="/register">Register</a></nav>
+</div></header>"""
+
+
+def onboarding_bar(request: Request) -> str:
+    """Sign-up has no menu: the only way on is through the steps, or out by logging out."""
+    return f"""<header class="topbar"><div class="topbar-in">
+<span class="brand"><span class="brand-mark">J</span>Job Agent</span>
+<nav class="nav"><form method="post" action="/logout">{csrf_field(request)}<button type="submit">Log out</button></form></nav>
 </div></header>"""

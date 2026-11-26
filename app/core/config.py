@@ -20,18 +20,32 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = "postgresql+psycopg://jaa:jaa@localhost:5432/jaa"
+    database_url: str = "postgresql+psycopg://jaa:jaa@localhost:5436/jaa"
     admin_key: str = "change-me"
     session_secret: str = ""
     # Local development over plain http needs this false, or the browser drops the cookie.
     session_cookie_secure: bool = True
+    # Links in account emails start with this, never with the request's Host header (which a sender can forge).
+    public_base_url: str = "http://localhost:8000"
+
+    # Account emails (verify, reset). "smtp" sends; "memory" keeps them in a list for tests and never sends.
+    mail_backend: str = "smtp"
+    mail_from: str = "Job Agent <no-reply@localhost>"
+    # Defaults reach Mailpit from docker-compose.yml, which catches mail locally and sends nothing on.
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+    smtp_username: str = ""
+    smtp_password: str = ""
+    # "starttls", "ssl" or "none". Use "none" only for a local catcher such as Mailpit.
+    smtp_security: str = "none"
+    smtp_timeout_seconds: int = 10
 
     fetch_user_agent: str = (
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
     api_allowlist: str = (
         "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
-        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com"
+        "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,serpapi.com"
     )
 
     # D54: LinkedIn jobs through the Black Falcon Data scraper on Apify.
@@ -58,21 +72,27 @@ class Settings(BaseSettings):
     indeed_country: str = "uk"  # actor enum uses uk, not ISO gb
     indeed_unit_price: Decimal = Decimal("0.0002")
     indeed_run_price: Decimal = Decimal("0.01")
-    # Post-MVP apply agent: Greenhouse boards API first, else Apify form-schema actor.
-    apply_form_actor: str = ""
-    apply_form_unit_price: Decimal = Decimal("0.01")
-    apply_form_run_price: Decimal = Decimal("0.02")
-    apply_form_wait_minutes: int = 5
-    ai_apply_map_unit_price: Decimal = Decimal("0.002")
-    ai_apply_map_model: str = ""
-    ai_apply_map_max_output_tokens: int = 800
+
+    # D69: jobs on employers' own sites, found through Google search on SerpAPI. Blank key = off.
+    serpapi_api_key: str = ""
+    careers_every_hours: int = 24
+    # Google pages read per role and location; the next page is read only while too few jobs were found.
+    careers_max_pages: int = 3
+    careers_enough_jobs: int = 5
+    # Company pages opened per role and location, and job links followed from one careers page.
+    careers_max_visits: int = 20
+    careers_links_per_site: int = 3
+    careers_max_age_days: int = 30
+    careers_stale_days: int = 14
+    # SerpAPI's plans are about $0.01-0.025 a search; this ceiling is per Google page.
+    careers_search_price: Decimal = Decimal("0.02")
 
     # Outreach: people discovery and profile research through Apify (still never fetch linkedin.com here).
     apify_outreach_hm_actor: str = "automation_studio/linkedin-job-hiring-manager-finder"
     apify_outreach_employees_actor: str = "harvestapi/linkedin-company-employees"
     apify_outreach_profile_actor: str = "harvestapi/linkedin-profile"
     outreach_max_contacts: int = 8
-    outreach_people_unit_price: Decimal = Decimal("0.02")
+    outreach_people_unit_price: Decimal = Decimal("0.04")  # Apify refuses runs capped under $0.05.
     outreach_profile_unit_price: Decimal = Decimal("0.01")
     outreach_ai_unit_price: Decimal = Decimal("0.002")
     outreach_daily_send_cap: int = 20
@@ -161,10 +181,8 @@ class Settings(BaseSettings):
         "linkedin_run_price",
         "indeed_unit_price",
         "indeed_run_price",
+        "careers_search_price",
         "usd_to_gbp",
-        "apply_form_unit_price",
-        "apply_form_run_price",
-        "ai_apply_map_unit_price",
         "interview_collect_unit_price",
         "interview_collect_run_price",
         "interview_analyse_unit_price",
@@ -193,6 +211,14 @@ class Settings(BaseSettings):
             problems.append(f"SESSION_SECRET must be at least {MIN_SESSION_SECRET_LENGTH} characters")
         if self.admin_key in ("", "change-me"):
             problems.append("ADMIN_KEY must be set to a private value")
+        if self.mail_backend not in ("smtp", "memory"):
+            problems.append("MAIL_BACKEND must be smtp or memory")
+        if self.smtp_security not in ("starttls", "ssl", "none"):
+            problems.append("SMTP_SECURITY must be starttls, ssl or none")
+        if not self.public_base_url.startswith(("https://", "http://")):
+            problems.append("PUBLIC_BASE_URL must start with https:// or http://")
+        if self.session_cookie_secure and self.public_base_url.startswith("http://") and "localhost" not in self.public_base_url:
+            problems.append("PUBLIC_BASE_URL must use https:// when SESSION_COOKIE_SECURE is true")
         return problems
 
     def resolved_ai_summary_model(self) -> str:

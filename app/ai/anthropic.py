@@ -14,8 +14,9 @@ from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchRes
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2026-10-21"
-# The fetch gateway's 10s default aborted interview labelling and pack synthesis.
-# Callers pass this. Leaving timeout_s unset keeps every other model call at 10s.
+# Long structured answers (fit reports, tailored CVs) take well over the gateway's 10 s default.
+AI_TIMEOUT_S = 150.0
+# Interview labelling and pack synthesis; callers pass this explicitly.
 INTERVIEW_TIMEOUT_S = 30.0
 
 
@@ -44,7 +45,6 @@ async def send_anthropic_request(
     fallback_model: str,
     timeout_s: float | None = None,
 ) -> AiCallResponse | AiCallFailure:
-    extra = {} if timeout_s is None else {"timeout_s": timeout_s}
     request = FetchRequest(
         url=ANTHROPIC_MESSAGES_URL,
         method="POST",
@@ -55,7 +55,7 @@ async def send_anthropic_request(
             "Content-Type": "application/json",
         },
         body=json.dumps(body).encode("utf-8"),
-        **extra,
+        timeout_s=AI_TIMEOUT_S if timeout_s is None else timeout_s,
     )
     outcome = await gateway.fetch(request)
     if isinstance(outcome, FetchRefusal):

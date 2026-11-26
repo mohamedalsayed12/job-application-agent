@@ -88,6 +88,8 @@ def store_cv(session: Session, applicant_id: uuid.UUID, content: bytes | None, *
     row.file_type = file_type
     row.size_bytes = len(content)
     row.uploaded_at = now or datetime.now(UTC)
+    # Suggestions read from the old file don't describe the new one.
+    row.suggestions = None
     session.flush()
     return row
 

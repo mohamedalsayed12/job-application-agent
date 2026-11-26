@@ -207,6 +207,31 @@ async def test_d63_the_judge_is_told_every_level_the_person_wants(session: Sessi
     assert session.scalars(select(JobVerdict)).one().prompt_version == "job-judge-v3"
 
 
+async def test_d46_an_entry_level_seeker_gets_ai_matches_only_for_entry_level_adverts(session: Session) -> None:
+    """A "fits" verdict on an advert the AI reads as unclear or mid level stays off an entry-level page."""
+    _policy(session, Decimal("1"))
+    await _jobs(
+        session,
+        ("Payments Developer", "Manchester, UK"),
+        ("Platform Engineer", "Manchester, UK"),
+        ("Integrations Engineer", "Manchester, UK"),
+    )
+    graduate = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
+    session.add(ApplicantProfile(applicant_id=graduate, experience_levels=[ExperienceLevel.entry]))
+    session.flush()
+    judge = _Judge(
+        {
+            "Payments Developer": (True, "entry", "It builds payment services in Python."),
+            "Platform Engineer": (True, "unclear", "It builds payment services in Python."),
+            "Integrations Engineer": (True, "mid", "It builds payment services in Python."),
+        }
+    )
+    await _judge(session, judge)
+    match_all(session, now=SOON)
+
+    assert set(_matches(session, graduate)) == {_job(session, 1).id}
+
+
 async def test_d50_a_verdict_is_reused_until_the_profile_changes(session: Session) -> None:
     _policy(session, Decimal("1"))
     await _jobs(session, ("Backend Developer", "Manchester, UK"))

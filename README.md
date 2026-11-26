@@ -2,9 +2,7 @@
 
 Step 0 scaffold: FastAPI + SQLAlchemy 2 + PostgreSQL 16 + Alembic + uv.
 
-Source of truth for product scope: [`MVP.md`](./MVP.md) and [`PROMPTS.md`](./PROMPTS.md).
-
-Always-on agent quality stack (ponytail + pstack + thermos): [`docs/quality-stack.md`](./docs/quality-stack.md) · gate checklist [`docs/code-quality-gate.md`](./docs/code-quality-gate.md).
+Source of truth for product scope: [`MVP.md`](./MVP.md).
 
 ## Prerequisites
 
@@ -20,7 +18,7 @@ Always-on agent quality stack (ponytail + pstack + thermos): [`docs/quality-stac
 docker compose up -d
 ```
 
-This starts `postgres:16` on port `5432` with user/password/db `jaa` / `jaa` / `jaa` (see `.env.example`).
+This starts `postgres:16` on port `5436` with user/password/db `jaa` / `jaa` / `jaa` (see `.env.example`).
 
 ### 2. Configure environment
 
@@ -68,11 +66,16 @@ least 32 characters. See `.env.example`. For plain http on localhost, also set
 
 ## Accounts
 
-People register at `/register`, log in at `/login` and see their account at `/account`.
-Logging out ends the session on every device. Admin-created applicants have no password, so
-they cannot log in until an admin makes them a one-time link at
-`/admin/accounts/set-password-link`. The same link is the way back from a forgotten password,
-because the app sends no email. The rules are in `MVP.md` decision D37.
+The home page `/` is the register form, with a link to log in underneath. People register at
+`/register`, log in at `/login` and see their account at `/account`.
+
+Registering starts a sign-up wizard at `/onboarding`: upload a CV, check the contact details read
+from it, choose the jobs wanted, then availability and optional diversity questions. Each step is
+saved when the person presses Continue, so someone who leaves halfway carries on from the same step
+at their next login. Every contact detail the CV read suggests must appear in the CV text, and right
+to work, sponsorship and diversity answers are never taken from it. Finishing opens `/listings`.
+Accounts made before the wizard existed skip it.
+Logging out ends the session on every device. There is no password reset: the app sends no email.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
 certifications and licences, experience levels and optional travel distance. They can upload one
@@ -112,6 +115,33 @@ stopped.
 
 Set `APIFY_API_TOKEN` first. Each run is reserved against the monthly money cap before it
 starts, and the recorded cost is what Apify reports.
+
+### Jobs on company websites (D69)
+
+Not every employer posts on LinkedIn or Indeed, so once a day the worker also searches
+Google through [SerpAPI](https://serpapi.com) the way a person would. For each target role
+and location it:
+
+1. Googles the role (not in quotes, so similar titles come up too) at entry level in that place with "careers", leaving LinkedIn, Indeed
+   and the big job boards out of the query.
+2. Skips any result that is still a job board, and opens the rest on the company's own site
+   through the fetch gateway (robots.txt, rate limit and domain checks still apply).
+3. Keeps a page only when it describes a job in schema.org `JobPosting` data. A careers
+   page that only lists jobs is followed into up to 3 of its links that look like the role.
+4. Keeps the job only when it fits: the same or a similar title (a Python or Software
+   Engineer for a Backend Developer), or a different title whose advert asks for your
+   skillset (at least 3 of your profile skills, and at least half of the skills it names).
+   It must also be still open and
+   posted in the last 30 days, it is on the employer's own site or tracking system
+   (Greenhouse, Lever, Workable and similar), and **nothing in it leads back to LinkedIn or
+   Indeed**: no LinkedIn or Indeed job links and no "posted on / apply via" wording.
+5. Reads the next page of Google results while fewer than 5 jobs were found, up to 3 pages
+   and 20 company pages per search.
+
+Kept jobs go through the same cleaning, de-duplication, matching and AI judging as the
+other sources, and show as "Company website" on the listings page. Set `SERPAPI_API_KEY`
+to turn it on. Each Google page is one SerpAPI search, reserved against the monthly money
+cap at £0.02.
 
 ```bash
 uv run python -m app.worker          # runs until stopped
@@ -210,4 +240,4 @@ European Commission. Our list is an adapted version of it.
 - Monthly budget is unset until B1; paid calls, including Apify searches, stay blocked (stubs in `.env.example`).
 - Milestone 1 tables land in revision `0002_milestone1_schema` (`app/models.py`). Unique-key proofs are in `tests/test_unique_keys.py`.
 - Tests assume an empty database. Once jobs have been collected, point tests at a separate one: `DATABASE_URL=postgresql+psycopg://…/job_app_agent_test uv run pytest`.
-- Admin applicants (Milestone 1): set `ADMIN_KEY`, log in at `/admin/login`, then open `/admin/applicants` (or send header `X-Admin-Key`). Expected salary is a matching preference only (D3).
+- Admin: set `ADMIN_KEY`, log in at `/admin/login` (or send header `X-Admin-Key` on GETs) to open `/admin/quality`. Expected salary is a matching preference only (D3).
