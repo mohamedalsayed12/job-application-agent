@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         "JobApplicationAgent/0.1 (+https://github.com/mohamedalsayed12/job-application-agent)"
     )
     api_allowlist: str = (
-        "api.apify.com,api.anthropic.com,boards-api.greenhouse.io,"
+        "api.apify.com,api.anthropic.com,"
         "oauth2.googleapis.com,gmail.googleapis.com,www.googleapis.com,serpapi.com"
     )
 
@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     search_retry_hours: int = 1
     linkedin_stale_days: int = 14
     linkedin_wait_minutes: int = 15
+    # The typed titles and then their related titles, searched in each location.
+    linkedin_titles_per_person: int = 10
     # The scraper charges $0.00027 a job and $0.0005 a run, and Apify adds compute; these ceilings cover all three.
     linkedin_unit_price: Decimal = Decimal("0.001")
     linkedin_run_price: Decimal = Decimal("0.02")
@@ -78,7 +80,7 @@ class Settings(BaseSettings):
     indeed_unit_price: Decimal = Decimal("0.0002")
     indeed_run_price: Decimal = Decimal("0.01")
 
-    # D71: Google Jobs through SerpAPI (never fetch google.com; serpapi.com is allowlisted).
+    # D73: Google Jobs through SerpAPI (never fetch google.com; serpapi.com is allowlisted).
     serpapi_api_key: str = ""
     google_jobs_max_results: int = 10  # one SerpAPI page
     google_jobs_every_hours: int = 24
@@ -100,6 +102,11 @@ class Settings(BaseSettings):
     # SerpAPI's plans are about $0.01-0.025 a search; this ceiling is per Google page.
     careers_search_price: Decimal = Decimal("0.02")
 
+    # Apply fill: matching form questions the patterns miss to the person's own answers or CV text.
+    ai_apply_map_unit_price: Decimal = Decimal("0.002")
+    ai_apply_map_model: str = ""
+    ai_apply_map_max_output_tokens: int = 800
+
     # Outreach: people discovery and profile research through Apify (still never fetch linkedin.com here).
     apify_outreach_hm_actor: str = "automation_studio/linkedin-job-hiring-manager-finder"
     apify_outreach_employees_actor: str = "harvestapi/linkedin-company-employees"
@@ -118,7 +125,7 @@ class Settings(BaseSettings):
     gmail_token_key: str = ""
 
     # Interview intel: public Reddit, YouTube and LinkedIn posts through Apify (no Instagram/TikTok in v1).
-    interview_reddit_actor: str = "trudax/reddit-scraper-lite"
+    interview_reddit_actor: str = "harshmaur/reddit-search-scraper"
     interview_youtube_actor: str = "streamers/youtube-scraper"
     interview_linkedin_actor: str = "apimaestro/linkedin-posts-search-scraper-no-cookies"
     interview_max_per_platform: int = 25
@@ -155,6 +162,9 @@ class Settings(BaseSettings):
     ai_report_unit_price: Decimal = Decimal("0.0015")
     # D55: keyword extract / tailor / ATS revise each reserve this ceiling once.
     ai_tailor_unit_price: Decimal = Decimal("0.003")
+    # About 300 tokens in and 100 out on Haiku 5.5 for one title; this is a ceiling.
+    # D64: about 0.5k tokens in and 0.4k out on Haiku 5.5, well under £0.001; this is a ceiling.
+    ai_ideas_unit_price: Decimal = Decimal("0.002")
 
     # D41: job summaries. Blank model = provider default. Caps cover input + output tokens.
     ai_summary_model: str = ""
@@ -166,6 +176,8 @@ class Settings(BaseSettings):
     ai_cv_model: str = ""
     ai_cv_max_output_tokens: int = 1500
     ai_cv_max_chars: int = 24000
+    # D64: suggesting roles and places to search uses the CV model.
+    ai_ideas_max_output_tokens: int = 800
 
     # D50: the AI judging whether each job fits each person. Blank model = provider default.
     ai_judge_model: str = ""
@@ -209,6 +221,7 @@ class Settings(BaseSettings):
         "google_jobs_run_price",
         "careers_search_price",
         "usd_to_gbp",
+        "ai_apply_map_unit_price",
         "interview_collect_unit_price",
         "interview_collect_run_price",
         "interview_analyse_unit_price",
@@ -223,6 +236,7 @@ class Settings(BaseSettings):
         "outreach_people_unit_price",
         "outreach_profile_unit_price",
         "outreach_ai_unit_price",
+        "ai_ideas_unit_price",
         mode="before",
     )
     @classmethod
@@ -267,6 +281,9 @@ class Settings(BaseSettings):
 
     def resolved_ai_outreach_model(self) -> str:
         return self.resolved_model(self.ai_summary_model)
+
+    def resolved_ai_apply_map_model(self) -> str:
+        return self.ai_apply_map_model.strip() or _DEFAULT_AI_MODELS.get(self.ai_provider.strip().lower(), "")
 
     def gmail_seal_secret(self) -> str:
         return (self.gmail_token_key or self.session_secret).strip()

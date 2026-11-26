@@ -22,6 +22,7 @@ _PRICE = {
     SpendKind.ai_job_judge: "ai_judge_unit_price",
     SpendKind.ai_fit_report: "ai_report_unit_price",
     SpendKind.ai_cv_tailor: "ai_tailor_unit_price",
+    SpendKind.ai_search_ideas: "ai_ideas_unit_price",
     SpendKind.ai_summary: "ai_summary_unit_price",
 }
 

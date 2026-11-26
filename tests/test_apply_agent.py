@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -11,15 +13,21 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.accounts import throttle
+from app.applications.fill_safety import assert_plan_has_no_submit_clicks, is_submit_control
 from app.api.forms import require_csrf
 from app.applicants.apply_answers import AnswersInput, save_answers
 from app.applications.extension_device import issue_token
-from app.applications.fill_safety import (
-    assert_plan_has_no_submit_clicks,
-    is_submit_control,
+from app.applications.mapper import (
+    FillPlan,
+    FillStep,
+    FormField,
+    Match,
+    build_fill_plan,
+    facts_from_profile,
+    match_answer_key,
+    matches_from_payload,
 )
-from app.applications.mapper import build_fill_plan, match_answer_key
-from app.applications.schema import FormField, FormSchema
+from app.applications.prepare import store_fill_outcome
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
@@ -29,7 +37,6 @@ from app.models import (
     Application,
     ApplicationAnswers,
     ApplicationStatus,
-    AtsKind,
     CvFile,
     CvFileType,
     ExtensionDevice,
@@ -57,6 +64,11 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[require_csrf] = lambda: None
+
+    async def _no_model(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr("app.applications.plan.model_matches", _no_model)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -65,7 +77,8 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def _register(client: httpx.AsyncClient) -> None:
-    assert (await sign_up(client, EMAIL, PASSWORD)).status_code == 303
+    response = await sign_up(client, EMAIL, PASSWORD)
+    assert response.status_code == 303
 
 
 def _applicant(session: Session) -> Applicant:
@@ -79,7 +92,7 @@ def _job(session: Session) -> Job:
             _li(
                 9001,
                 title="Platform Engineer",
-                **{"applyUrl": "https://boards.greenhouse.io/acme/jobs/12345"},
+                **{"applyUrl": "https://careers.example.com/jobs/12345/apply"},
             )
         ],
     )
@@ -95,99 +108,106 @@ def test_mapper_recognises_common_labels() -> None:
 
 def test_mapper_does_not_false_match_common_traps() -> None:
     assert match_answer_key("Tell us why you want this role") is None
-    # D62: it has its own answer now, and is still never read as gender.
     assert match_answer_key("Sexual orientation") == "sexual_orientation"
     assert match_answer_key("Hotel preferences") is None
     assert match_answer_key("Intelligence") is None
     assert match_answer_key("Gender") == "gender"
 
 
-def test_fill_plan_maps_answers_and_flags_gaps() -> None:
-    schema = FormSchema(
-        ats_kind=AtsKind.greenhouse,
-        source="stub",
-        fields=[
-            FormField("First name", "first_name", "text", True),
-            FormField("Visa sponsorship", "sponsorship", "yes_no", True),
-            FormField("Free school meals", "fsm", "select", False, ["Yes", "No", "Prefer not to say"]),
-            FormField("Resume", "resume", "file", True),
-            FormField("Secret custom question", "custom", "text", True),
-        ],
-    )
-    answers = {
-        "legal_first_name": "Mo",
-        "needs_visa_sponsorship": False,
-        "free_school_meals": PREFER_NOT,
-        "cv": "upload_cv",
-        "email": EMAIL,
-    }
-    plan = build_fill_plan(schema, answers)
-    actions = {s.label: s for s in plan.steps}
-    assert actions["First name"].value == "Mo"
-    assert actions["Visa sponsorship"].value == "No"
-    assert actions["Free school meals"].value == "Prefer not to say"
-    assert actions["Resume"].action == "upload_cv"
-    assert plan.missing == ["Secret custom question"]
-    assert_plan_has_no_submit_clicks(plan.to_json())
-
-    decline_plan = build_fill_plan(
-        FormSchema(
-            ats_kind=AtsKind.greenhouse,
-            source="stub",
-            fields=[FormField("Ethnicity", "eth", "select", False, ["Yes", "No", "I do not want to answer"])],
-        ),
-        {"ethnicity": PREFER_NOT},
-    )
-    assert decline_plan.steps[0].value == "I do not want to answer"
-
-
 def test_submit_controls_are_detected() -> None:
     assert is_submit_control(tag="button", type_attr="submit", text="Save")
     assert is_submit_control(tag="button", type_attr="button", text="Apply now")
     assert not is_submit_control(tag="button", type_attr="button", text="Next section")
+    assert_plan_has_no_submit_clicks({"steps": [{"action": "fill", "value": "Ada"}]})
 
 
-def _answers(session: Session, applicant: Applicant) -> None:
-    save_answers(
-        session,
-        applicant.id,
-        AnswersInput(
-            legal_first_name="Mo",
-            legal_last_name="Ali",
-            phone="07000000000",
-            address_line="1 High St",
-            city="Manchester",
-            postcode="M1 1AA",
-            country="United Kingdom",
-            linkedin_url="",
-            github_url="",
-            portfolio_url="",
-            right_to_work_uk="yes",
-            needs_visa_sponsorship="no",
-            nationality="British",
-            heard_about="Job board",
-            previously_employed="no",
-            free_school_meals=PREFER_NOT,
-            gender=PREFER_NOT,
-            ethnicity=PREFER_NOT,
-            disability=PREFER_NOT,
-            veteran=PREFER_NOT,
-        ),
+def _field(field_id: str, label: str, name: str, field_type: str, required: bool = False, options: list[str] | None = None) -> FormField:
+    return FormField(id=field_id, label=label, name=name, type=field_type, required=required, options=options or [])
+
+
+def test_fill_plan_maps_answers_and_flags_gaps() -> None:
+    fields = [
+        _field("name", "First name", "first_name", "text", True),
+        _field("visa", "Visa sponsorship", "sponsorship", "select", True, ["Yes", "No"]),
+        _field("fsm", "Free school meals", "fsm", "select", False, ["Yes", "No", "Prefer not to say"]),
+        _field("cv", "Resume", "resume", "file", True),
+        _field("why", "Secret custom question", "custom", "text", True),
+    ]
+    facts = facts_from_profile(
+        {
+            "legal_first_name": "Ada",
+            "needs_visa_sponsorship": False,
+            "free_school_meals": PREFER_NOT,
+            "email": EMAIL,
+        },
+        [],
     )
+    plan = build_fill_plan(fields, facts)
+    actions = {step.field_id: step for step in plan.steps}
+    assert actions["name"].value == "Ada"
+    assert actions["visa"].value == "No"
+    assert actions["fsm"].value == "Prefer not to say"
+    assert actions["cv"].action == "upload_cv"
+    assert [question.label for question in plan.missing] == ["Secret custom question"]
+
+    decline = build_fill_plan(
+        [_field("eth", "Ethnicity", "eth", "select", False, ["Yes", "No", "I do not want to answer"])],
+        facts_from_profile({"ethnicity": PREFER_NOT}, []),
+    )
+    assert decline.steps[0].value == "I do not want to answer"
 
 
-# What the extension reports after reading a form in the person's browser (D70).
-SCANNED = {
-    "page_url": "https://job-boards.greenhouse.io/acme/jobs/12345",
-    "fields": [
-        {"label": "First name", "name": "first_name", "type": "text", "required": True},
-        {"label": "Email", "name": "email", "type": "email", "required": True},
-        {"label": "Resume/CV", "name": "resume", "type": "file", "required": True},
-        {"label": "Do you require visa sponsorship?", "name": "q_sponsor", "type": "radio", "required": True, "options": ["Yes", "No"]},
-        {"label": "Why do you want to work at Acme?", "name": "jaa-7", "type": "textarea", "required": True},
-        {"label": "Anything else?", "name": "jaa-8", "type": "textarea", "required": False},
-    ],
-}
+def test_an_invented_model_value_is_rejected() -> None:
+    field = _field("why", "Why do you want this role?", "why", "textarea", True)
+    facts = facts_from_profile({"email": EMAIL}, [])
+    invented = matches_from_payload({"matches": [{"field_id": "why", "value": "I am a world-class ninja"}]})
+    assert invented["why"] == Match()
+    plan = build_fill_plan(
+        [field],
+        facts,
+        cv_text="Ada Lovelace builds tools.",
+        matches={"why": Match(cv_quote="I am a world-class ninja")},
+    )
+    assert plan.steps == []
+    assert plan.missing[0].label == "Why do you want this role?"
+
+    quoted = build_fill_plan(
+        [field],
+        facts,
+        cv_text="Ada Lovelace builds tools.",
+        matches={"why": Match(cv_quote="Ada Lovelace builds tools.")},
+    )
+    assert quoted.steps[0].value == "Ada Lovelace builds tools."
+    assert quoted.steps[0].source == "cv"
+
+
+def test_a_cv_quote_cannot_be_letters_inside_a_word() -> None:
+    field = _field("visa", "Do you need visa sponsorship?", "visa", "select", True, ["Yes", "No"])
+    plan = build_fill_plan(
+        [field],
+        facts_from_profile({"email": EMAIL}, []),
+        cv_text="North London knowledge and another note",
+        matches={"visa": Match(cv_quote="No")},
+    )
+    assert plan.steps == []
+    assert plan.missing[0].label == "Do you need visa sponsorship?"
+
+
+def test_a_complete_plan_reopens_a_failed_application() -> None:
+    row = Application(
+        applicant_id=uuid4(),
+        job_id=uuid4(),
+        apply_url="https://careers.example.com/jobs/1/apply",
+        status=ApplicationStatus.failed.value,
+        missing_fields=["Why"],
+        fill_plan_json={"steps": []},
+        error="nope",
+    )
+    store_fill_outcome(row, FillPlan(steps=[FillStep("f0", "fill", "Ada", "answers")], missing=[], attach=[]))
+    assert row.status == ApplicationStatus.ready_to_fill.value
+    assert row.missing_fields == []
+    assert row.error is None
+    assert row.fill_plan_json["steps"][0]["value"] == "Ada"
 
 
 async def test_prepare_fetches_nothing_and_waits_for_the_extension(client: httpx.AsyncClient, session: Session) -> None:
@@ -198,73 +218,12 @@ async def test_prepare_fetches_nothing_and_waits_for_the_extension(client: httpx
 
     assert response.status_code == 303
     row = session.scalar(select(Application).where(Application.job_id == job.id))
+    assert response.headers["location"] == f"/applications/{row.id}"
     assert row.status == ApplicationStatus.ready_to_fill.value
+    assert row.apply_url == "https://careers.example.com/jobs/12345/apply"
     assert row.schema_json is None and row.fill_plan_json is None
     page = await client.get(response.headers["location"])
     assert "Fill this tab" in page.text
-
-
-async def test_the_extension_reads_the_form_and_gets_a_plan_from_saved_answers(
-    client: httpx.AsyncClient, session: Session
-) -> None:
-    await _register(client)
-    applicant = _applicant(session)
-    _answers(session, applicant)
-    job = _job(session)
-    await client.post("/applications", data={"job_id": str(job.id)})
-    row = session.scalar(select(Application).where(Application.job_id == job.id))
-    headers = {"Authorization": f"Bearer {issue_token(session, applicant.id)}"}
-    session.flush()
-
-    ready = (await client.get("/extension/applications/ready", headers=headers)).json()
-    assert [(r["id"], r["title"]) for r in ready] == [(str(row.id), "Platform Engineer")]
-
-    answer = await client.post(f"/extension/applications/{row.id}/form", headers=headers, json=SCANNED)
-
-    assert answer.status_code == 200
-    plan = answer.json()
-    steps = {step["name"]: (step["action"], step["value"]) for step in plan["steps"]}
-    assert steps["first_name"] == ("fill", "Mo")
-    assert steps["email"] == ("fill", EMAIL)
-    assert steps["resume"] == ("upload_cv", "cv")
-    assert steps["q_sponsor"] == ("select", "No")
-    # Nothing is made up: the question with no saved answer is listed for the person, not filled.
-    assert "jaa-7" not in steps and "jaa-8" not in steps
-    assert plan["missing"] == ["Why do you want to work at Acme?"]
-    session.refresh(row)
-    assert row.status == ApplicationStatus.needs_input.value
-    assert row.missing_fields == ["Why do you want to work at Acme?"]
-    assert row.schema_json["page_url"] == SCANNED["page_url"]
-    assert row.ats_kind == AtsKind.greenhouse.value
-    assert "Why do you want to work at Acme?" in (await client.get(f"/applications/{row.id}")).text
-
-    # Still open: once answered on the page, a second read without that question makes it ready.
-    again = dict(SCANNED, fields=[f for f in SCANNED["fields"] if f["name"] != "jaa-7"])
-    assert (await client.post(f"/extension/applications/{row.id}/form", headers=headers, json=again)).json()["missing"] == []
-    session.refresh(row)
-    assert row.status == ApplicationStatus.ready_to_fill.value
-
-
-async def test_the_form_endpoint_refuses_other_people_and_sent_applications(
-    client: httpx.AsyncClient, session: Session
-) -> None:
-    await _register(client)
-    applicant = _applicant(session)
-    job = _job(session)
-    await client.post("/applications", data={"job_id": str(job.id)})
-    row = session.scalar(select(Application).where(Application.job_id == job.id))
-    stranger = Applicant(email="stranger@example.com", password_hash="x")
-    session.add(stranger)
-    session.flush()
-    theirs = {"Authorization": f"Bearer {issue_token(session, stranger.id)}"}
-    mine = {"Authorization": f"Bearer {issue_token(session, applicant.id)}"}
-    session.flush()
-
-    assert (await client.post(f"/extension/applications/{row.id}/form", headers=theirs, json=SCANNED)).status_code == 404
-    assert (await client.post(f"/extension/applications/{row.id}/form", json=SCANNED)).status_code == 401
-    row.status = ApplicationStatus.submitted.value
-    session.flush()
-    assert (await client.post(f"/extension/applications/{row.id}/form", headers=mine, json=SCANNED)).status_code == 409
 
 
 async def test_extension_ready_cv_and_status(client: httpx.AsyncClient, session: Session) -> None:
@@ -285,8 +244,7 @@ async def test_extension_ready_cv_and_status(client: httpx.AsyncClient, session:
         job_id=job.id,
         apply_url=job.apply_url,
         status=ApplicationStatus.ready_to_fill.value,
-        ats_kind=AtsKind.greenhouse.value,
-        fill_plan_json={"steps": [{"label": "First name", "name": "first_name", "action": "fill", "value": "Mo", "required": True}], "missing": []},
+        fill_plan_json=None,
         missing_fields=[],
     )
     session.add(app_row)
@@ -510,3 +468,128 @@ async def test_the_extension_cannot_mark_an_application_submitted(client: httpx.
     assert response.status_code == 400
     session.refresh(row)
     assert row.status == ApplicationStatus.ready_to_fill.value
+
+
+def test_extension_source_never_submits() -> None:
+    root = Path(__file__).resolve().parents[1] / "extension"
+    source = "\n".join(path.read_text(encoding="utf-8") for path in root.glob("*.js"))
+    assert "requestSubmit" not in source
+    assert ".submit(" not in source
+    assert "KeyboardEvent" not in source
+    assert "https://*/*" not in (root / "manifest.json").read_text(encoding="utf-8")
+
+
+def _form_fields(*rows: tuple[str, str, str]) -> dict:
+    return {
+        "page_url": "https://careers.example.com/jobs/12345/apply",
+        "fields": [
+            {"id": field_id, "label": label, "name": name, "type": "textarea" if name == "why" else "text", "required": True, "options": []}
+            for field_id, label, name in rows
+        ],
+    }
+
+
+async def test_missing_answer_is_named_saved_and_reused(
+    client: httpx.AsyncClient, session: Session
+) -> None:
+    await _register(client)
+    applicant = _applicant(session)
+    save_answers(
+        session,
+        applicant.id,
+        AnswersInput(
+            legal_first_name="Ada",
+            legal_last_name="Lovelace",
+            phone="",
+            address_line="",
+            city="",
+            postcode="",
+            country="",
+            linkedin_url="",
+            github_url="",
+            portfolio_url="",
+            right_to_work_uk="yes",
+            needs_visa_sponsorship="no",
+            nationality="",
+            heard_about="",
+            previously_employed="no",
+            free_school_meals=PREFER_NOT,
+            gender=PREFER_NOT,
+            ethnicity=PREFER_NOT,
+            disability=PREFER_NOT,
+            veteran=PREFER_NOT,
+        ),
+    )
+    job = _job(session)
+    prepared = await client.post("/applications", data={"job_id": str(job.id)})
+    assert prepared.status_code == 303
+    row = session.scalar(select(Application).where(Application.job_id == job.id))
+    token = issue_token(session, applicant.id)
+    session.flush()
+    headers = {"Authorization": f"Bearer {token}"}
+    asked = _form_fields(("f0", "First name", "first_name"), ("f1", "Why do you want this role?", "why"))
+
+    first = await client.post(f"/extension/applications/{row.id}/form", headers=headers, json=asked)
+    assert first.status_code == 200
+    body = first.json()
+    assert body["status"] == ApplicationStatus.needs_input.value
+    assert body["plan"]["steps"] == []
+    assert "Why do you want this role?" in body["notice"]
+    page = await client.get("/applications")
+    assert "Why do you want this role?" in page.text
+    assert "Answer these questions, then fill again" in page.text
+
+    saved = await client.post(
+        f"/applications/{row.id}/answers",
+        data={"question_0": "Why do you want this role?", "answer_0": "I like building tools."},
+    )
+    assert saved.status_code == 303
+    session.refresh(row)
+    assert row.status == ApplicationStatus.ready_to_fill.value
+    assert row.fill_plan_json is None
+
+    again = await client.post(f"/extension/applications/{row.id}/form", headers=headers, json=asked)
+    assert again.status_code == 200
+    filled = {step["field_id"]: step for step in again.json()["plan"]["steps"]}
+    assert filled["f0"]["value"] == "Ada"
+    assert filled["f1"]["value"] == "I like building tools."
+    assert "click Submit yourself" in again.json()["notice"]
+
+    _store(
+        session,
+        [_li(9002, title="Support Engineer", **{"applyUrl": "https://careers.example.com/jobs/9002/apply"})],
+    )
+    other = session.scalar(select(Job).where(Job.title == "Support Engineer"))
+    assert (await client.post("/applications", data={"job_id": str(other.id)})).status_code == 303
+    second = session.scalar(select(Application).where(Application.job_id == other.id))
+    reworded = _form_fields(("f0", "Please tell us why you want this role", "why"))
+    reused = await client.post(f"/extension/applications/{second.id}/form", headers=headers, json=reworded)
+    assert reused.status_code == 200
+    assert reused.json()["plan"]["missing"] == []
+    assert reused.json()["plan"]["steps"][0]["value"] == "I like building tools."
+
+
+async def test_plan_rejects_an_invented_model_value(
+    client: httpx.AsyncClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _invented(*_args, **_kwargs):
+        return {"f0": Match(cv_quote="I am a world-class ninja")}
+
+    monkeypatch.setattr("app.applications.plan.model_matches", _invented)
+    await _register(client)
+    applicant = _applicant(session)
+    job = _job(session)
+    await client.post("/applications", data={"job_id": str(job.id)})
+    row = session.scalar(select(Application).where(Application.job_id == job.id))
+    token = issue_token(session, applicant.id)
+    session.flush()
+
+    response = await client.post(
+        f"/extension/applications/{row.id}/form",
+        headers={"Authorization": f"Bearer {token}"},
+        json=_form_fields(("f0", "Why do you want this role?", "why")),
+    )
+    assert response.status_code == 200
+    assert response.json()["plan"]["steps"] == []
+    assert response.json()["status"] == ApplicationStatus.needs_input.value
+    assert "Why do you want this role?" in response.json()["notice"]

@@ -8,28 +8,21 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.applicants.cv import cv_for
+from app.applications.cv_choice import choose_cv
 from app.applications.extension_device import applicant_for_token
 from app.applications.fill_safety import assert_plan_has_no_submit_clicks
+from app.applications.mapper import FormField
+from app.applications.plan import build_application_plan, notice_for
 from app.applications.prepare import (
     PrepareRefused,
     get_application,
     list_applications,
-    plan_for_scanned_form,
     set_application_status,
 )
 from app.core.db import get_db
-from app.models import (
-    Applicant,
-    ApplicationStatus,
-    CvFileType,
-    Job,
-    TailoredCv,
-    TailoredCvStatus,
-)
+from app.models import Applicant, ApplicationStatus, CvFileType, Job
 
 router = APIRouter(prefix="/extension", tags=["extension"])
 
@@ -81,11 +74,12 @@ def ready_applications(
 
 
 class ScannedField(BaseModel):
+    id: str = Field(default="", max_length=64)
     label: str = Field(default="", max_length=500)
     name: str = Field(default="", max_length=300)
     type: str = Field(default="text", max_length=32)
     required: bool = False
-    options: list[Annotated[str, Field(max_length=300)]] = Field(default_factory=list, max_length=300)
+    options: list[Annotated[str, Field(max_length=300)]] = Field(default_factory=list, max_length=400)
 
 
 class ScannedForm(BaseModel):
@@ -93,14 +87,56 @@ class ScannedForm(BaseModel):
     fields: list[ScannedField] = Field(max_length=400)
 
 
+_SCAN_TYPES = {
+    "text": "text",
+    "email": "email",
+    "tel": "tel",
+    "url": "url",
+    "number": "number",
+    "date": "date",
+    "search": "text",
+    "textarea": "textarea",
+    "select": "select",
+    "select-one": "select",
+    "select-multiple": "select",
+    "radio": "radio",
+    "checkbox": "checkbox",
+    "file": "file",
+}
+
+
+def _as_form_fields(items: list[ScannedField]) -> list[FormField]:
+    fields: list[FormField] = []
+    for index, item in enumerate(items):
+        field_type = _SCAN_TYPES.get(str(item.type or "text").lower())
+        if field_type is None:
+            continue
+        label = item.label.strip()
+        name = item.name.strip()
+        if not (label or name):
+            continue
+        field_id = item.id.strip() or f"f{index}"
+        fields.append(
+            FormField(
+                id=field_id,
+                label=label or name,
+                name=name or label,
+                type=field_type,  # type: ignore[arg-type]
+                required=item.required,
+                options=[option.strip() for option in item.options if option.strip()],
+            )
+        )
+    return fields
+
+
 @router.post("/applications/{application_id}/form")
-def plan_from_form(
+async def plan_from_form(
     application_id: uuid.UUID,
     body: ScannedForm,
     applicant_id: uuid.UUID = Depends(_bearer_applicant),
     db: Session = Depends(get_db),
 ) -> dict:
-    """The fields the extension read on the open page in, the fill plan out (D70)."""
+    """The fields the extension read on the open page in, the fill plan out (D70 + D66)."""
     row = get_application(db, application_id, applicant_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -109,31 +145,37 @@ def plan_from_form(
     if not body.page_url.lower().startswith(("https://", "http://")):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Not a web page")
     applicant = db.get(Applicant, applicant_id)
-    plan = plan_for_scanned_form(
-        db, row, applicant, page_url=body.page_url, fields=[field.model_dump() for field in body.fields]
-    )
+    if applicant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
+    fields = _as_form_fields(body.fields)
+    if not fields:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="No form fields on this page")
+    plan = await build_application_plan(db, applicant, row, fields)
+    row.schema_json = {
+        "page_url": body.page_url,
+        "source": "extension",
+        "fields": [
+            {
+                "id": field.id,
+                "label": field.label,
+                "name": field.name,
+                "type": field.type,
+                "required": field.required,
+                "options": field.options,
+            }
+            for field in fields
+        ],
+    }
     payload = plan.to_json()
     assert_plan_has_no_submit_clicks(payload)
     db.commit()
-    return {"id": str(row.id), "status": row.status, **payload}
-
-
-
-def _tailored_pdf(db: Session, applicant_id: uuid.UUID, application_id: uuid.UUID | None) -> bytes | None:
-    """The job's tailored CV (D55) when one is ready, so the form gets the version written for it."""
-    if application_id is None:
-        return None
-    row = get_application(db, application_id, applicant_id)
-    if row is None:
-        return None
-    tailored = db.scalar(
-        select(TailoredCv).where(
-            TailoredCv.applicant_id == applicant_id,
-            TailoredCv.job_id == row.job_id,
-            TailoredCv.status == TailoredCvStatus.ready.value,
-        )
-    )
-    return bytes(tailored.pdf_content) if tailored is not None and tailored.pdf_content else None
+    return {
+        "id": str(row.id),
+        "status": row.status,
+        "plan": payload,
+        "notice": notice_for(plan),
+        **payload,
+    }
 
 
 @router.get("/cv")
@@ -142,14 +184,15 @@ def download_cv(
     applicant_id: uuid.UUID = Depends(_bearer_applicant),
     db: Session = Depends(get_db),
 ) -> Response:
-    tailored = _tailored_pdf(db, applicant_id, application_id)
-    if tailored is not None:
-        content, file_type = tailored, CvFileType.pdf.value
-    else:
-        cv = cv_for(db, applicant_id)
-        if cv is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No CV uploaded")
-        content, file_type = bytes(cv.content), cv.file_type
+    row = None
+    if application_id is not None:
+        row = get_application(db, application_id, applicant_id)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Not found")
+    chosen = choose_cv(db, applicant_id, row)
+    if chosen is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No CV uploaded")
+    content, file_type = chosen.content, chosen.file_type
     media = "application/pdf" if file_type == CvFileType.pdf.value else (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
