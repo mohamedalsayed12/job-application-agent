@@ -204,7 +204,7 @@ async def test_d63_the_judge_is_told_every_level_the_person_wants(session: Sessi
     await _judge(session, judge)
 
     assert "Experience levels wanted: entry, mid" in judge.sent[0]
-    assert session.scalars(select(JobVerdict)).one().prompt_version == "job-judge-v3"
+    assert session.scalars(select(JobVerdict)).one().prompt_version == "job-judge-v4"
 
 
 async def test_d46_an_entry_level_seeker_gets_ai_matches_only_for_entry_level_adverts(session: Session) -> None:

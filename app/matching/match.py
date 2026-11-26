@@ -1,4 +1,4 @@
-"""Stage 10: match stored jobs to every applicant, on role, location, salary status, skills and licences.
+"""Stage 10: match stored jobs to every applicant, on role, location, salary, sponsorship, skills and licences.
 
 Rules, plus the AI's saved verdicts (D50): a job the AI says fits is matched even when the rules
 miss it, and a job it says doesn't fit is left out. Matching itself never calls the AI, so it
@@ -28,6 +28,7 @@ from app.matching.credentials import Held, held_groups, required_in_advert
 from app.matching import semantic
 from app.matching.related_titles import with_related
 from app.matching.semantic import Embedder, similarity
+from app.matching.sponsorship import job_excluded_for_sponsorship
 from app.matching.titles import (
     ENTRY_TITLE,
     NOT_ENTRY_TITLE,
@@ -490,6 +491,7 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
         preferences = preferences.where(ApplicantPreference.applicant_id.in_(applicant_ids))
     for preference in session.scalars(preferences).all():
         report.applicants += 1
+        profile = profiles.get(preference.applicant_id)
         _match_applicant(
             session,
             preference,
@@ -500,7 +502,8 @@ def match_all(session: Session, *, now: datetime, applicant_ids: set[uuid.UUID] 
             levels=chosen_or_inferred(levels.get(preference.applicant_id, frozenset()), preference.target_roles),
             titles=with_related(session, preference.target_roles),
             meaning=meaning,
-            verdicts=_verdicts(session, profiles.get(preference.applicant_id), job_digests),
+            verdicts=_verdicts(session, profile, job_digests),
+            needs_visa_sponsorship=profile.needs_visa_sponsorship if profile else None,
         )
     session.flush()
     return report
@@ -518,6 +521,7 @@ def _match_applicant(
     titles: list[str],
     meaning: TitleMeaning,
     verdicts: dict[uuid.UUID, JobVerdict],
+    needs_visa_sponsorship: bool | None = None,
 ) -> None:
     applicant_id = preference.applicant_id
     wanted = wanted_locations(preference.locations)
@@ -560,6 +564,10 @@ def _match_applicant(
             job_period=job.salary_period,
         )
         if job_excluded_for_salary(salary):
+            continue
+        if job_excluded_for_sponsorship(
+            needs_visa_sponsorship=needs_visa_sponsorship, description=facts.description
+        ):
             continue
         fits, location = location_fit(wanted, facts.places, facts.remote_type)
         fit = Fit(
