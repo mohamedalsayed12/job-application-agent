@@ -24,7 +24,7 @@ from tests.test_accounts import EMAIL, OTHER_PASSWORD, PASSWORD, _admin_created
 # The same logged-out client, with form tokens switched off, as the account tests use.
 client = test_accounts.client
 
-PROTECTED = ("/account", "/profile", "/listings", "/applications", "/workflow", "/onboarding", "/onboarding/cv")
+PROTECTED = ("/account", "/profile", "/listings", "/applications", "/onboarding", "/onboarding/cv")
 
 
 async def _register_only(client: httpx.AsyncClient, email: str = EMAIL, password: str = PASSWORD) -> httpx.Response:

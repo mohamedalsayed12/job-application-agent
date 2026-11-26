@@ -524,6 +524,7 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def _person_on_a_job_without_a_report(session: Session, client: httpx.AsyncClient) -> tuple[Applicant, Job]:
+    from tests.jobs import show_to
     from tests.test_judge import _jobs
 
     _policy(session, Decimal(1))
@@ -534,6 +535,8 @@ async def _person_on_a_job_without_a_report(session: Session, client: httpx.Asyn
     await _jobs(session, ("Data Analyst", "Leeds, UK"))
     job = session.scalar(select(Job).where(Job.title == "Data Analyst"))
     assert session.scalar(select(JobReport).where(JobReport.job_id == job.id)) is None
+    # /jobs/{id} only opens for matched open jobs (visible_job).
+    show_to(session, applicant.id, job.id)
     return applicant, job
 
 
@@ -577,9 +580,10 @@ async def test_a_failed_package_can_be_tried_again(client: httpx.AsyncClient, se
     assert row.applicant_id == applicant.id
 
 
-async def test_an_apply_job_that_is_not_listed_offers_the_button(
+async def test_an_apply_job_that_is_not_listed_is_unavailable(
     client: httpx.AsyncClient, session: Session
 ) -> None:
+    """Job pages follow listings: once the match is gone, /jobs/{id} is closed (visible_job)."""
     applicant, job = await _person_on_a_job_without_a_report(session, client)
     session.execute(delete(ApplicantJobMatch))
     session.add(
@@ -594,7 +598,6 @@ async def test_an_apply_job_that_is_not_listed_offers_the_button(
             prompt_version="p",
         )
     )
-    # Left behind by an earlier cycle when the job was still listed.
     session.add(
         TailoredCv(
             applicant_id=applicant.id,
@@ -606,12 +609,10 @@ async def test_an_apply_job_that_is_not_listed_offers_the_button(
     )
     session.flush()
 
-    page = (await client.get(f"/jobs/{job.id}")).text
-    assert "Tailor my CV for this job" in page
-    assert "waiting on the monthly budget" not in page
-
-    await client.post(f"/jobs/{job.id}/tailor")
-    assert "Tailor my CV for this job" not in (await client.get(f"/jobs/{job.id}")).text
+    page = await client.get(f"/jobs/{job.id}")
+    assert page.status_code == 404
+    assert "isn't available" in page.text or "isn&#39;t available" in page.text
+    assert (await client.post(f"/jobs/{job.id}/tailor")).status_code == 404
 
 
 async def test_people_outside_the_ai_list_get_no_button(
@@ -960,17 +961,15 @@ async def test_the_job_page_follows_the_tailoring_scope(client: httpx.AsyncClien
             prompt_version="p",
         )
     )
-    session.add(
-        ApplicantJobMatch(
-            applicant_id=applicant.id,
-            job_id=job.id,
-            score=Decimal("0.8"),
-            reasons={"report": {"verdict": "Apply"}},
-            role_match=True,
-            location_fit=False,
-            salary_status="unknown",
+    match = session.scalar(
+        select(ApplicantJobMatch).where(
+            ApplicantJobMatch.applicant_id == applicant.id, ApplicantJobMatch.job_id == job.id
         )
     )
+    assert match is not None
+    match.score = Decimal("0.8")
+    match.reasons = {"report": {"verdict": "Apply"}}
+    match.location_fit = False
     session.flush()
 
     page = (await client.get(f"/jobs/{job.id}")).text

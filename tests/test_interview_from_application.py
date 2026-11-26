@@ -15,6 +15,7 @@ from app.applications.prepare import mark_submitted
 from app.core.config import Settings
 from app.interview import job_pack, service
 from app.interview.collect import CollectReport
+from app.interview.plan import PROMPT_VERSION as ROLE_PROMPT_VERSION
 from app.models import (
     Applicant,
     BudgetPolicy,
@@ -27,6 +28,7 @@ from app.models import (
     JobFreshness,
 )
 from tests.auth import sign_up
+from tests.jobs import show_to
 from tests.test_cv_tailor import client  # noqa: F401  (fixture)
 
 
@@ -38,6 +40,8 @@ async def _applied_to_a_closed_job(session: Session, client: httpx.AsyncClient) 
     applicant = session.scalar(select(Applicant).where(Applicant.email == email))
     await _jobs(session, ("Data Analyst", "Leeds, UK"))
     job = session.scalar(select(Job).where(Job.title == "Data Analyst"))
+    # Match while open so mark-applied / applications cards stay consistent with visible_job for open jobs.
+    show_to(session, applicant.id, job.id)
     mark_submitted(session, applicant.id, job)
     # Interviews come after the advert closes; the job is not one of the person's target roles either.
     job.freshness = JobFreshness.closed.value
@@ -93,7 +97,7 @@ async def test_one_click_on_the_card_gets_a_practice_pack(
     now = datetime.now(UTC)
     session.add(InterviewIntelPack(
         role_key="data analyst", role_label="Data Analyst", summary="Role facts.", source_hash="r", model="test",
-        prompt_version="test", ready_at=now, expires_at=now + timedelta(days=7),
+        prompt_version=ROLE_PROMPT_VERSION, ready_at=now, expires_at=now + timedelta(days=7),
     ))
     session.flush()
     _fake_pack_calls(monkeypatch)
@@ -145,7 +149,7 @@ async def test_two_jobs_for_one_role_both_get_a_pack_from_one_research(
         now = datetime.now(UTC)
         _session.add(InterviewIntelPack(
             role_key="data analyst", role_label="Data Analyst", summary="Role facts.", source_hash="r",
-            model="test", prompt_version="test", ready_at=now, expires_at=now + timedelta(days=7),
+            model="test", prompt_version=ROLE_PROMPT_VERSION, ready_at=now, expires_at=now + timedelta(days=7),
         ))
         _session.flush()
         return CollectReport()
