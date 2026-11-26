@@ -415,3 +415,46 @@ async def test_robots_redirect_to_disallow_is_respected() -> None:
     assert "https://careers.example.org/private" not in seen
     assert any(url.endswith("/robots-real.txt") for url in seen)
     await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_api_call_may_wait_longer_than_a_page() -> None:
+    """A model writing a long answer needs more than 30 s; pages stay capped at 30 s."""
+    seen: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={}, headers={"content-type": "application/json"})
+
+    gateway = _gateway(handler)
+    api = await gateway.fetch(FetchRequest(url="https://api.example.com/v1", kind="api", timeout_s=150.0))
+    too_long = await gateway.fetch(FetchRequest(url="https://api.example.com/v1", kind="api", timeout_s=900.0))
+    assert isinstance(api, FetchResponse)
+    assert isinstance(too_long, FetchResponse)
+    assert seen == [150.0, 180.0]
+    await gateway.aclose()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_call_asks_for_a_long_timeout() -> None:
+    from app.ai.anthropic import AI_TIMEOUT_S, send_anthropic_request
+
+    seen: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"]["read"])
+        return httpx.Response(
+            200,
+            json={"stop_reason": "end_turn", "content": [{"type": "text", "text": "{}"}], "usage": {}},
+        )
+
+    gateway = FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset({"api.anthropic.com"}),
+        resolve=_public_resolve,
+        transport=httpx.MockTransport(handler),
+    )
+    await send_anthropic_request(gateway, {"model": "m"}, api_key="k", fallback_model="m")
+    assert seen == [AI_TIMEOUT_S]
+    assert AI_TIMEOUT_S > 30
+    await gateway.aclose()

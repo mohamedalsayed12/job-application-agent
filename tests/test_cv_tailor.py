@@ -39,6 +39,7 @@ from app.tailor.render import (
 )
 from app.tailor.resume import ground_parsed
 from app.tailor.run import write_tailored_cvs
+from tests.auth import sign_up
 from tests.test_cv_read import _docx
 from tests.test_fit_report import CV_LINES, _Ai, _person_with_a_cv, _report
 from tests.test_judge import _policy, _settings
@@ -253,6 +254,55 @@ def test_finalize_reverts_a_rewrite_that_drifts_from_every_source_row() -> None:
     ]
 
 
+def test_finalize_reverts_a_rewrite_that_borrows_a_claim_from_the_posting() -> None:
+    """Rewording is fine; adding the advert's "agile" to a CV that never says it is not."""
+    candidate = copy.deepcopy(MASTER)
+    candidate["workExperience"][0]["description"] = [BULLET.replace("society.", "society in an agile team.")]
+    candidate["summary"] = MASTER["summary"] + " Experienced in agile delivery."
+    posting = "Graduate developer. You will work in an agile team on real-time systems."
+
+    final = finalize_ai_resume(MASTER, candidate, allow_review_claims=False, posting=posting)
+    unchecked = finalize_ai_resume(MASTER, candidate, allow_review_claims=False)
+
+    assert final["workExperience"][0]["description"] == [BULLET]
+    assert final["summary"] == MASTER["summary"]
+    assert unchecked["workExperience"][0]["description"] == candidate["workExperience"][0]["description"]
+
+
+def test_parse_keeps_a_certificate_written_with_its_date() -> None:
+    cv = "CERTIFICATIONS\nComplete Python Developer: Zero to Mastery\nAug 2026\nSkills: Python"
+    parsed = {
+        "personalInfo": {},
+        "workExperience": [],
+        "education": [],
+        "personalProjects": [],
+        "additional": {
+            "technicalSkills": ["Python"],
+            "certificationsTraining": [
+                "Complete Python Developer: Zero to Mastery (Aug 2026)",
+                "AWS Solutions Architect (Aug 2026)",
+            ],
+        },
+    }
+
+    grounded = ground_parsed(parsed, cv)
+
+    assert grounded is not None
+    assert grounded["additional"]["certificationsTraining"] == ["Complete Python Developer: Zero to Mastery (Aug 2026)"]
+
+
+def test_rendered_cv_shows_bullet_symbols_and_certifications() -> None:
+    resume = copy.deepcopy(MASTER)
+    resume["additional"]["certificationsTraining"] = ["Complete Python Developer (Aug 2026)"]
+
+    text = pdf_text(render_pdf(resume))
+
+    assert "bullet" not in text
+    assert chr(0x7F) not in text
+    assert "-" + chr(10) + "Built a REST API" in text
+    assert "Certifications" in text and "Complete Python Developer (Aug 2026)" in text
+
+
 def test_stock_ai_wording_goes_unless_the_candidate_wrote_it() -> None:
     data = {"summary": "Spearheaded a robust API with stakeholders."}
 
@@ -439,7 +489,7 @@ async def _person_on_a_job_without_a_report(session: Session, client: httpx.Asyn
 
     _policy(session, Decimal(1))
     email = "tailor-button@example.com"
-    assert (await client.post("/register", data={"email": email, "password": "correct horse battery"})).status_code == 303
+    assert (await sign_up(client, email, "correct horse battery")).status_code == 303
     applicant = session.scalar(select(Applicant).where(Applicant.email == email))
     store_cv(session, applicant.id, _docx(CV_LINES))
     await _jobs(session, ("Data Analyst", "Leeds, UK"))

@@ -36,6 +36,8 @@ MAX_BODY_BYTES = 16 * 1024 * 1024
 DEFAULT_TIMEOUT_S = 10.0
 # A request may ask for longer, up to this: an Apify run check waits up to 25 s for the run to end.
 MAX_TIMEOUT_S = 30.0
+# An API call may ask for longer still: a model writing a few thousand tokens can take over a minute.
+MAX_API_TIMEOUT_S = 180.0
 ALLOWED_CONTENT_TYPES = frozenset(
     {
         "text/html",
@@ -157,7 +159,8 @@ class FetchGateway:
         host: str,
     ) -> FetchResponse | FetchRefusal | _Redirect:
         headers = {**dict(request.headers), "User-Agent": self._user_agent}
-        timeout_s = min(request.timeout_s or DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S)
+        ceiling = MAX_API_TIMEOUT_S if request.kind == "api" else MAX_TIMEOUT_S
+        timeout_s = min(request.timeout_s or DEFAULT_TIMEOUT_S, ceiling)
         try:
             async with self._client.stream(
                 request.method,
