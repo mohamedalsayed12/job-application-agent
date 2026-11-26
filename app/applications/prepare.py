@@ -1,4 +1,4 @@
-"""Create or refresh an Application and move it through its statuses."""
+"""Create or refresh an Application for fill-from-answers (D70 prepare; D66 fill)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.applicants.cv import base_cv
 from app.applications.mapper import FillPlan
-from app.models import Application, ApplicationStatus, Job
+from app.models import Applicant, Application, ApplicationStatus, Job
 
 
 class PrepareRefused(Exception):
@@ -41,8 +41,17 @@ def list_applications(session: Session, applicant_id: uuid.UUID) -> list[Applica
     )
 
 
-def prepare_application(session: Session, *, applicant_id: uuid.UUID, job_id: uuid.UUID) -> Application:
-    """Ready the job for the extension, which reads the form from the page the person opens."""
+def prepare_application(
+    session: Session,
+    *,
+    applicant: Applicant,
+    job_id: uuid.UUID,
+) -> Application:
+    """Ready to fill: the person opens the apply page and the extension reads the form there.
+
+    Nothing is fetched here. The employer's form is often several clicks past the job board, needs
+    the person logged in, or is built by JavaScript, so only their own browser sees it (D70).
+    """
     job = session.get(Job, job_id)
     if job is None:
         raise PrepareRefused("That job was not found.")
@@ -50,16 +59,22 @@ def prepare_application(session: Session, *, applicant_id: uuid.UUID, job_id: uu
     if not apply_url.lower().startswith(("http://", "https://")):
         raise PrepareRefused("This job has no usable apply link.")
 
-    row = application_for_job(session, applicant_id, job_id)
+    row = application_for_job(session, applicant.id, job_id)
     if row is not None and row.status == ApplicationStatus.submitted.value:
         raise PrepareRefused("You have already applied for this job.")
     if row is None:
-        row = Application(applicant_id=applicant_id, job_id=job_id, apply_url=apply_url)
+        row = Application(
+            applicant_id=applicant.id,
+            job_id=job_id,
+            apply_url=apply_url,
+            status=ApplicationStatus.ready_to_fill.value,
+        )
         session.add(row)
-    row.apply_url = apply_url
+    else:
+        row.apply_url = apply_url
     row.schema_json = None
     store_fill_outcome(row, None, reopen=True)
-    row.cv_file_id = cv.id if (cv := base_cv(session, applicant_id, job)) else None
+    row.cv_file_id = cv.id if (cv := base_cv(session, applicant.id, job)) else None
     session.flush()
     return row
 
@@ -107,7 +122,12 @@ def mark_submitted(session: Session, applicant_id: uuid.UUID, job: Job) -> Appli
     """The person says they sent the application, here or on the employer's site directly."""
     row = application_for_job(session, applicant_id, job.id)
     if row is None:
-        row = Application(applicant_id=applicant_id, job_id=job.id, apply_url=job.apply_url or "", status=ApplicationStatus.submitted.value)
+        row = Application(
+            applicant_id=applicant_id,
+            job_id=job.id,
+            apply_url=job.apply_url or "",
+            status=ApplicationStatus.submitted.value,
+        )
         session.add(row)
     else:
         row.status = ApplicationStatus.submitted.value

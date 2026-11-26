@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.careers import CareersReport, collect_careers
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.fetch.gateway import FetchGateway
@@ -38,6 +39,7 @@ DEFAULT_POLL_SECONDS = 60
 class CycleReport:
     linkedin: LinkedinReport
     indeed: IndeedReport
+    careers: CareersReport
 
 
 async def run_cycle(
@@ -54,7 +56,10 @@ async def run_cycle(
 
     linkedin = await collect_linkedin(session, gateway=gateway, settings=settings, persist=save, now=clock)
     indeed = await collect_indeed(session, gateway=gateway, settings=settings, persist=save, now=clock)
-    if linkedin.searches or linkedin.closed or indeed.searches or indeed.closed:
+    # D69: jobs on employers' own sites, found through Google, that LinkedIn and Indeed may not have.
+    careers = await collect_careers(session, gateway=gateway, settings=settings, persist=save, now=clock)
+    collected = (linkedin, indeed, careers)
+    if any(report.searches or report.closed for report in collected):
         now = datetime.now(UTC)
         store_results(session, now=now)
         map_job_skills(session)
@@ -79,7 +84,7 @@ async def run_cycle(
     save()
     await process_requests(session, gateway=gateway, settings=get_settings(), persist=save)
     save()
-    return CycleReport(linkedin=linkedin, indeed=indeed)
+    return CycleReport(linkedin=linkedin, indeed=indeed, careers=careers)
 
 
 async def _main(once: bool, poll_seconds: int) -> None:
@@ -95,12 +100,16 @@ async def _main(once: bool, poll_seconds: int) -> None:
                     raise
                 print(f"cycle failed, will retry: {type(exc).__name__}", flush=True)
             else:
-                linkedin, indeed = report.linkedin, report.indeed
+                linkedin, indeed, careers = report.linkedin, report.indeed, report.careers
                 print(
                     f"linkedin searches {linkedin.searches}, jobs {linkedin.jobs}, new {linkedin.postings_new}, "
                     f"closed {linkedin.closed}, failed {linkedin.failed}, stopped by {linkedin.stopped_by}; "
                     f"indeed searches {indeed.searches}, jobs {indeed.jobs}, new {indeed.postings_new}, "
-                    f"closed {indeed.closed}, failed {indeed.failed}, stopped by {indeed.stopped_by}",
+                    f"closed {indeed.closed}, failed {indeed.failed}, stopped by {indeed.stopped_by}; "
+                    f"company sites searches {careers.searches}, google pages {careers.google_pages}, "
+                    f"sites opened {careers.sites_opened}, jobs {careers.jobs}, new {careers.postings_new}, "
+                    f"closed {careers.closed}, skipped {careers.skipped}, failed {careers.failed}, "
+                    f"stopped by {careers.stopped_by}",
                     flush=True,
                 )
             if once:

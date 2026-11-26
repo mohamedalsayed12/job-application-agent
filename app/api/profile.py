@@ -69,7 +69,7 @@ _SALARY_PERIODS = ("year", "month", "day", "hour")
 _PROFILE_DRAFT = "profile_draft"
 _CSRF = [Depends(require_csrf)]
 # Without scripts the form still works: people type their skills into the box.
-_SKILL_SEARCH_SCRIPT = """<script>
+SKILL_SEARCH_SCRIPT = """<script>
 const search = document.getElementById("skill-search");
 const list = document.getElementById("skill-suggestions");
 const skills = document.getElementById("skills");
@@ -175,7 +175,7 @@ class ProfileFields:
         return cls(**scalars, **lists)
 
 
-def _saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
+def saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
     saved = load_profile(db, applicant.id)
     preference, profile = saved.preference, saved.profile
     certifications = saved.certifications
@@ -239,7 +239,7 @@ def _form_fields(request: Request, db: Session, applicant: Applicant) -> tuple[P
     draft = _draft_view(request)
     if draft is not None:
         return draft
-    return _saved_fields(db, applicant), None
+    return saved_fields(db, applicant), None
 
 
 def _options(pairs: list[tuple[str, str]], selected: str) -> str:
@@ -262,7 +262,7 @@ def _certification_row(row: tuple[str, str, str, str]) -> str:
     )
 
 
-def _size_text(size_bytes: int) -> str:
+def size_text(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes >= 1024 * 1024 else f"{max(size_bytes // 1024, 1)} KB"
 
 
@@ -277,7 +277,7 @@ def _cv_row(request: Request, cv: CvFile, *, label: str | None = None, checked: 
     <input form="profile-form" name="cv_label" aria-label="Job this CV is for" placeholder="Job this CV is for"
       value="{html.escape(shown)}"/>
     <label><input form="profile-form" type="radio" name="cv_primary" value="{cv.id}"{mark}/> Primary</label>
-    <a href="/profile/cv/{cv.id}">cv.{html.escape(cv.file_type)}</a>, {_size_text(cv.size_bytes)},
+    <a href="/profile/cv/{cv.id}">cv.{html.escape(cv.file_type)}</a>, {size_text(cv.size_bytes)},
     uploaded {cv.uploaded_at:%d %B %Y}.
   </span>
   <span class="cv-actions">
@@ -342,7 +342,7 @@ profile until you press Save and find my matches.</p>
 """
 
 
-_PROFILE_STYLE = """<style>
+PROFILE_STYLE = """<style>
 .card h2 { font-size: 1rem; }
 .dropzone { border: 1.5px dashed #c7ccd4; border-radius: 8px; padding: 1rem; text-align: center; }
 .dropzone input { max-width: 22rem; margin: 0.5rem auto; }
@@ -365,20 +365,8 @@ _PROFILE_STYLE = """<style>
 </style>"""
 
 
-def _profile_page(
-    request: Request,
-    db: Session,
-    applicant: Applicant,
-    fields: ProfileFields,
-    *,
-    error: str | None = None,
-    cv_error: str | None = None,
-    notice: str | None = None,
-    status_code: int = 200,
-) -> HTMLResponse:
-    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
-    if notice:
-        message += f'<div class="notice">{html.escape(notice)}</div>'
+def preference_sections(fields: ProfileFields, *, first_number: int) -> str:
+    """The job-search part of the profile form. The sign-up wizard shows the same fields."""
     levels = "".join(
         f'<label class="check"><input type="checkbox" name="experience_levels" value="{level.value}"'
         f'{" checked" if level.value in fields.experience_levels else ""}/> {html.escape(facts.label)}</label>'
@@ -386,25 +374,9 @@ def _profile_page(
     )
     periods = _options([(period, f"a {period}") for period in _SALARY_PERIODS], fields.salary_period)
     rows = [*fields.certifications, *[("", "", "certification", "")] * _SPARE_CERTIFICATION_ROWS]
-    return page(
-        "Your profile",
-        f"""{_PROFILE_STYLE}
-<div class="page-head"><div>
-  <h1>Your profile</h1>
-  <p class="muted">Tell us what you're looking for. We use this only to find and match jobs, and you can delete it at any time.
-  For employer forms, set <a href="/profile/apply-answers">apply answers</a> separately.</p>
-</div></div>
-{message}
-<form method="post" action="/profile" id="profile-form">
-  {csrf_field(request)}
+    return f"""
   <section class="card">
-    <h2>1. Account</h2>
-    <label>Email <input value="{html.escape(applicant.email)}" disabled/></label>
-    <p class="hint">Change your password or delete your account on <a href="/account">your account page</a>.</p>
-  </section>
-
-  <section class="card">
-    <h2>2. What you're looking for</h2>
+    <h2>{first_number}. What you're looking for</h2>
     <label>Target roles <span class="hint">one per line</span>
       <textarea name="target_roles" rows="3" required placeholder="Junior Software Engineer">{html.escape(fields.target_roles)}</textarea>
     </label>
@@ -436,7 +408,7 @@ def _profile_page(
   </section>
 
   <section class="card">
-    <h2>3. Skills and certifications</h2>
+    <h2>{first_number + 1}. Skills and certifications</h2>
     <div class="skill-find">
       <label>Find a skill
         <input id="skill-search" list="skill-suggestions" autocomplete="off" placeholder="Start typing, for example Python"/>
@@ -455,6 +427,61 @@ def _profile_page(
       <tbody>{"".join(_certification_row(row) for row in rows)}</tbody>
     </table></div>
   </section>
+"""
+
+
+def save_profile_fields(db: Session, applicant: Applicant, fields: ProfileFields) -> None:
+    """Checks and saves the job-search fields. Raises PreferenceValidationError with a message to show."""
+    certifications: list[CertificationInput] = [
+        item for row in fields.certifications if (item := parse_certification(*row))
+    ]
+    profile = parse_profile_input(
+        target_roles=fields.target_roles.splitlines(),
+        locations=fields.locations.splitlines(),
+        salary_amount=fields.salary_amount,
+        salary_currency=fields.salary_currency,
+        salary_period=fields.salary_period,
+        experience_levels=fields.experience_levels,
+        travel_distance=fields.travel_distance,
+        skills=fields.skills.splitlines(),
+        certifications=certifications,
+        degrees=fields.degrees.splitlines(),
+    )
+    save_profile(db, applicant.id, profile)
+
+
+def _profile_page(
+    request: Request,
+    db: Session,
+    applicant: Applicant,
+    fields: ProfileFields,
+    *,
+    error: str | None = None,
+    cv_error: str | None = None,
+    notice: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    if notice:
+        message += f'<div class="notice">{html.escape(notice)}</div>'
+    return page(
+        "Your profile",
+        f"""{PROFILE_STYLE}
+<div class="page-head"><div>
+  <h1>Your profile</h1>
+  <p class="muted">Tell us what you're looking for. We use this only to find and match jobs, and you can delete it at any time.
+  For employer forms, set <a href="/profile/apply-answers">apply answers</a> separately.</p>
+</div></div>
+{message}
+<form method="post" action="/profile" id="profile-form">
+  {csrf_field(request)}
+  <section class="card">
+    <h2>1. Account</h2>
+    <label>Email <input value="{html.escape(applicant.email)}" disabled/></label>
+    <p class="hint">Change your password or delete your account on <a href="/account">your account page</a>.</p>
+  </section>
+
+{preference_sections(fields, first_number=2)}
 </form>
 {_cv_section(request, cvs_of(db, applicant.id), cv_error, fields)}
 {interview_card(request, [line.strip() for line in fields.target_roles.splitlines() if line.strip()])}
@@ -462,7 +489,7 @@ def _profile_page(
   <a class="button danger" href="/account#delete">Delete my account and data</a>
   <button type="submit" class="primary" form="profile-form">Save and find my matches</button>
 </div>
-{_SKILL_SEARCH_SCRIPT}
+{SKILL_SEARCH_SCRIPT}
 """,
         status_code=status_code,
         header=applicant_bar(request, "profile"),
@@ -495,22 +522,7 @@ def profile_save(
     db: Session = Depends(get_db),
 ) -> Response:
     try:
-        certifications: list[CertificationInput] = [
-            item for row in fields.certifications if (item := parse_certification(*row))
-        ]
-        profile = parse_profile_input(
-            target_roles=fields.target_roles.splitlines(),
-            locations=fields.locations.splitlines(),
-            salary_amount=fields.salary_amount,
-            salary_currency=fields.salary_currency,
-            salary_period=fields.salary_period,
-            experience_levels=fields.experience_levels,
-            travel_distance=fields.travel_distance,
-            skills=fields.skills.splitlines(),
-            certifications=certifications,
-            degrees=fields.degrees.splitlines(),
-        )
-        save_profile(db, applicant.id, profile)
+        save_profile_fields(db, applicant, fields)
         _save_cv_choices(db, applicant.id, fields)
         db.commit()
         # A new profile sees its matches now, not after the next collection.
@@ -548,7 +560,7 @@ async def read_cv_upload(request: Request) -> tuple[bytes | None, str]:
         await form.close()
 
 
-_READ_PROBLEMS = {
+READ_PROBLEMS = {
     ReadOutcome.unreadable: "We couldn't find text in your CV. A scanned PDF has none. Fill in the form yourself.",
     ReadOutcome.budget: "This month's AI budget is used up, so your CV wasn't read. Fill in the form yourself.",
     ReadOutcome.provider_failed: "Reading your CV didn't work this time. Try again later, or fill in the form yourself.",
@@ -632,7 +644,7 @@ def _after_read(request: Request, db: Session, applicant: Applicant, cv: CvFile,
     # Build on the open draft, so reading a second CV adds to the first one's suggestions.
     current, _ = _form_fields(request, db, applicant)
     if read.suggestions is None:
-        return _profile_page(request, db, applicant, current, notice=_READ_PROBLEMS[read.outcome])
+        return _profile_page(request, db, applicant, current, notice=READ_PROBLEMS[read.outcome])
     name = f'your CV "{cv.label}"' if cv.label else "your CV"
     fields, filled = fill_from_cv(current, read.suggestions)
     if not filled:

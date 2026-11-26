@@ -37,6 +37,7 @@ from app.summaries.generate import (
     summarise_matches,
     summary_for_view,
 )
+from tests.auth import sign_up
 from tests.jobs import _job, _public_resolve, _store
 from tests.test_matching import SOON, _applicant, _posting
 
@@ -278,7 +279,7 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
 
 
 async def _login(client: httpx.AsyncClient) -> None:
-    assert (await client.post("/register", data={"email": "v@example.com", "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, "v@example.com", PASSWORD)).status_code == 303
 
 
 async def test_the_job_page_needs_a_login_and_shows_the_checked_summary(client: httpx.AsyncClient, session: Session) -> None:

@@ -122,6 +122,7 @@ def store_cv(
         uploaded_at=now or datetime.now(UTC),
         label=label,
         is_primary=held == 0,
+        suggestions=None,
     )
     session.add(row)
     session.flush()
@@ -148,6 +149,8 @@ def replace_cv(
     row.size_bytes = len(content)
     row.uploaded_at = now or datetime.now(UTC)
     row.label = label or row.label
+    # Suggestions read from the old file don't describe the new one.
+    row.suggestions = None
     session.flush()
     return row
 
@@ -232,6 +235,11 @@ def base_cv(session: Session, applicant_id: uuid.UUID, job: Job | None = None) -
     if job is None:
         return pick_base_cv(cvs_of(session, applicant_id))
     return pick_base_cv(cvs_of(session, applicant_id), title=job.title, advert=job.description or "")
+
+
+def cv_for(session: Session, applicant_id: uuid.UUID) -> CvFile | None:
+    """The primary CV (or newest when none is marked). Callers that still expect one file use this."""
+    return base_cv(session, applicant_id)
 
 
 def cvs_by_applicant(session: Session, applicant_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, list[CvFile]]:
