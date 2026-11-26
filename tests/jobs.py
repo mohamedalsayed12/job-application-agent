@@ -79,20 +79,57 @@ def _indeed(
     }
 
 
+def _google_jobs(
+    job_id: int | str,
+    *,
+    title: str = "Backend Developer",
+    city: str = "Manchester, England",
+    content: str = "Build APIs in Python.",
+    company: str = "Acme",
+    apply_url: str | None = None,
+    schedule: str = "Full-time",
+    **extra: Any,
+) -> dict[str, Any]:
+    """One result as SerpAPI's Google Jobs engine returns it."""
+    key = str(job_id)
+    link = apply_url if apply_url is not None else f"https://acme.example/careers/{key}"
+    return {
+        "job_id": key,
+        "title": title,
+        "company_name": company,
+        "location": city,
+        "description": content,
+        "share_link": f"https://www.google.com/search?q=job+{key}",
+        "apply_options": [{"title": "Apply", "link": link}],
+        "detected_extensions": {"schedule_type": schedule},
+        **extra,
+    }
+
+
 class _Apify:
     """Answers like Apify: a run starts, is still running at the first check, then succeeds with ``items``."""
 
-    def __init__(self, items: list[dict[str, Any]], *, status: str = "SUCCEEDED", cost_usd: float = 0.02) -> None:
-        self.items, self.status, self.cost_usd = items, status, cost_usd
+    def __init__(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        status: str = "SUCCEEDED",
+        cost_usd: float = 0.02,
+        start: bool = True,
+    ) -> None:
+        self.items, self.status, self.cost_usd, self.start = items, status, cost_usd, start
         self.requests: list[httpx.Request] = []
         self.checks = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
-        run = {"id": f"run{len(self.requests)}", "defaultDatasetId": "data1", "usageTotalUsd": self.cost_usd}
         if request.method == "POST" and path.endswith("/runs"):
+            if not self.start:
+                return httpx.Response(201, json={"data": {}})
+            run = {"id": f"run{len(self.requests)}", "defaultDatasetId": "data1", "usageTotalUsd": self.cost_usd}
             return httpx.Response(201, json={"data": {**run, "status": "RUNNING"}})
+        run = {"id": f"run{len(self.requests)}", "defaultDatasetId": "data1", "usageTotalUsd": self.cost_usd}
         if path.startswith("/v2/actor-runs/"):
             self.checks += 1
             return httpx.Response(200, json={"data": {**run, "status": "RUNNING" if self.checks == 1 else self.status}})

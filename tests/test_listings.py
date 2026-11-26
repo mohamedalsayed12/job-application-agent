@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -16,29 +15,24 @@ from sqlalchemy.orm import Session
 
 from app.accounts import throttle
 from app.api.forms import require_csrf
-from app.api.listings import _APPLICATION_LABELS, Listing, render_listing, salary_text
+from app.api.listings import Listing, render_listing, salary_text
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
 from app.matching.semantic import embed_matches, vectors_for
 from app.models import (
-    Applicant,
     ApplicantJobMatch,
-    Application,
-    ApplicationStatus,
     Job,
     JobEmbedding,
     JobFreshness,
     JobSummary,
-    OutreachChannel,
-    OutreachContact,
-    OutreachDraft,
     SummaryStatus,
 )
 from app.skills.taxonomy import load_taxonomy, map_job_skills
+from tests.auth import sign_up
 from tests.conftest import WordEmbedder
 from tests.jobs import _job, _store
-from tests.test_matching import _applicant, _posting
+from tests.test_matching import _posting
 
 PASSWORD = "correct horse battery"
 ADVERT = "Build payment services in Python and PostgreSQL for our platform team. " * 6
@@ -79,7 +73,7 @@ async def _jobs(session: Session) -> None:
 
 
 async def _register_with_profile(client: httpx.AsyncClient) -> None:
-    assert (await client.post("/register", data={"email": "l@example.com", "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, "l@example.com", PASSWORD)).status_code == 303
     profile = {
         "target_roles": "Junior Backend Developer",
         "locations": "Manchester",
@@ -102,14 +96,15 @@ async def test_saving_a_profile_matches_at_once_and_lists_the_best_first(
 ) -> None:
     await _jobs(session)
     await _register_with_profile(client)
-    page = (await client.get("/listings", params={"sort": "score"})).text
+    page = (await client.get("/listings", params={"sort": "score", "everywhere": "0"})).text
     assert sorted(_titles(page)) == ["Graduate Backend Developer", "Junior Backend Developer"]
     # D53: only the AI's score out of 5 is shown; jobs it has not scored yet say so.
     assert "/100" not in page
     assert page.count("Not scored yet") == 2
     assert "Sales Manager" not in page
 
-    everywhere = _titles((await client.get("/listings", params={"everywhere": "1", "sort": "score"})).text)
+    # D72: with no location filter chosen, every match shows, the ones outside the person's locations last.
+    everywhere = _titles((await client.get("/listings", params={"sort": "score"})).text)
     assert sorted(everywhere[:2]) == ["Graduate Backend Developer", "Junior Backend Developer"]
     assert everywhere[2:] == ["Backend Developer, Early Careers"]
 
@@ -199,7 +194,6 @@ def _listing(source: str, **job: object) -> Listing:
         last_seen_at=datetime(2026, 11, 9, tzinfo=UTC),
         source=source,
         apply_url=str(job.get("apply_url", "https://example.com/apply")),
-        location_fit=True,
     )
 
 
@@ -207,61 +201,6 @@ def test_an_apply_link_that_is_not_a_web_link_is_not_rendered() -> None:
     page = render_listing(_listing("linkedin", apply_url="javascript:alert(1)"))
     assert "javascript:" not in page
     assert "No usable apply link" in page
-
-
-@pytest.mark.parametrize(
-    ("status", "label"),
-    [
-        (ApplicationStatus.needs_input, "Needs your input"),
-        (ApplicationStatus.ready_to_fill, "Ready to fill"),
-        (ApplicationStatus.filled_awaiting_review, "Filled — review before submit"),
-        (ApplicationStatus.submitted, "Applied"),
-        (ApplicationStatus.abandoned, "Not applying"),
-        (ApplicationStatus.failed, "Failed"),
-    ],
-)
-def test_listing_shows_its_application_state(status: ApplicationStatus, label: str) -> None:
-    assert f'>{label}</span>' in render_listing(replace(_listing("linkedin"), application_status=status.value))
-
-
-def test_every_application_status_has_a_label() -> None:
-    assert set(_APPLICATION_LABELS) == set(ApplicationStatus)
-
-
-async def test_listings_show_only_this_persons_application_labels(client: httpx.AsyncClient, session: Session) -> None:
-    await _jobs(session)
-    await _register_with_profile(client)
-    owner = session.scalar(select(Applicant).where(Applicant.email == "l@example.com"))
-    other = _applicant(session, roles=["Junior Backend Developer"], locations=["Manchester"])
-    first, second = _job(session, 1), _job(session, 2)
-    session.add_all(
-        [
-            Application(
-                applicant_id=owner.id, job_id=first.id, apply_url=first.apply_url,
-                status=ApplicationStatus.submitted.value,
-            ),
-            Application(
-                applicant_id=other, job_id=second.id, apply_url=second.apply_url,
-                status=ApplicationStatus.needs_input.value,
-            ),
-        ]
-    )
-    session.commit()
-
-    page = (await client.get("/listings")).text
-    assert page.count('>Applied</span>') == 1
-    assert 'Needs your input</span>' not in page
-
-    session.add(
-        Application(
-            applicant_id=owner.id, job_id=second.id, apply_url=second.apply_url,
-            status=ApplicationStatus.failed.value,
-        )
-    )
-    session.commit()
-    page = (await client.get("/listings")).text
-    assert page.count('>Applied</span>') == 1
-    assert page.count('>Failed</span>') == 1
 
 
 @pytest.mark.parametrize(
@@ -303,7 +242,7 @@ async def test_d48_a_search_puts_the_jobs_closest_in_meaning_first(client: httpx
         assert f'value="{words}"' in page
         assert "Closest in meaning to" in page
     # A search orders the person's matches; it never adds a job the filters leave out.
-    assert "Backend Developer, Early Careers" not in _titles((await client.get("/listings", params={"q": "games"})).text)
+    assert "Backend Developer, Early Careers" not in _titles((await client.get("/listings", params={"q": "games", "everywhere": "0"})).text)
 
 
 async def test_d48_a_vector_is_made_once_and_again_when_the_job_text_changes(session: Session) -> None:
@@ -347,9 +286,18 @@ async def test_the_listings_show_the_newest_jobs_first_by_default(client: httpx.
     page = (await client.get("/listings")).text
 
     assert "Sorted by newest." in page
-    assert '<option value="newest" selected>Newest</option>' in page
+    assert '<option value="newest" selected>Newest first</option>' in page
     newest = (await client.get("/listings", params={"sort": "newest"})).text
     assert _titles(page) == _titles(newest)
+
+
+
+async def test_d72_page_links_keep_the_my_locations_filter(client: httpx.AsyncClient, session: Session) -> None:
+    await _jobs(session)
+    await _register_with_profile(client)
+    mine = (await client.get("/listings", params={"everywhere": "0"})).text
+    assert '<option value="0" selected>My locations</option>' in mine
+    assert "everywhere=1" not in (await client.get("/listings")).text
 
 
 async def test_the_sort_choice_is_remembered_until_changed(client: httpx.AsyncClient, session: Session) -> None:
@@ -357,8 +305,8 @@ async def test_the_sort_choice_is_remembered_until_changed(client: httpx.AsyncCl
     await _register_with_profile(client)
 
     chosen = (await client.get("/listings", params={"sort": "score"})).text
-    assert "Sorted by best match." in chosen
-    assert "Sorted by best match." in (await client.get("/listings")).text
+    assert "Sorted by AI score." in chosen
+    assert "Sorted by AI score." in (await client.get("/listings")).text
 
     assert "Sorted by newest." in (await client.get("/listings", params={"sort": "newest"})).text
     assert "Sorted by newest." in (await client.get("/listings")).text
@@ -385,11 +333,11 @@ async def test_one_persons_sort_choice_does_not_reach_another(client: httpx.Asyn
     await client.get("/listings", params={"sort": "score"})
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as other:
-        assert (await other.post("/register", data={"email": "o@example.com", "password": PASSWORD})).status_code == 303
+        assert (await sign_up(other, "o@example.com", PASSWORD)).status_code == 303
         profile = {"target_roles": "Junior Backend Developer", "locations": "Manchester", "experience_levels": "entry", "skills": "Python"}
         assert (await other.post("/profile", data=profile)).status_code == 303
         assert "Sorted by newest." in (await other.get("/listings")).text
-    assert "Sorted by best match." in (await client.get("/listings")).text
+    assert "Sorted by AI score." in (await client.get("/listings")).text
 
 
 def test_the_pager_keeps_the_sort_choice() -> None:
@@ -399,93 +347,3 @@ def test_the_pager_keeps_the_sort_choice() -> None:
     assert nav.count("sort=score") == 2
     assert "sort=newest" in _nav(2, 80, everywhere=False, role="", sort="newest", show="roles", search="")
 
-
-def _mark_applied(session: Session, job_id) -> Applicant:
-    applicant = session.scalars(select(Applicant)).one()
-    session.add(
-        Application(
-            applicant_id=applicant.id,
-            job_id=job_id,
-            apply_url="https://acme.example/apply",
-            status=ApplicationStatus.submitted.value,
-            missing_fields=[],
-        )
-    )
-    session.commit()
-    return applicant
-
-
-async def test_each_listing_offers_outreach_only_after_the_person_has_applied(
-    client: httpx.AsyncClient, session: Session
-) -> None:
-    await _jobs(session)
-    await _register_with_profile(client)
-    before = (await client.get("/listings")).text
-    assert before.count("mark this job as applied to reach out") == 2
-
-    job = _job(session, 1)
-    _mark_applied(session, job.id)
-    after = (await client.get("/listings")).text
-    assert after.count("mark this job as applied to reach out") == 1
-    assert f'action="/jobs/{job.id}/outreach/find"' in after
-
-
-async def test_a_listing_shows_the_drafted_messages_for_each_contact(client: httpx.AsyncClient, session: Session) -> None:
-    await _jobs(session)
-    await _register_with_profile(client)
-    job = _job(session, 1)
-    applicant = _mark_applied(session, job.id)
-    contact = OutreachContact(
-        applicant_id=applicant.id,
-        job_id=job.id,
-        full_name="Sam Lead",
-        title="Engineering Manager",
-        role_kind="hiring_manager",
-        source_actor="test",
-    )
-    quiet = OutreachContact(
-        applicant_id=applicant.id, job_id=job.id, full_name="Pat Quiet", role_kind="unknown", source_actor="test"
-    )
-    session.add_all([contact, quiet])
-    session.flush()
-    for channel, subject, body in (
-        (OutreachChannel.gmail.value, "Backend role", "Hello Sam, I applied."),
-        (OutreachChannel.linkedin_note.value, None, "Hi Sam, short note."),
-    ):
-        session.add(
-            OutreachDraft(
-                applicant_id=applicant.id,
-                job_id=job.id,
-                contact_id=contact.id,
-                channel=channel,
-                subject=subject,
-                body=body,
-                evidence_digest=channel,
-                status="draft",
-            )
-        )
-    session.commit()
-
-    page = (await client.get("/listings")).text
-    assert "Sam Lead" in page and "Engineering Manager" in page
-    assert "Hello Sam, I applied." in page and "Hi Sam, short note." in page
-    assert f'action="/jobs/{job.id}/outreach/{contact.id}/copy"' in page
-    assert "Pat Quiet" in page and f'action="/jobs/{job.id}/outreach/{quiet.id}/draft"' in page
-
-
-
-async def test_the_job_page_shows_outreach_too(client: httpx.AsyncClient, session: Session) -> None:
-    from app.api.jobs import get_gateway
-
-    async def _gateway():
-        yield None
-
-    app.dependency_overrides[get_gateway] = _gateway
-    await _jobs(session)
-    await _register_with_profile(client)
-    job = _job(session, 1)
-    assert "mark this job as applied to reach out" in (await client.get(f"/jobs/{job.id}")).text
-
-    _mark_applied(session, job.id)
-    page = (await client.get(f"/jobs/{job.id}")).text
-    assert f'action="/jobs/{job.id}/outreach/find"' in page

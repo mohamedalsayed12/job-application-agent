@@ -20,6 +20,7 @@ from app.fetch.gateway import FetchGateway
 from app.main import app
 from app.models import Job, JobVerification, ListingVerdict
 from app.worker import run_cycle
+from tests.auth import sign_up
 from tests.jobs import _job, _li, _store
 from tests.test_listings import ADVERT, PASSWORD, _titles
 
@@ -72,7 +73,7 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
     app.dependency_overrides[require_csrf] = lambda: None
     app.dependency_overrides[get_gateway] = _override_gateway
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as test_client:
-        assert (await test_client.post("/register", data={"email": "f@example.com", "password": PASSWORD})).status_code == 303
+        assert (await sign_up(test_client, "f@example.com", PASSWORD)).status_code == 303
         yield test_client
     app.dependency_overrides.clear()
     throttle.reset()

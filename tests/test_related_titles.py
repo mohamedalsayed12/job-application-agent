@@ -19,11 +19,14 @@ from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.linkedin import searches
 from app.matching.match import TitleMeaning, match_all, worth_judging
-from app.matching.related_titles import cleaned, expand_titles, with_related
+from app.matching.related_titles import cleaned, expand_titles, related_to, title_key, with_related
 from app.matching.titles import NOT_ENTRY_TITLE
 from app.models import ApplicantJobMatch, ApplicantProfile, BudgetPolicy, ExperienceLevel, RelatedTitle, SpendKind, SpendLedger
+from tests.auth import sign_up
 from tests.conftest import WordEmbedder
 from tests.jobs import DAY_1, _job, _li, _public_resolve, _store
+from tests.test_cv_read import claude, client  # noqa: F401
+from tests.test_cv_read import _money as _http_money
 
 RELATED = [
     "Backend Developer",
@@ -103,6 +106,14 @@ def _applicant(session: Session, roles: list[str], locations: list[str], levels:
 
 def _spend(session: Session) -> list[SpendLedger]:
     return list(session.scalars(select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_related_titles)))
+
+
+
+def test_a_title_is_asked_about_without_its_level_words() -> None:
+    assert title_key("  Graduate   Software Engineer ") == "software engineer"
+    assert title_key("Junior Entry-Level Python Developer") == "python developer"
+    assert title_key("Senior Software Engineer") == "software engineer"
+
 
 
 def test_level_internship_and_apprenticeship_titles_are_dropped() -> None:
@@ -194,3 +205,104 @@ async def test_a_job_with_a_related_title_is_matched(session: Session) -> None:
 @pytest.mark.parametrize("roles", [["Software Engineer"], []])
 def test_with_related_keeps_the_typed_titles_first(session: Session, roles: list[str]) -> None:
     assert with_related(session, roles) == roles
+
+
+def test_level_and_training_titles_and_the_title_itself_are_dropped() -> None:
+    assert cleaned(
+        {"titles": ["Backend Developer", "Senior Python Developer", "Python Developer", "Software Engineer", "Web Intern"]},
+        "Software Engineer",
+    ) == ["Backend Developer", "Python Developer"]
+
+
+def test_related_titles_come_back_in_the_order_of_the_roles(session: Session) -> None:
+    session.add_all(
+        [
+            RelatedTitle(title_key="data analyst", titles=["BI Analyst"], model="m", prompt_version="related-titles-v1"),
+            RelatedTitle(
+                title_key="software engineer",
+                titles=["Backend Developer", "Data Analyst"],
+                model="m",
+                prompt_version="related-titles-v1",
+            ),
+        ]
+    )
+    session.flush()
+
+    assert related_to(session, ["Software Engineer", "Junior Data Analyst"]) == ["Backend Developer", "BI Analyst"]
+
+
+PASSWORD = "correct horse battery staple"
+
+
+async def test_the_picker_gets_related_titles_and_each_title_is_paid_for_once(
+    client: httpx.AsyncClient, session: Session, claude  # noqa: F811
+) -> None:
+    _http_money(session, "5")
+    assert (await sign_up(client, "titles@example.com", PASSWORD)).status_code == 303
+
+    first = await client.post("/profile/titles/related", data={"title": ["Graduate Software Engineer"]})
+
+    assert first.status_code == 200
+    # test_cv_read._Claude answers TITLE_DATA with Backend Developer + Senior Python Developer; level words drop.
+    assert first.json() == ["Backend Developer"]
+    assert claude.titles_asked == 1
+    assert session.scalars(select(RelatedTitle.title_key)).all() == ["software engineer"]
+
+    again = await client.post(
+        "/profile/titles/related", data={"title": ["Junior Software Engineer", "Backend Developer"]}
+    )
+
+    # "software engineer" is already stored; "backend developer" is new. The mock's senior title is dropped.
+    assert claude.titles_asked == 2
+    assert again.json() == []
+    spent = session.scalars(select(SpendLedger).where(SpendLedger.kind == SpendKind.ai_related_titles)).all()
+    assert len(spent) == 2
+
+
+async def test_with_no_money_left_nothing_is_asked_and_nothing_breaks(
+    client: httpx.AsyncClient, session: Session, claude  # noqa: F811
+) -> None:
+    assert (await sign_up(client, "broke@example.com", PASSWORD)).status_code == 303
+
+    response = await client.post("/profile/titles/related", data={"title": ["Data Analyst"]})
+
+    assert (response.status_code, response.json(), claude.calls) == (200, [], 0)
+
+
+async def test_the_picker_needs_a_login(client: httpx.AsyncClient) -> None:  # noqa: F811
+    assert (await client.post("/profile/titles/related", data={"title": ["Data Analyst"]})).status_code == 303
+
+
+async def test_the_matches_page_says_when_new_titles_are_still_being_searched(
+    client: httpx.AsyncClient, session: Session  # noqa: F811
+) -> None:
+    from app.fetch.due import search_key
+    from app.linkedin import SOURCE, Search
+    from app.models import FetchOutcome, FetchRun
+
+    assert (await sign_up(client, "wait@example.com", PASSWORD)).status_code == 303
+    profile = {
+        "target_roles": "Data Analyst\nBI Analyst",
+        "locations": "Leeds",
+        "experience_levels": ["entry"],
+    }
+    assert (await client.post("/profile", data=profile)).status_code == 303
+
+    assert "We are running 2 searches for your job titles and locations now" in (await client.get("/listings")).text
+
+    now = datetime.now(UTC)
+    for role in ("Data Analyst", "BI Analyst"):
+        session.add(
+            FetchRun(
+                source=SOURCE,
+                outcome=FetchOutcome.empty.value,
+                jobs_returned=0,
+                request_count=1,
+                started_at=now - timedelta(minutes=2),
+                finished_at=now,
+                search_key=search_key(Search(role, "Leeds", frozenset({ExperienceLevel.entry}))),
+            )
+        )
+    session.flush()
+
+    assert "We are searching for" not in (await client.get("/listings")).text

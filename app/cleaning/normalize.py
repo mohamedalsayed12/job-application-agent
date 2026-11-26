@@ -199,6 +199,10 @@ def normalize_job(source: str, raw: dict[str, Any]) -> NormalizedJob | None:
             parsed = _linkedin(raw)
         elif source == "indeed":
             parsed = _indeed(raw)
+        elif source == "google_jobs":
+            parsed = _google_jobs(raw)
+        elif source == "careers":
+            parsed = _careers(raw)
         else:
             parsed = None
     except (AttributeError, TypeError, ValueError):
@@ -235,6 +239,49 @@ def _linkedin(raw: dict[str, Any]) -> NormalizedJob:
         hours=_hours(employment),
         contract_type=_contract_type(employment),
         posted_at=_iso_date(raw.get("postedAt")),
+        closes_at=None,
+    )
+
+
+def _google_jobs(raw: dict[str, Any]) -> NormalizedJob:
+    """One item from SerpAPI's Google Jobs engine. Prefer the first http(s) apply option."""
+    where = clean_html(raw.get("location"))
+    extensions = raw.get("detected_extensions") if isinstance(raw.get("detected_extensions"), dict) else {}
+    schedule = (
+        extensions.get("schedule_type").lower()
+        if isinstance(extensions.get("schedule_type"), str)
+        else ""
+    )
+    apply_url = ""
+    options = raw.get("apply_options")
+    if isinstance(options, list):
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            link = option.get("link")
+            if isinstance(link, str) and link.startswith(("http://", "https://")):
+                apply_url = link
+                break
+    if not apply_url:
+        share = raw.get("share_link")
+        if isinstance(share, str) and share.startswith(("http://", "https://")):
+            apply_url = share
+    remote_type = None
+    if where and _REMOTE.search(where):
+        remote_type = "remote"
+    elif where and _HYBRID.search(where):
+        remote_type = "hybrid"
+    return NormalizedJob(
+        title=clean_html(raw.get("title")),
+        company=clean_html(raw.get("company_name")),
+        apply_url=apply_url,
+        location=parse_location(where, workplace=remote_type),
+        places=parse_places(where),
+        salary=Salary(),
+        description=clean_html(raw.get("description")) or None,
+        hours=_hours(schedule),
+        contract_type=_contract_type(schedule),
+        posted_at=None,
         closes_at=None,
     )
 
@@ -319,6 +366,71 @@ def _indeed_salary(raw: object) -> Salary:
         currency=currency,
         period=period,
     )
+
+
+def _careers(raw: dict[str, Any]) -> NormalizedJob:
+    """A schema.org JobPosting read from an employer's own careers page (D69). Its page is the apply link."""
+    posting = raw.get("posting") if isinstance(raw.get("posting"), dict) else {}
+    org = posting.get("hiringOrganization")
+    company = org.get("name") if isinstance(org, dict) else org
+    remote = "remote" if str(posting.get("jobLocationType") or "").upper() == "TELECOMMUTE" else None
+    where = "; ".join(_schema_places(posting.get("jobLocation")))
+    employment = posting.get("employmentType")
+    if isinstance(employment, list):
+        employment = " ".join(str(item) for item in employment)
+    commitment = str(employment or "").lower().replace("_", " ")
+    return NormalizedJob(
+        title=clean_html(posting.get("title") if isinstance(posting.get("title"), str) else ""),
+        company=clean_html(company if isinstance(company, str) else ""),
+        apply_url=raw.get("page_url") if isinstance(raw.get("page_url"), str) else "",
+        location=parse_location(where, workplace=remote),
+        places=parse_places(where),
+        salary=_schema_salary(posting.get("baseSalary")),
+        description=clean_html(posting.get("description") if isinstance(posting.get("description"), str) else "")
+        or None,
+        hours=_hours(commitment),
+        contract_type=_contract_type(commitment),
+        posted_at=_iso_date(posting.get("datePosted")),
+        closes_at=_iso_date(posting.get("validThrough")),
+    )
+
+
+def _schema_places(value: object) -> list[str]:
+    """'City, Country' for each schema.org Place; the address may be text or a PostalAddress."""
+    places = value if isinstance(value, list) else [value]
+    found = []
+    for place in places:
+        address = place.get("address") if isinstance(place, dict) else None
+        if isinstance(address, str):
+            found.append(clean_html(address))
+            continue
+        if not isinstance(address, dict):
+            continue
+        country = address.get("addressCountry")
+        if isinstance(country, dict):
+            country = country.get("name")
+        parts = [address.get("addressLocality"), country]
+        text = ", ".join(clean_html(part) for part in parts if isinstance(part, str) and part.strip())
+        if text:
+            found.append(text)
+    return found
+
+
+def _schema_salary(raw: object) -> Salary:
+    """schema.org MonetaryAmount: a currency and a QuantitativeValue with a value or a min and max."""
+    if not isinstance(raw, dict):
+        return Salary()
+    amount = raw.get("value")
+    currency = raw.get("currency")
+    currency = currency.strip().upper() if isinstance(currency, str) and currency.strip() else None
+    if not isinstance(amount, dict):
+        return Salary(minimum=_money(amount), maximum=_money(amount), currency=currency) if _money(amount) else Salary()
+    period = _INDEED_SALARY_PERIOD.get(str(amount.get("unitText") or "").upper())
+    low = _money(amount.get("minValue"))
+    high = _money(amount.get("maxValue"))
+    if low is None and high is None:
+        low = high = _money(amount.get("value"))
+    return Salary(minimum=low, maximum=high, currency=currency, period=period)
 
 
 def _money(value: object) -> Decimal | None:

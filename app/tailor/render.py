@@ -9,17 +9,12 @@ from docx import Document
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate
 
 Kind = Literal["name", "muted", "section", "body", "bullet"]
 
-BULLET = "•"
-# Helvetica writes the bullet as WinAnsi code 0x7F, which pypdf extracts as a DEL
-# character. An embedded TrueType font carries a ToUnicode map, so it extracts as "•".
-_BULLET_FONT = "Vera"
-pdfmetrics.registerFont(TTFont(_BULLET_FONT, "Vera.ttf"))
+# A hyphen, like most CVs: ReportLab writes "•" into the text layer as a control character ATS parsers misread.
+BULLET = "-"
 
 _ADDITIONAL = (
     ("languages", "Languages"),
@@ -58,10 +53,10 @@ def blocks(resume: dict[str, Any]) -> list[tuple[Kind, str]]:
             out.append(("body", _join(entry.get(field) for field in ("degree", "institution", "years"))))
             if entry.get("description"):
                 out.append(("muted", entry["description"]))
-    lists = [(label, additional[field]) for field, label in _ADDITIONAL if additional.get(field)]
-    if lists:
-        out.append(("section", "Additional"))
-        out += [("body", f"{label}: {', '.join(items)}") for label, items in lists]
+    for field, label in _ADDITIONAL:
+        if additional.get(field):
+            out.append(("section", label))
+            out += [("body", item) for item in additional[field]]
     return out
 
 
@@ -71,17 +66,17 @@ def render_pdf(resume: dict[str, Any]) -> bytes:
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        topMargin=16 * mm,
-        bottomMargin=16 * mm,
+        leftMargin=16 * mm,
+        rightMargin=16 * mm,
+        topMargin=13 * mm,
+        bottomMargin=13 * mm,
         title=personal.get("name") or "CV",
     )
     sheet = getSampleStyleSheet()
-    body = ParagraphStyle("CvBody", parent=sheet["Normal"], fontSize=10, leading=13)
+    body = ParagraphStyle("CvBody", parent=sheet["Normal"], fontSize=9.5, leading=12)
     styles = {
-        "name": ParagraphStyle("CvName", parent=sheet["Heading1"], fontSize=16, spaceAfter=4),
-        "section": ParagraphStyle("CvSection", parent=sheet["Heading2"], fontSize=12, spaceBefore=10, spaceAfter=4),
+        "name": ParagraphStyle("CvName", parent=sheet["Heading1"], fontSize=16, spaceAfter=3),
+        "section": ParagraphStyle("CvSection", parent=sheet["Heading2"], fontSize=11.5, spaceBefore=7, spaceAfter=3),
         "body": body,
         "muted": ParagraphStyle("CvMuted", parent=body, textColor="#333333"),
     }
@@ -89,7 +84,7 @@ def render_pdf(resume: dict[str, Any]) -> bytes:
     bullets: list = []
     for kind, text in blocks(resume):
         if kind == "bullet":
-            bullets.append(ListItem(Paragraph(_xml(text), body), leftIndent=8))
+            bullets.append(ListItem(Paragraph(_xml(text), body)))
             continue
         if bullets:
             story.append(_bullet_list(bullets))
@@ -99,6 +94,11 @@ def render_pdf(resume: dict[str, Any]) -> bytes:
         story.append(_bullet_list(bullets))
     doc.build(story)
     return buffer.getvalue()
+
+
+def _bullet_list(items: list) -> ListFlowable:
+    # ReportLab prints ``start`` as the bullet itself, so it must be the symbol, not a type name.
+    return ListFlowable(items, bulletType="bullet", start=BULLET, leftIndent=11, bulletFontSize=8, bulletOffsetY=-1)
 
 
 def render_docx(resume: dict[str, Any]) -> bytes:
@@ -168,10 +168,6 @@ def render_letter_docx(letter: str, resume: dict[str, Any]) -> bytes:
 
 def _paragraphs(letter: str) -> list[str]:
     return [part.strip() for part in letter.replace("\r\n", "\n").split("\n\n") if part.strip()]
-
-
-def _bullet_list(items: list) -> ListFlowable:
-    return ListFlowable(items, bulletType="bullet", start=BULLET, bulletFontName=_BULLET_FONT)
 
 
 def _join(parts) -> str:

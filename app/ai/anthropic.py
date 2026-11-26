@@ -10,19 +10,19 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.config import Settings
 from app.fetch.gateway import FetchGateway, FetchRefusal, FetchRequest, FetchResponse
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2026-10-21"
-# The fetch gateway's 10s default aborted interview labelling and pack synthesis.
-# Callers pass this. Leaving timeout_s unset keeps every other model call at 10s.
+# Long structured answers (fit reports, tailored CVs) take well over the gateway's 10 s default.
+AI_TIMEOUT_S = 150.0
+# Interview labelling and pack synthesis; callers pass this explicitly.
 INTERVIEW_TIMEOUT_S = 30.0
 
 
 @dataclass(frozen=True, slots=True)
 class AiCallResponse:
-    """Parsed structured output from one call."""
-
     payload: dict[str, Any]
     prompt_tokens: int
     completion_tokens: int
@@ -31,11 +31,34 @@ class AiCallResponse:
 
 @dataclass(frozen=True, slots=True)
 class AiCallFailure:
-    """The call did not yield usable JSON; ``reason`` says why."""
-
     reason: str
     billed: bool = False
     """Anthropic answered 200, so the tokens were charged even though the answer is unusable."""
+
+
+def anthropic_api_key(settings: Settings) -> str | None:
+    key = settings.anthropic_api_key.strip()
+    if settings.ai_provider.strip().lower() != "anthropic" or not key:
+        return None
+    return key
+
+
+def messages_body(
+    *,
+    system: str,
+    user: str,
+    schema: dict,
+    model: str,
+    max_tokens: int,
+) -> dict:
+    return {
+        "model": model,
+        "max_tokens": max_tokens,
+        "thinking": {"type": "disabled"},
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+        "output_config": {"format": {"type": "json_schema", "schema": schema}},
+    }
 
 
 async def send_anthropic_request(
@@ -46,7 +69,6 @@ async def send_anthropic_request(
     fallback_model: str,
     timeout_s: float | None = None,
 ) -> AiCallResponse | AiCallFailure:
-    extra = {} if timeout_s is None else {"timeout_s": timeout_s}
     request = FetchRequest(
         url=ANTHROPIC_MESSAGES_URL,
         method="POST",
@@ -57,7 +79,7 @@ async def send_anthropic_request(
             "Content-Type": "application/json",
         },
         body=json.dumps(body).encode("utf-8"),
-        **extra,
+        timeout_s=AI_TIMEOUT_S if timeout_s is None else timeout_s,
     )
     outcome = await gateway.fetch(request)
     if isinstance(outcome, FetchRefusal):

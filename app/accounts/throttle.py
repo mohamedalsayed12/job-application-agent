@@ -20,7 +20,12 @@ _FAILED_LOGIN_LIMITS = (
     (parse("50/hour"), "ip"),
 )
 _REGISTER = parse("5/hour")
-_SET_PASSWORD = parse("10/hour")
+# Asking for a confirm or reset email, per place. Each email address also has its own limit below.
+_EMAIL_REQUEST = parse("10/hour")
+# Account emails to one address, whoever asks: stops anyone using the site to flood an inbox.
+_MAIL_TO_ADDRESS = parse("3/hour")
+# Submitting an emailed link. Tokens can't be guessed; this stops anyone trying at scale.
+_LINK_USE = parse("20/hour")
 _ADMIN_LOGIN = parse("10/15 minutes")
 _CV_UPLOAD = parse("20/hour")
 
@@ -52,8 +57,18 @@ def take_register_attempt(ip: str) -> bool:
     return _limiter.hit(_REGISTER, "register", ip)
 
 
-def take_set_password_attempt(ip: str) -> bool:
-    return _limiter.hit(_SET_PASSWORD, "set-password", ip)
+def take_email_request(kind: str, ip: str) -> bool:
+    """kind is "verify" or "reset", so one doesn't use up the other."""
+    return _limiter.hit(_EMAIL_REQUEST, "email-request", kind, ip)
+
+
+def take_mail_to(email: str) -> bool:
+    """Counted by the address as typed, whether or not it has an account, so the limit gives nothing away."""
+    return _limiter.hit(_MAIL_TO_ADDRESS, "mail-to", email.strip().lower())
+
+
+def take_link_use(ip: str) -> bool:
+    return _limiter.hit(_LINK_USE, "link-use", ip)
 
 
 def take_admin_login_attempt(ip: str) -> bool:

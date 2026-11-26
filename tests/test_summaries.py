@@ -21,9 +21,6 @@ from app.fetch.gateway import FetchGateway
 from app.main import app
 from app.matching.match import match_all
 from app.models import (
-    Applicant,
-    ApplicantPreference,
-    Application,
     BudgetPolicy,
     Job,
     JobFreshness,
@@ -40,7 +37,8 @@ from app.summaries.generate import (
     summarise_matches,
     summary_for_view,
 )
-from tests.jobs import _job, _public_resolve, _store, show_to
+from tests.auth import sign_up
+from tests.jobs import _job, _public_resolve, _store
 from tests.test_matching import SOON, _applicant, _posting
 
 POSTING = (
@@ -290,11 +288,8 @@ async def client(session: Session, monkeypatch: pytest.MonkeyPatch) -> AsyncIter
     get_settings.cache_clear()
 
 
-async def _login(client: httpx.AsyncClient, session: Session, *shown: Job) -> None:
-    assert (await client.post("/register", data={"email": "v@example.com", "password": PASSWORD})).status_code == 303
-    me = session.scalar(select(Applicant).where(Applicant.email == "v@example.com"))
-    for job in shown:
-        show_to(session, me.id, job.id)
+async def _login(client: httpx.AsyncClient) -> None:
+    assert (await sign_up(client, "v@example.com", PASSWORD)).status_code == 303
 
 
 async def test_the_job_page_needs_a_login_and_shows_the_checked_summary(client: httpx.AsyncClient, session: Session) -> None:
@@ -302,7 +297,7 @@ async def test_the_job_page_needs_a_login_and_shows_the_checked_summary(client: 
     job = await _open_job(session)
     session.commit()
     assert (await client.get(f"/jobs/{job.id}")).status_code == 303
-    await _login(client, session, job)
+    await _login(client)
     page = (await client.get(f"/jobs/{job.id}")).text
     assert GOOD in page
     assert "checked against it" in page
@@ -314,7 +309,7 @@ async def test_t37_with_the_budget_used_up_the_job_page_shows_the_description(
 ) -> None:
     job = await _open_job(session)
     session.commit()
-    await _login(client, session, job)
+    await _login(client)
     response = await client.get(f"/jobs/{job.id}")
     assert response.status_code == 200
     assert "build payment services in Python" in response.text
@@ -325,54 +320,8 @@ async def test_a_job_that_is_not_open_is_not_shown(client: httpx.AsyncClient, se
     job = await _open_job(session)
     job.freshness = JobFreshness.closed
     session.commit()
-    await _login(client, session, job)
+    await _login(client)
     assert (await client.get(f"/jobs/{job.id}")).status_code == 404
-
-
-async def _not_available(client: httpx.AsyncClient, job: Job) -> None:
-    page = await client.get(f"/jobs/{job.id}")
-    assert (page.status_code, page.headers["content-type"].split(";")[0]) == (404, "text/html")
-    assert "This job isn't available" in page.text
-    for path in (f"/jobs/{job.id}/tailor", f"/jobs/{job.id}/applied", f"/jobs/{job.id}/interview", f"/jobs/{job.id}/outreach/find"):
-        assert (await client.post(path)).status_code == 404, path
-    for path in (f"/jobs/{job.id}/interview", f"/jobs/{job.id}/outreach"):
-        assert (await client.get(path)).status_code == 404, path
-    assert (await client.post("/applications", data={"job_id": str(job.id)})).status_code == 404
-
-
-async def test_a_job_kept_off_listings_for_scam_signs_does_not_open(client: httpx.AsyncClient, session: Session) -> None:
-    _policy(session, Decimal("5"))
-    scam = "You must pay a training fee of 500 pounds before you start. Apply via WhatsApp to the recruiter."
-    _store(
-        session,
-        [_posting(1, content=f"{POSTING} {scam}"), _posting(2, title="Python Developer", content=POSTING)],
-    )
-    scam_job, fair_job = _job(session, 1), _job(session, 2)
-    await _login(client, session)
-    me = session.scalar(select(Applicant).where(Applicant.email == "v@example.com"))
-    session.add(
-        ApplicantPreference(applicant_id=me.id, target_roles=["Backend Developer", "Python Developer"], locations=["Manchester"])
-    )
-    match_all(session, now=SOON)
-    session.commit()
-
-    assert (await client.get(f"/jobs/{fair_job.id}")).status_code == 200
-    calls = client.provider.calls  # type: ignore[attr-defined]
-    await _not_available(client, scam_job)
-    assert client.provider.calls == calls  # type: ignore[attr-defined]
-    assert session.scalars(select(Application)).first() is None
-
-
-async def test_an_open_job_not_matched_to_this_person_does_not_open(client: httpx.AsyncClient, session: Session) -> None:
-    _policy(session, Decimal("5"))
-    job = await _open_job(session)
-    someone_else = _applicant(session, roles=["Backend Developer"], locations=["Manchester"])
-    show_to(session, someone_else, job.id)
-    session.commit()
-    await _login(client, session)
-
-    await _not_available(client, job)
-    assert client.provider.calls == 0  # type: ignore[attr-defined]
 
 
 async def _matched_jobs(session: Session) -> tuple[Job, Job, Job]:

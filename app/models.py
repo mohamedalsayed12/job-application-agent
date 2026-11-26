@@ -107,11 +107,14 @@ class SpendKind(StrEnum):
     ai_search_ideas = "ai_search_ideas"
     linkedin_jobs = "linkedin_jobs"
     indeed_jobs = "indeed_jobs"
+    google_jobs = "google_jobs"
+    careers_search = "careers_search"
     apply_form = "apply_form"
     ai_apply_map = "ai_apply_map"
     linkedin_people = "linkedin_people"
     linkedin_profile = "linkedin_profile"
     ai_outreach = "ai_outreach"
+    email_lookup = "email_lookup"
     interview_collect = "interview_collect"
     ai_interview_analyse = "ai_interview_analyse"
     ai_interview_plan = "ai_interview_plan"
@@ -236,8 +239,25 @@ def _updated():
     return mapped_column(TZ, server_default=func.now(), onupdate=func.now())
 
 
+class OnboardingStep(StrEnum):
+    """The sign-up wizard's steps after the account itself, in order. Null on the row means finished."""
+
+    cv = "cv"
+    details = "details"
+    preferences = "preferences"
+    education = "education"
+    availability = "availability"
+    diversity = "diversity"
+
+
+class AuthTokenPurpose(StrEnum):
+    verify_email = "verify_email"
+    reset_password = "reset_password"
+
+
 class Applicant(_UuidPk, Base):
     __tablename__ = "applicant"
+    __table_args__ = (_text_in("onboarding_step", OnboardingStep, nullable=True),)
 
     email: Mapped[str] = mapped_column(CITEXT(), unique=True)
     display_name: Mapped[str | None] = mapped_column(Text())
@@ -246,6 +266,29 @@ class Applicant(_UuidPk, Base):
     password_hash: Mapped[str | None] = mapped_column(Text())
     # Stored in the login cookie. Raising it ends every session for this applicant.
     session_version: Mapped[int] = mapped_column(Integer(), default=0, server_default=text("0"))
+    # The sign-up wizard step to show next. Null once finished, and for every account made before it.
+    onboarding_step: Mapped[str | None] = mapped_column(Text())
+    # Null until the person opens the link emailed to them. Until then they can log in but see only the confirm page.
+    email_verified_at: Mapped[datetime | None] = mapped_column(TZ)
+    created_at: Mapped[datetime] = _created()
+
+
+class AuthToken(_UuidPk, Base):
+    """A one-time emailed link. Only the SHA-256 of the token is kept, so a copy of the table opens nothing."""
+
+    __tablename__ = "auth_token"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_auth_token_token_hash"),
+        _text_in("purpose", AuthTokenPurpose),
+        Index("ix_auth_token_applicant_id_purpose", "applicant_id", "purpose"),
+    )
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    purpose: Mapped[str] = mapped_column(Text())
+    token_hash: Mapped[str] = mapped_column(Text())
+    expires_at: Mapped[datetime] = mapped_column(TZ)
+    # Set when the link is used, or when a newer link or a password change replaces it.
+    used_at: Mapped[datetime | None] = mapped_column(TZ)
     created_at: Mapped[datetime] = _created()
 
 
@@ -427,6 +470,8 @@ class CvFile(_UuidPk, Base):
     label: Mapped[str] = mapped_column(Text(), default="", server_default=text("''"))
     # Used for a job no label fits.
     is_primary: Mapped[bool] = mapped_column(Boolean(), default=False, server_default=text("false"))
+    # What the sign-up wizard read from this file, kept only until the person has checked it.
+    suggestions: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
 
 
 class SpendLedger(_UuidPk, Base):
@@ -448,7 +493,10 @@ class SpendLedger(_UuidPk, Base):
 
 class FetchRun(_UuidPk, Base):
     __tablename__ = "fetch_run"
-    __table_args__ = (_text_in("outcome", FetchOutcome),)
+    __table_args__ = (
+        _text_in("outcome", FetchOutcome),
+        Index("ix_fetch_run_source_search_key", "source", "search_key", "started_at"),
+    )
 
     source: Mapped[str] = mapped_column(Text())
     outcome: Mapped[str] = mapped_column(Text())
@@ -457,6 +505,8 @@ class FetchRun(_UuidPk, Base):
     request_count: Mapped[int] = mapped_column(Integer())
     started_at: Mapped[datetime] = mapped_column(TZ)
     finished_at: Mapped[datetime] = mapped_column(TZ)
+    # D72: which search this run was ("role|location", lower case), so each search is due on its own.
+    search_key: Mapped[str | None] = mapped_column(Text())
 
 
 class RawPayload(_UuidPk, Base):
@@ -834,6 +884,18 @@ class ApplicationAnswers(_UuidPk, Base):
     ethnicity: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     disability: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
     veteran: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    notice_period: Mapped[str | None] = mapped_column(Text())
+    earliest_start_date: Mapped[date | None] = mapped_column(Date())
+    willing_to_relocate: Mapped[bool | None] = mapped_column(Boolean())
+    work_hours: Mapped[str | None] = mapped_column(Text())
+    work_location: Mapped[str | None] = mapped_column(Text())
+    sexual_orientation: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    religion: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    caring_responsibilities: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    school_type: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    parental_occupation: Mapped[str] = mapped_column(Text(), server_default=text(f"'{PREFER_NOT}'"))
+    # The extra questions in app.applicants.questions (D74), keyed by question. A blank answer is left out.
+    extra: Mapped[dict[str, Any]] = mapped_column(JSONB(), default=dict, server_default=text("'{}'::jsonb"))
     saved_questions: Mapped[list[dict[str, str]]] = mapped_column(
         JSONB(), default=list, server_default=text("'[]'::jsonb")
     )
@@ -847,6 +909,9 @@ class Application(_UuidPk, Base):
     __table_args__ = (
         UniqueConstraint("applicant_id", "job_id", name="uq_application_applicant_job"),
         _text_in("status", ApplicationStatus),
+        CheckConstraint(
+            "outreach_state IS NULL OR outreach_state IN ('queued', 'ready', 'no_contacts')", name="outreach_state"
+        ),
         Index("ix_application_applicant_status", "applicant_id", "status"),
     )
 
@@ -858,6 +923,8 @@ class Application(_UuidPk, Base):
     fill_plan_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB())
     missing_fields: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
     error: Mapped[str | None] = mapped_column(Text())
+    # D77: None until the person marks it submitted; then queued, ready (drafts written) or no_contacts.
+    outreach_state: Mapped[str | None] = mapped_column(Text())
     # The person's CV the extension uploads when no tailored one is ready (D65).
     cv_file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("cv_file.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = _created()
@@ -878,6 +945,26 @@ class ExtensionDevice(_UuidPk, Base):
     label: Mapped[str] = mapped_column(Text(), server_default=text("'default'"))
     created_at: Mapped[datetime] = _created()
     rotated_at: Mapped[datetime] = mapped_column(TZ, server_default=func.now())
+
+
+class FormQuestion(_UuidPk, Base):
+    """A question an employer's form asked that the saved answers don't cover (D75).
+
+    Kept per person under the question's wording without case or punctuation, so an answer given once
+    fills the same question on every later form. A null answer is still waiting for the person.
+    """
+
+    __tablename__ = "form_question"
+    __table_args__ = (UniqueConstraint("applicant_id", "question_key", name="uq_form_question_applicant_key"),)
+
+    applicant_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("applicant.id", ondelete="CASCADE"))
+    question_key: Mapped[str] = mapped_column(Text())
+    label: Mapped[str] = mapped_column(Text())
+    field_type: Mapped[str] = mapped_column(Text())
+    options: Mapped[list[str]] = mapped_column(ARRAY(Text()), default=list, server_default=text("'{}'"))
+    answer: Mapped[str | None] = mapped_column(Text())
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = _updated()
 
 
 class OutreachContact(_UuidPk, Base):
@@ -1051,6 +1138,8 @@ class InterviewIntelRequest(_UuidPk, Base):
     role_key: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(Text())
     pack_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("interview_intel_pack.id", ondelete="SET NULL"))
+    # D77: the job whose practice pack is built as soon as the role research is ready.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("job.id", ondelete="SET NULL"))
     error: Mapped[str | None] = mapped_column(Text())
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
@@ -1083,7 +1172,7 @@ class InterviewJobPack(_UuidPk, Base):
 
 
 class RelatedTitle(Base):
-    """Job titles employers use for the same work as one target title, kept for everyone who wants it."""
+    """D68: job titles employers use for the same work as one target title, kept for everyone who wants it."""
 
     __tablename__ = "related_title"
 

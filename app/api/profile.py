@@ -46,6 +46,7 @@ from app.applicants.profile import (
     MAX_ROLES,
     MAX_SKILLS,
     CertificationInput,
+    ProfileInput,
     load_profile,
     parse_certification,
     parse_profile_input,
@@ -57,7 +58,7 @@ from app.core.config import Settings, get_settings
 from app.core.db import get_db
 from app.fetch.gateway import FetchGateway
 from app.matching.match import match_all
-from app.matching.related_titles import expand_titles, with_related
+from app.matching.related_titles import MAX_TITLES_PER_REQUEST, expand_titles, related_to, with_related
 from app.models import Applicant, CvFile, CvFileType
 from app.skills.taxonomy import suggest_skills
 
@@ -72,7 +73,7 @@ _EVERYWHERE = "everywhere"
 _PROFILE_DRAFT = "profile_draft"
 _CSRF = [Depends(require_csrf)]
 # Without scripts the form still works: people type their skills into the box.
-_SKILL_SEARCH_SCRIPT = """<script>
+SKILL_SEARCH_SCRIPT = """<script>
 const search = document.getElementById("skill-search");
 const list = document.getElementById("skill-suggestions");
 const skills = document.getElementById("skills");
@@ -93,6 +94,97 @@ document.getElementById("skill-add").addEventListener("click", () => {
   search.focus();
 });
 </script>"""
+
+CHIP_PICKER_SCRIPT = """<script>
+function chipPicker(box, onChange) {
+  const field = box.querySelector("textarea");
+  const chips = box.querySelector(".chips");
+  const input = box.querySelector(".chip-input");
+  const limit = Number(box.dataset.limit || 15);
+  const items = () => field.value.split("\\n").map((line) => line.trim()).filter(Boolean);
+  const has = (name) => items().some((item) => item.toLowerCase() === name.toLowerCase());
+  function draw() {
+    chips.replaceChildren(...items().map((name) => {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.setAttribute("aria-label", "Remove " + name);
+      remove.textContent = "\\u00d7";
+      remove.addEventListener("click", () => {
+        field.value = items().filter((item) => item !== name).join("\\n");
+        draw();
+        if (onChange) onChange();
+      });
+      chip.append(remove);
+      return chip;
+    }));
+  }
+  function add(name) {
+    name = name.trim();
+    if (!name || has(name) || items().length >= limit) return false;
+    field.value = [...items(), name].join("\\n");
+    draw();
+    if (onChange) onChange();
+    return true;
+  }
+  function addTyped() {
+    add(input.value);
+    input.value = "";
+    input.focus();
+  }
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); addTyped(); }
+  });
+  // Something typed but not added still counts when the form is sent.
+  input.form.addEventListener("submit", () => input.value.split(",").forEach(add));
+  box.querySelector(".chip-add").addEventListener("click", addTyped);
+  field.hidden = true;
+  field.required = false;
+  box.querySelector(".chip-entry").hidden = false;
+  draw();
+  return { add, has, items };
+}
+document.querySelectorAll(".chip-picker:not(#title-picker)").forEach((box) => chipPicker(box));
+const titleBox = document.getElementById("title-picker");
+if (titleBox) {
+  const offers = document.getElementById("title-offers");
+  const options = document.getElementById("title-options");
+  let offered = [];
+  let timer = null;
+  function drawOffers() {
+    const open = offered.filter((name) => !titles.has(name));
+    options.replaceChildren(...open.map((name) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chip offer";
+      button.textContent = "+ " + name;
+      button.addEventListener("click", () => titles.add(name));
+      return button;
+    }));
+    offers.hidden = open.length === 0;
+  }
+  async function fetchOffers() {
+    const body = new FormData();
+    body.append("csrf_token", titleBox.closest("form").querySelector("[name=csrf_token]").value);
+    titles.items().forEach((name) => body.append("title", name));
+    try {
+      const response = await fetch("/profile/titles/related", { method: "POST", body });
+      if (response.ok) offered = await response.json();
+    } catch (_) { /* suggestions are optional */ }
+    drawOffers();
+  }
+  const titles = chipPicker(titleBox, () => {
+    drawOffers();
+    clearTimeout(timer);
+    timer = setTimeout(fetchOffers, 600);
+  });
+  if (titles.items().length) fetchOffers();
+}
+</script>"""
+SKILL_SEARCH_SCRIPT += CHIP_PICKER_SCRIPT
+
 
 
 _DRAFT_SCALARS = (
@@ -188,7 +280,7 @@ class ProfileFields:
         return cls(**scalars, **lists)
 
 
-def _saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
+def saved_fields(db: Session, applicant: Applicant) -> ProfileFields:
     saved = load_profile(db, applicant.id)
     preference, profile = saved.preference, saved.profile
     certifications = saved.certifications
@@ -255,7 +347,7 @@ def _form_fields(request: Request, db: Session, applicant: Applicant) -> tuple[P
     draft = _draft_view(request)
     if draft is not None:
         return draft
-    return _saved_fields(db, applicant), None
+    return saved_fields(db, applicant), None
 
 
 def _options(pairs: list[tuple[str, str]], selected: str) -> str:
@@ -278,7 +370,7 @@ def _certification_row(row: tuple[str, str, str, str]) -> str:
     )
 
 
-def _size_text(size_bytes: int) -> str:
+def size_text(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes >= 1024 * 1024 else f"{max(size_bytes // 1024, 1)} KB"
 
 
@@ -293,7 +385,7 @@ def _cv_row(request: Request, cv: CvFile, *, label: str | None = None, checked: 
     <input form="profile-form" name="cv_label" aria-label="Job this CV is for" placeholder="Job this CV is for"
       value="{html.escape(shown)}"/>
     <label><input form="profile-form" type="radio" name="cv_primary" value="{cv.id}"{mark}/> Primary</label>
-    <a href="/profile/cv/{cv.id}">cv.{html.escape(cv.file_type)}</a>, {_size_text(cv.size_bytes)},
+    <a href="/profile/cv/{cv.id}">cv.{html.escape(cv.file_type)}</a>, {size_text(cv.size_bytes)},
     uploaded {cv.uploaded_at:%d %B %Y}.
   </span>
   <span class="cv-actions">
@@ -358,7 +450,7 @@ profile until you press Save and find my matches.</p>
 """
 
 
-_PROFILE_STYLE = """<style>
+PROFILE_STYLE = """<style>
 .card h2 { font-size: 1rem; }
 .dropzone { border: 1.5px dashed #c7ccd4; border-radius: 8px; padding: 1rem; text-align: center; }
 .dropzone input { max-width: 22rem; margin: 0.5rem auto; }
@@ -378,21 +470,21 @@ _PROFILE_STYLE = """<style>
 .form-foot { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.25rem; }
 .cv-current input[name="cv_label"] { width: 14rem; margin: 0; }
 .cv-replace { margin: 0 0 0.75rem; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.4rem 0; }
+.chip { display: inline-flex; align-items: center; gap: 0.35rem; background: var(--primary-soft); color: var(--text);
+  border-radius: 999px; padding: 0.25rem 0.55rem; font-size: 0.9rem; }
+.chip button { all: unset; cursor: pointer; color: var(--muted); font-size: 1.05rem; line-height: 1; padding: 0 0.15rem; }
+.chip button:hover, .chip button:focus-visible { color: var(--text); }
+button.chip.offer { background: var(--card); border: 1px dashed #c7ccd4; cursor: pointer; font: inherit; font-size: 0.9rem; }
+button.chip.offer:hover, button.chip.offer:focus-visible { border-color: var(--primary); color: var(--primary); }
+.chip-entry { display: flex; gap: 0.5rem; align-items: end; }
+.chip-entry input { flex: 1; margin: 0; }
 </style>"""
 
 
-def _profile_page(
-    request: Request,
-    db: Session,
-    applicant: Applicant,
-    fields: ProfileFields,
-    *,
-    error: str | None = None,
-    cv_error: str | None = None,
-    notice: str | None = None,
-    status_code: int = 200,
-) -> HTMLResponse:
-    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
+def preference_sections(fields: ProfileFields, *, first_number: int, db: Session | None = None) -> str:
+    """The job-search part of the profile form. The sign-up wizard shows the same fields."""
     typed = _lines(fields.target_roles)
     offer = "".join(
         f'<label class="check"><input type="checkbox" name="cv_roles" value="{html.escape(role)}"'
@@ -400,49 +492,56 @@ def _profile_page(
         f'<input type="hidden" name="cv_offer" value="{html.escape(role)}"/>'
         for role in dict.fromkeys([*fields.cv_offer, *fields.cv_roles])
     )
-    offer = f'<fieldset class="checks"><legend>From your CV <span class="hint">tick any to add</span></legend>{offer}</fieldset>' if offer else ""
-    related = [title for title in with_related(db, typed) if title.casefold() not in {role.casefold() for role in typed}]
+    offer = (
+        f'<fieldset class="checks"><legend>From your CV <span class="hint">tick any to add</span></legend>{offer}</fieldset>'
+        if offer
+        else ""
+    )
+    related = (
+        [title for title in with_related(db, typed) if title.casefold() not in {role.casefold() for role in typed}]
+        if db is not None
+        else []
+    )
     also = f'<p class="hint">We also search: {html.escape(", ".join(related))}.</p>' if related else ""
-    if notice:
-        message += f'<div class="notice">{html.escape(notice)}</div>'
     levels = "".join(
         f'<label class="check"><input type="checkbox" name="experience_levels" value="{level.value}"'
         f'{" checked" if level.value in fields.experience_levels else ""}/> {html.escape(facts.label)}</label>'
         for level, facts in LEVELS.items()
     )
-    periods = _options([(period, f"a {period}") for period in _SALARY_PERIODS], fields.salary_period)
+    period_labels = {"year": "a year", "month": "a month", "day": "a day", "hour": "an hour"}
+    periods = _options([(period, period_labels[period]) for period in _SALARY_PERIODS], fields.salary_period)
     scopes = _options(
         [(_MY_LOCATIONS, "Only jobs in my locations"), (_EVERYWHERE, "Also jobs outside my locations")],
         fields.tailor_scope,
     )
     rows = [*fields.certifications, *[("", "", "certification", "")] * _SPARE_CERTIFICATION_ROWS]
-    return page(
-        "Your profile",
-        f"""{_PROFILE_STYLE}
-<div class="page-head"><div>
-  <h1>Your profile</h1>
-  <p class="muted">Tell us what you're looking for. We use this only to find and match jobs, and you can delete it at any time.
-  For employer forms, set <a href="/profile/apply-answers">apply answers</a> separately.</p>
-</div></div>
-{message}
-<form method="post" action="/profile" id="profile-form">
-  {csrf_field(request)}
+    return f"""
   <section class="card">
-    <h2>1. Account</h2>
-    <label>Email <input value="{html.escape(applicant.email)}" disabled/></label>
-    <p class="hint">Change your password or delete your account on <a href="/account">your account page</a>.</p>
-  </section>
-
-  <section class="card">
-    <h2>2. What you're looking for</h2>
-    <label>Target roles <span class="hint">one per line</span>
-      <textarea name="target_roles" rows="3" placeholder="Junior Software Engineer">{html.escape(fields.target_roles)}</textarea>
-    </label>
+    <h2>{first_number}. What you're looking for</h2>
+    <div class="chip-picker" id="title-picker" data-limit="{MAX_ROLES}">
+      <label for="target_roles">Job titles you want <span class="hint">add up to {MAX_ROLES}; we search for every one</span></label>
+      <div class="chips" aria-live="polite"></div>
+      <div class="chip-entry" hidden>
+        <input class="chip-input" aria-label="Add a job title" autocomplete="off" placeholder="Type a title, then press Enter"/>
+        <button type="button" class="chip-add">Add</button>
+      </div>
+      <textarea id="target_roles" name="target_roles" rows="3" required placeholder="Junior Software Engineer">{html.escape(fields.target_roles)}</textarea>
+      <div id="title-offers" hidden>
+        <p class="hint">Employers also use these titles for the same work. Pick any you want searched too:</p>
+        <div class="chips" id="title-options"></div>
+      </div>
+    </div>
     {offer}
     {also}
-    <label>Locations <span class="hint">one per line</span>
-      <textarea name="locations" rows="2" required placeholder="Manchester">{html.escape(fields.locations)}</textarea>
-    </label>
+    <div class="chip-picker" data-limit="{MAX_LOCATIONS}">
+      <label for="locations">Locations <span class="hint">towns, cities, a country or Remote</span></label>
+      <div class="chips" aria-live="polite"></div>
+      <div class="chip-entry" hidden>
+        <input class="chip-input" aria-label="Add a location" autocomplete="off" placeholder="Type a place, then press Enter"/>
+        <button type="button" class="chip-add">Add</button>
+      </div>
+      <textarea id="locations" name="locations" rows="2" required placeholder="Manchester">{html.escape(fields.locations)}</textarea>
+    </div>
     <p class="hint">Not sure what to search for? AI can suggest job titles that fit your skills and degrees, and towns
     near your locations, for you to check before anything is searched.
     <button type="submit" formaction="/profile/ideas" formnovalidate>Suggest roles and places</button></p>
@@ -473,7 +572,7 @@ def _profile_page(
   </section>
 
   <section class="card">
-    <h2>3. Skills and certifications</h2>
+    <h2>{first_number + 1}. Skills and certifications</h2>
     <div class="skill-find">
       <label>Find a skill
         <input id="skill-search" list="skill-suggestions" autocomplete="off" placeholder="Start typing, for example Python"/>
@@ -492,6 +591,63 @@ def _profile_page(
       <tbody>{"".join(_certification_row(row) for row in rows)}</tbody>
     </table></div>
   </section>
+"""
+
+
+def save_profile_fields(db: Session, applicant: Applicant, fields: ProfileFields) -> ProfileInput:
+    """Checks and saves the job-search fields. Raises PreferenceValidationError with a message to show."""
+    certifications: list[CertificationInput] = [
+        item for row in fields.certifications if (item := parse_certification(*row))
+    ]
+    profile = parse_profile_input(
+        target_roles=[*fields.target_roles.splitlines(), *fields.cv_roles],
+        locations=fields.locations.splitlines(),
+        salary_amount=fields.salary_amount,
+        salary_currency=fields.salary_currency,
+        salary_period=fields.salary_period,
+        experience_levels=fields.experience_levels,
+        travel_distance=fields.travel_distance,
+        skills=fields.skills.splitlines(),
+        certifications=certifications,
+        degrees=fields.degrees.splitlines(),
+        tailor_outside_locations=fields.tailor_scope == _EVERYWHERE,
+    )
+    save_profile(db, applicant.id, profile)
+    return profile
+
+
+def _profile_page(
+    request: Request,
+    db: Session,
+    applicant: Applicant,
+    fields: ProfileFields,
+    *,
+    error: str | None = None,
+    cv_error: str | None = None,
+    notice: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    if notice:
+        message += f'<div class="notice">{html.escape(notice)}</div>'
+    return page(
+        "Your profile",
+        f"""{PROFILE_STYLE}
+<div class="page-head"><div>
+  <h1>Your profile</h1>
+  <p class="muted">Tell us what you're looking for. We use this only to find and match jobs, and you can delete it at any time.
+  For employer forms, set <a href="/profile/apply-answers">apply answers</a> separately.</p>
+</div></div>
+{message}
+<form method="post" action="/profile" id="profile-form">
+  {csrf_field(request)}
+  <section class="card">
+    <h2>1. Account</h2>
+    <label>Email <input value="{html.escape(applicant.email)}" disabled/></label>
+    <p class="hint">Change your password or delete your account on <a href="/account">your account page</a>.</p>
+  </section>
+
+{preference_sections(fields, first_number=2, db=db)}
 </form>
 {_cv_section(request, cvs_of(db, applicant.id), cv_error, fields)}
 {interview_card(request, [line.strip() for line in fields.target_roles.splitlines() if line.strip()])}
@@ -499,7 +655,7 @@ def _profile_page(
   <a class="button danger" href="/account#delete">Delete my account and data</a>
   <button type="submit" class="primary" form="profile-form">Save and find my matches</button>
 </div>
-{_SKILL_SEARCH_SCRIPT}
+{SKILL_SEARCH_SCRIPT}
 """,
         status_code=status_code,
         header=applicant_bar(request, "profile"),
@@ -514,6 +670,21 @@ def skill_suggestions(
     db: Session = Depends(get_db),
 ) -> list[str]:
     return suggest_skills(db, q)
+
+
+@router.post("/titles/related", dependencies=_CSRF)
+async def related_titles(
+    request: Request,
+    _applicant: Applicant = Depends(require_login),
+    db: Session = Depends(get_db),
+    gateway: FetchGateway = Depends(get_gateway),
+) -> list[str]:
+    """Titles employers use for the same work as the ones sent, for the picker's tick-boxes (D72)."""
+    form = await request.form()
+    titles = [text for value in form.getlist("title") if isinstance(value, str) and (text := value.strip())]
+    titles = [title for title in titles if len(title) <= MAX_ITEM_LENGTH][:MAX_TITLES_PER_REQUEST]
+    await expand_titles(db, titles, gateway=gateway, settings=get_settings(), persist=db.commit)
+    return related_to(db, titles)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -533,23 +704,7 @@ async def profile_save(
     gateway: FetchGateway = Depends(get_gateway),
 ) -> Response:
     try:
-        certifications: list[CertificationInput] = [
-            item for row in fields.certifications if (item := parse_certification(*row))
-        ]
-        profile = parse_profile_input(
-            target_roles=[*fields.target_roles.splitlines(), *fields.cv_roles],
-            locations=fields.locations.splitlines(),
-            salary_amount=fields.salary_amount,
-            salary_currency=fields.salary_currency,
-            salary_period=fields.salary_period,
-            experience_levels=fields.experience_levels,
-            travel_distance=fields.travel_distance,
-            skills=fields.skills.splitlines(),
-            certifications=certifications,
-            degrees=fields.degrees.splitlines(),
-            tailor_outside_locations=fields.tailor_scope == _EVERYWHERE,
-        )
-        save_profile(db, applicant.id, profile)
+        profile = save_profile_fields(db, applicant, fields)
         _save_cv_choices(db, applicant.id, fields)
         db.commit()
         await expand_titles(
@@ -590,7 +745,7 @@ async def read_cv_upload(request: Request) -> tuple[bytes | None, str]:
         await form.close()
 
 
-_READ_PROBLEMS = {
+READ_PROBLEMS = {
     ReadOutcome.unreadable: "We couldn't find text in your CV. A scanned PDF has none. Fill in the form yourself.",
     ReadOutcome.budget: "This month's AI budget is used up, so your CV wasn't read. Fill in the form yourself.",
     ReadOutcome.provider_failed: "Reading your CV didn't work this time. Try again later, or fill in the form yourself.",
@@ -675,7 +830,7 @@ def _after_read(request: Request, db: Session, applicant: Applicant, cv: CvFile,
     # Build on the open draft, so reading a second CV adds to the first one's suggestions.
     current, _ = _form_fields(request, db, applicant)
     if read.suggestions is None:
-        return _profile_page(request, db, applicant, current, notice=_READ_PROBLEMS[read.outcome])
+        return _profile_page(request, db, applicant, current, notice=READ_PROBLEMS[read.outcome])
     name = f'your CV "{cv.label}"' if cv.label else "your CV"
     fields, filled, offer = fill_from_cv(current, read.suggestions)
     if not filled and not offer:

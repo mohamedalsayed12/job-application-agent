@@ -1,52 +1,98 @@
-"""Register, log in, log out, delete an account, and admin login (T29, T32)."""
+"""Register, log in, log out, confirm an email, reset a password, delete an account, and admin login (T29, T32).
+
+Registering and asking for a reset or a new confirm link give the same reply whether or not the
+email has an account, and emails go out after the reply, so neither the words nor the timing say
+which addresses are registered.
+"""
 
 from __future__ import annotations
 
 import html
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.accounts import throttle
+from app.accounts import mail, throttle
 from app.accounts.service import (
+    RESET_PASSWORD_MINUTES,
+    VERIFY_EMAIL_HOURS,
     AccountError,
     InvalidLinkError,
-    applicant_for_token,
     authenticate,
+    check_token,
+    confirm_email,
     delete_account,
     end_all_sessions,
+    find_active,
+    issue_token,
     register,
-    set_password,
-    set_password_token,
+    reset_password,
 )
-from app.api.admin_auth import (
-    admin_key_matches,
-    end_admin_session,
-    require_admin,
-    start_admin_session,
-)
+from app.api.admin_auth import admin_key_matches, end_admin_session, start_admin_session
 from app.api.admin_html import page
-from app.api.chrome import admin_bar, applicant_bar, public_bar
-from app.api.forms import csrf_field, require_csrf
+from app.api.chrome import applicant_bar, onboarding_bar, public_bar
+from app.api.forms import (
+    csrf_field,
+    password_field,
+    password_toggle_script,
+    require_csrf,
+)
 from app.core.db import get_db
-from app.models import Applicant
+from app.models import Applicant, AuthTokenPurpose
 
 router = APIRouter(tags=["accounts"])
 admin_session_router = APIRouter(prefix="/admin", tags=["admin-accounts"])
-admin_router = APIRouter(prefix="/admin/accounts", tags=["admin-accounts"], dependencies=[Depends(require_admin)])
 
 _LOGIN_FAILED = "Email or password is wrong."
-_FIELDS_MISSING = "Enter your email and password."
 _TOO_MANY = "Too many attempts. Wait a while and try again."
 _SEE_OTHER = status.HTTP_303_SEE_OTHER
 _CSRF = [Depends(require_csrf)]
+# Fixed messages chosen by a query parameter, so nothing in the URL is ever echoed into the page.
+_NOTICES = {
+    "verified": "Your email is confirmed. Log in to carry on.",
+    "reset": "Your password has been changed and every device has been logged out. Log in with the new password.",
+}
+_RESET_SENT = (
+    "If an account uses that email, we've sent it a link to reset the password. "
+    f"The link works once and expires in {RESET_PASSWORD_MINUTES} minutes."
+)
+_VERIFY_SENT = (
+    "If that email has an account that still needs confirming, we've sent it a new link. "
+    f"The link works once and expires in {VERIFY_EMAIL_HOURS} hours."
+)
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
 def _error(message: str | None) -> str:
-    return f'<p class="error">{html.escape(message)}</p>' if message else ""
+    return f'<p class="error" role="alert">{html.escape(message)}</p>' if message else ""
+
+
+def _notice(message: str | None) -> str:
+    return f'<p class="notice" role="status">{html.escape(message)}</p>' if message else ""
+
+
+def _no_referrer(response: HTMLResponse) -> HTMLResponse:
+    """Pages opened from an emailed link: the token in their URL must not leak to other sites."""
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _public_page(title: str, body: str, *, status_code: int = 200) -> HTMLResponse:
+    return page(title, f'<div class="card">{body}</div>', status_code=status_code, header=public_bar(), narrow=True)
 
 
 def _credentials_page(
@@ -56,32 +102,39 @@ def _credentials_page(
     *,
     new_password: bool,
     error: str | None = None,
+    notice: str | None = None,
     email: str = "",
     status_code: int = 200,
 ) -> HTMLResponse:
     other = (
         '<p class="hint">We keep only what&#39;s needed to match you to jobs. Read the <a href="/privacy">privacy notice</a>.</p>'
-        '<p>Already registered? <a href="/login">Log in</a></p>'
+        '<p class="switch">Already have an account? <a href="/login">Log in</a></p>'
         if new_password
-        else '<p>New here? <a href="/register">Register</a></p>'
+        else '<p class="switch"><a href="/forgot-password">Forgot your password?</a></p>'
+        '<p class="switch">New here? <a href="/register">Create an account</a></p>'
+    )
+    password = password_field(
+        "Password",
+        autocomplete="new-password" if new_password else "current-password",
+        hint="At least 12 characters." if new_password else "",
     )
     return page(
         title,
         f"""
 <div class="card">
 <h1>{html.escape(title)}</h1>
+{_notice(notice)}
 {_error(error)}
 <form method="post" action="{path}">
   {csrf_field(request)}
-  <label>Email <input name="email" type="email" required autocomplete="username" value="{html.escape(email)}"/></label>
-  <label>Password
-    <input name="password" type="password" required
-      autocomplete="{'new-password' if new_password else 'current-password'}"/>
-  </label>
+  <label for="field-email">Email</label>
+  <input id="field-email" name="email" type="email" required autocomplete="username" value="{html.escape(email)}"/>
+  {password}
   <p><button type="submit" class="primary">{html.escape(title)}</button></p>
 </form>
 {other}
 </div>
+{password_toggle_script()}
 """,
         status_code=status_code,
         header=public_bar(),
@@ -89,20 +142,23 @@ def _credentials_page(
     )
 
 
-_ADMIN_SESSION_KEYS = ("admin", "admin_until")
+def after_login_url(applicant: Applicant) -> str:
+    """Unconfirmed accounts confirm first; someone partway through signing up carries on; everyone else sees matches."""
+    if applicant.email_verified_at is None:
+        return "/verify-email"
+    return "/onboarding" if applicant.onboarding_step else "/listings"
 
 
 def _start_session(request: Request, applicant: Applicant) -> RedirectResponse:
-    # The cookie is rebuilt from scratch against fixation; the admin marker is carried over on purpose.
-    admin = {key: request.session[key] for key in _ADMIN_SESSION_KEYS if key in request.session}
+    # A fresh cookie: nothing from before logging in, including the form token, carries over.
     request.session.clear()
-    request.session.update(admin)
     request.session["applicant"] = str(applicant.id)
     request.session["version"] = applicant.session_version
-    return RedirectResponse("/account", status_code=_SEE_OTHER)
+    return RedirectResponse(after_login_url(applicant), status_code=_SEE_OTHER)
 
 
 def current_applicant(request: Request, db: Session = Depends(get_db)) -> Applicant | None:
+    """Whoever the cookie belongs to, confirmed or not. Pages with personal data use require_login."""
     applicant_id = request.session.get("applicant")
     if not applicant_id:
         return None
@@ -115,51 +171,87 @@ def current_applicant(request: Request, db: Session = Depends(get_db)) -> Applic
 def require_login(applicant: Applicant | None = Depends(current_applicant)) -> Applicant:
     if applicant is None:
         raise HTTPException(status_code=_SEE_OTHER, headers={"Location": "/login"})
+    if applicant.email_verified_at is None:
+        raise HTTPException(status_code=_SEE_OTHER, headers={"Location": "/verify-email"})
     return applicant
 
 
+# Register.
+
+
 @router.get("/register", response_class=HTMLResponse)
-def register_form(request: Request, applicant: Applicant | None = Depends(current_applicant)) -> Response:
-    if applicant is not None:
-        return RedirectResponse("/account", status_code=_SEE_OTHER)
+def register_form(request: Request) -> HTMLResponse:
     return _credentials_page(request, "Register", "/register", new_password=True)
 
 
 @router.post("/register", response_class=HTMLResponse, dependencies=_CSRF)
 def register_submit(
-    request: Request, email: str = Form(""), password: str = Form(""), db: Session = Depends(get_db)
+    request: Request,
+    background: BackgroundTasks,
+    email: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db),
 ) -> Response:
-    if not throttle.take_register_attempt(throttle.client_ip(request)):
+    if not throttle.take_register_attempt(_client_ip(request)):
         return _credentials_page(
             request, "Register", "/register", new_password=True, error=_TOO_MANY, email=email, status_code=429
         )
     try:
         applicant = register(db, email=email, password=password)
-        db.commit()
     except AccountError as exc:
         db.rollback()
         return _credentials_page(
             request, "Register", "/register", new_password=True, error=str(exc), email=email, status_code=400
         )
-    return _start_session(request, applicant)
+    address = email.strip()
+    if applicant is not None:
+        token = issue_token(db, applicant, AuthTokenPurpose.verify_email)
+        db.commit()
+        if throttle.take_mail_to(address):
+            background.add_task(mail.send, mail.verify_email(applicant.email, token, VERIFY_EMAIL_HOURS))
+    elif throttle.take_mail_to(address):
+        # The owner hears someone tried; the person registering sees the same page as for a new account.
+        background.add_task(mail.send, mail.already_registered(address))
+    return RedirectResponse("/check-email", status_code=_SEE_OTHER)
+
+
+def _resend_form(request: Request) -> str:
+    return f"""
+<h2>Didn't get it?</h2>
+<p class="muted">Check your spam folder first. Links expire after {VERIFY_EMAIL_HOURS} hours.</p>
+<form method="post" action="/verify-email/resend">
+  {csrf_field(request)}
+  <label for="resend-email">Email</label>
+  <input id="resend-email" name="email" type="email" required autocomplete="email"/>
+  <p><button type="submit">Send a new link</button></p>
+</form>"""
+
+
+@router.get("/check-email", response_class=HTMLResponse)
+def check_email(request: Request) -> HTMLResponse:
+    return _public_page(
+        "Check your email",
+        f"""<h1>Check your email</h1>
+<p>We've sent a link to the address you entered. Open it to confirm your email, then log in.</p>
+<p class="muted">If that address already has an account, we've emailed it instead.</p>
+{_resend_form(request)}
+<p class="switch"><a href="/login">Log in</a></p>""",
+    )
+
+
+# Log in and log out.
 
 
 @router.get("/login", response_class=HTMLResponse)
-def login_form(request: Request, applicant: Applicant | None = Depends(current_applicant)) -> Response:
-    if applicant is not None:
-        return RedirectResponse("/account", status_code=_SEE_OTHER)
-    return _credentials_page(request, "Log in", "/login", new_password=False)
+def login_form(request: Request, notice: str = Query("")) -> HTMLResponse:
+    return _credentials_page(request, "Log in", "/login", new_password=False, notice=_NOTICES.get(notice))
 
 
 @router.post("/login", response_class=HTMLResponse, dependencies=_CSRF)
 def login_submit(
-    request: Request, email: str = Form(""), password: str = Form(""), db: Session = Depends(get_db)
+    request: Request, email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)
 ) -> Response:
-    if not email.strip() or not password:
-        return _credentials_page(
-            request, "Log in", "/login", new_password=False, error=_FIELDS_MISSING, email=email, status_code=400
-        )
-    ip = throttle.client_ip(request)
+    ip = _client_ip(request)
     if not throttle.login_allowed(email, ip):
         return _credentials_page(
             request, "Log in", "/login", new_password=False, error=_TOO_MANY, email=email, status_code=429
@@ -188,6 +280,203 @@ def logout(
     return RedirectResponse("/login", status_code=_SEE_OTHER)
 
 
+# Confirm an email.
+
+
+@router.get("/verify-email", response_class=HTMLResponse, response_model=None)
+def verify_email_page(
+    request: Request, resent: str = Query(""), applicant: Applicant | None = Depends(current_applicant)
+) -> Response:
+    """Where a logged-in account waits until its email is confirmed."""
+    if applicant is None:
+        return RedirectResponse("/login", status_code=_SEE_OTHER)
+    if applicant.email_verified_at is not None:
+        return RedirectResponse(after_login_url(applicant), status_code=_SEE_OTHER)
+    return page(
+        "Confirm your email",
+        f"""<div class="card">
+<h1>Confirm your email</h1>
+{_notice(_VERIFY_SENT if resent else None)}
+<p>We sent a link to <b>{html.escape(applicant.email)}</b>. Open it to confirm your address and carry on.</p>
+<p class="muted">Check your spam folder. Links expire after {VERIFY_EMAIL_HOURS} hours.</p>
+<form method="post" action="/verify-email/resend">{csrf_field(request)}
+<button type="submit">Send a new link</button></form>
+</div>""",
+        header=onboarding_bar(request),
+        narrow=True,
+    )
+
+
+@router.post("/verify-email/resend", response_class=HTMLResponse, dependencies=_CSRF)
+def verify_email_resend(
+    request: Request,
+    background: BackgroundTasks,
+    email: str = Form(""),
+    applicant: Applicant | None = Depends(current_applicant),
+    db: Session = Depends(get_db),
+) -> Response:
+    """For the logged-in account, or else for the email typed. The reply is the same either way."""
+    if not throttle.take_email_request("verify", _client_ip(request)):
+        return _public_page("Too many requests", f"<h1>Too many requests</h1>{_error(_TOO_MANY)}", status_code=429)
+    logged_in = applicant is not None
+    target = applicant if logged_in else find_active(db, email)
+    address = target.email if logged_in else email
+    if target is not None and target.email_verified_at is None and throttle.take_mail_to(address):
+        token = issue_token(db, target, AuthTokenPurpose.verify_email)
+        db.commit()
+        background.add_task(mail.send, mail.verify_email(target.email, token, VERIFY_EMAIL_HOURS))
+    if logged_in:
+        return RedirectResponse("/verify-email?resent=1", status_code=_SEE_OTHER)
+    return _public_page(
+        "Check your email", f'<h1>Check your email</h1>{_notice(_VERIFY_SENT)}<p><a href="/login">Log in</a></p>'
+    )
+
+
+def _invalid_link(title: str, again: str) -> HTMLResponse:
+    return _no_referrer(
+        _public_page(title, f"<h1>{html.escape(title)}</h1>{_error(str(InvalidLinkError()))}<p>{again}</p>", status_code=400)
+    )
+
+
+_VERIFY_AGAIN = '<a href="/check-email">Get a new confirm link</a>'
+_RESET_AGAIN = '<a href="/forgot-password">Ask for a new reset link</a>'
+
+
+@router.get("/verify-email/confirm", response_class=HTMLResponse)
+def verify_email_confirm_form(request: Request, token: str = Query(""), db: Session = Depends(get_db)) -> HTMLResponse:
+    """Opening the link only shows a button. Mail scanners that open links can't use it up."""
+    try:
+        check_token(db, token, AuthTokenPurpose.verify_email)
+    except InvalidLinkError:
+        return _invalid_link("Confirm your email", _VERIFY_AGAIN)
+    return _no_referrer(
+        _public_page(
+            "Confirm your email",
+            f"""<h1>Confirm your email</h1>
+<form method="post" action="/verify-email/confirm">
+  {csrf_field(request)}
+  <input type="hidden" name="token" value="{html.escape(token)}"/>
+  <p><button type="submit" class="primary">Confirm my email</button></p>
+</form>""",
+        )
+    )
+
+
+@router.post("/verify-email/confirm", response_class=HTMLResponse, dependencies=_CSRF)
+def verify_email_confirm(
+    request: Request,
+    token: str = Form(""),
+    current: Applicant | None = Depends(current_applicant),
+    db: Session = Depends(get_db),
+) -> Response:
+    if not throttle.take_link_use(_client_ip(request)):
+        return _public_page("Too many requests", f"<h1>Too many requests</h1>{_error(_TOO_MANY)}", status_code=429)
+    try:
+        applicant = confirm_email(db, token)
+        db.commit()
+    except InvalidLinkError:
+        db.rollback()
+        return _invalid_link("Confirm your email", _VERIFY_AGAIN)
+    # Confirming never logs anyone in: whoever holds the link still needs the password.
+    if current is not None and current.id == applicant.id:
+        return RedirectResponse(after_login_url(applicant), status_code=_SEE_OTHER)
+    return RedirectResponse("/login?notice=verified", status_code=_SEE_OTHER)
+
+
+# Forgotten password.
+
+
+def _forgot_page(request: Request, *, notice: str | None = None, error: str | None = None, status_code: int = 200) -> HTMLResponse:
+    return _public_page(
+        "Forgot your password",
+        f"""<h1>Forgot your password?</h1>
+{_notice(notice)}
+{_error(error)}
+<p class="muted">Enter your account's email and we'll send a link to choose a new password.</p>
+<form method="post" action="/forgot-password">
+  {csrf_field(request)}
+  <label for="field-email">Email</label>
+  <input id="field-email" name="email" type="email" required autocomplete="username"/>
+  <p><button type="submit" class="primary">Send reset link</button></p>
+</form>
+<p class="switch"><a href="/login">Back to log in</a></p>""",
+        status_code=status_code,
+    )
+
+
+@router.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_form(request: Request) -> HTMLResponse:
+    return _forgot_page(request)
+
+
+@router.post("/forgot-password", response_class=HTMLResponse, dependencies=_CSRF)
+def forgot_password_submit(
+    request: Request, background: BackgroundTasks, email: str = Form(...), db: Session = Depends(get_db)
+) -> HTMLResponse:
+    if not throttle.take_email_request("reset", _client_ip(request)):
+        return _forgot_page(request, error=_TOO_MANY, status_code=429)
+    applicant = find_active(db, email)
+    if applicant is not None and throttle.take_mail_to(email):
+        token = issue_token(db, applicant, AuthTokenPurpose.reset_password)
+        db.commit()
+        background.add_task(mail.send, mail.reset_password(applicant.email, token, RESET_PASSWORD_MINUTES))
+    return _forgot_page(request, notice=_RESET_SENT)
+
+
+def _reset_page(request: Request, token: str, *, error: str | None = None, status_code: int = 200) -> HTMLResponse:
+    return _no_referrer(
+        page(
+            "Choose a new password",
+            f"""<div class="card">
+<h1>Choose a new password</h1>
+{_error(error)}
+<p class="muted">Saving it logs you out on every device.</p>
+<form method="post" action="/reset-password">
+  {csrf_field(request)}
+  <input type="hidden" name="token" value="{html.escape(token)}"/>
+  {password_field("New password", autocomplete="new-password", hint="At least 12 characters.")}
+  <p><button type="submit" class="primary">Save new password</button></p>
+</form>
+</div>
+{password_toggle_script()}""",
+            status_code=status_code,
+            header=public_bar(),
+            narrow=True,
+        )
+    )
+
+
+@router.get("/reset-password", response_class=HTMLResponse)
+def reset_password_form(request: Request, token: str = Query(""), db: Session = Depends(get_db)) -> HTMLResponse:
+    try:
+        check_token(db, token, AuthTokenPurpose.reset_password)
+    except InvalidLinkError:
+        return _invalid_link("Choose a new password", _RESET_AGAIN)
+    return _reset_page(request, token)
+
+
+@router.post("/reset-password", response_class=HTMLResponse, dependencies=_CSRF)
+def reset_password_submit(
+    request: Request, token: str = Form(""), password: str = Form(...), db: Session = Depends(get_db)
+) -> Response:
+    if not throttle.take_link_use(_client_ip(request)):
+        return _public_page("Too many requests", f"<h1>Too many requests</h1>{_error(_TOO_MANY)}", status_code=429)
+    try:
+        reset_password(db, token=token, password=password)
+        db.commit()
+    except InvalidLinkError:
+        db.rollback()
+        return _invalid_link("Choose a new password", _RESET_AGAIN)
+    except AccountError as exc:
+        db.rollback()
+        return _reset_page(request, token, error=str(exc), status_code=400)
+    request.session.clear()
+    return RedirectResponse("/login?notice=reset", status_code=_SEE_OTHER)
+
+
+# Account page.
+
+
 def _account_page(
     request: Request, applicant: Applicant, *, error: str | None = None, status_code: int = 200
 ) -> HTMLResponse:
@@ -198,8 +487,8 @@ def _account_page(
 <div class="card">
 <p>Logged in as {html.escape(applicant.email)}.</p>
 <p><a href="/listings">Your job matches</a> · <a href="/applications">Applications</a> ·
-<a href="/profile">Your profile and CV</a> · <a href="/profile/apply-answers">Apply answers</a> ·
-<a href="/account/gmail">Gmail for outreach</a></p>
+<a href="/profile">Your profile and CV</a> · <a href="/profile/apply-answers">Apply answers</a>
+</p>
 <form method="post" action="/logout">{csrf_field(request)}<button type="submit">Log out</button></form>
 </div>
 <div class="card" id="extension">
@@ -215,12 +504,11 @@ and keep this site's origin in the extension settings.</p>
 {_error(error)}
 <form method="post" action="/account/delete">
   {csrf_field(request)}
-  <label>Enter your password to confirm
-    <input name="password" type="password" required autocomplete="current-password"/>
-  </label>
+  {password_field("Enter your password to confirm", autocomplete="current-password", field_id="delete-password")}
   <p><button type="submit" class="danger">Delete my account</button></p>
 </form>
 </div>
+{password_toggle_script()}
 """,
         status_code=status_code,
         header=applicant_bar(request, "account"),
@@ -240,7 +528,7 @@ def account_delete(
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    email, ip = applicant.email, throttle.client_ip(request)
+    email, ip = applicant.email, _client_ip(request)
     if not throttle.login_allowed(email, ip):
         return _account_page(request, applicant, error=_TOO_MANY, status_code=429)
     if authenticate(db, email=email, password=password) is None:
@@ -255,59 +543,6 @@ def account_delete(
         header=public_bar(),
         narrow=True,
     )
-
-
-def _set_password_page(request: Request, token: str, *, error: str | None = None, status_code: int = 200) -> HTMLResponse:
-    response = page(
-        "Set your password",
-        f"""
-<h1>Set your password</h1>
-{_error(error)}
-<form method="post" action="/set-password">
-  {csrf_field(request)}
-  <input type="hidden" name="token" value="{html.escape(token)}"/>
-  <label>New password <input name="password" type="password" required autocomplete="new-password"/></label>
-  <p><button type="submit" class="primary">Set password</button></p>
-</form>
-""",
-        status_code=status_code,
-        header=public_bar(),
-        narrow=True,
-    )
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response
-
-
-def _bad_link(message: str, status_code: int = 400) -> HTMLResponse:
-    return page("Set your password", f"<h1>Set your password</h1>{_error(message)}", status_code=status_code)
-
-
-@router.get("/set-password", response_class=HTMLResponse)
-def set_password_form(request: Request, token: str = Query(""), db: Session = Depends(get_db)) -> HTMLResponse:
-    try:
-        applicant_for_token(db, token)
-    except InvalidLinkError as exc:
-        return _bad_link(str(exc))
-    return _set_password_page(request, token)
-
-
-@router.post("/set-password", response_class=HTMLResponse, dependencies=_CSRF)
-def set_password_submit(
-    request: Request, token: str = Form(""), password: str = Form(""), db: Session = Depends(get_db)
-) -> Response:
-    if not throttle.take_set_password_attempt(throttle.client_ip(request)):
-        return _bad_link(_TOO_MANY, status_code=429)
-    try:
-        set_password(db, token=token, password=password)
-        db.commit()
-    except InvalidLinkError as exc:
-        db.rollback()
-        return _bad_link(str(exc))
-    except AccountError as exc:
-        db.rollback()
-        return _set_password_page(request, token, error=str(exc), status_code=400)
-    request.session.clear()
-    return RedirectResponse("/login", status_code=_SEE_OTHER)
 
 
 def _admin_login_page(request: Request, *, error: str | None = None, status_code: int = 200) -> HTMLResponse:
@@ -333,13 +568,13 @@ def admin_login_form(request: Request) -> HTMLResponse:
 
 
 @admin_session_router.post("/login", response_class=HTMLResponse, dependencies=_CSRF)
-def admin_login(request: Request, admin_key: str = Form("")) -> Response:
-    if not throttle.take_admin_login_attempt(throttle.client_ip(request)):
+def admin_login(request: Request, admin_key: str = Form(...)) -> Response:
+    if not throttle.take_admin_login_attempt(_client_ip(request)):
         return _admin_login_page(request, error=_TOO_MANY, status_code=429)
     if not admin_key_matches(admin_key):
         return _admin_login_page(request, error="That key is wrong.", status_code=401)
     start_admin_session(request)
-    return RedirectResponse("/admin/applicants", status_code=_SEE_OTHER)
+    return RedirectResponse("/admin/quality", status_code=_SEE_OTHER)
 
 
 @admin_session_router.post("/logout", dependencies=_CSRF)
@@ -347,36 +582,3 @@ def admin_logout(request: Request) -> RedirectResponse:
     end_admin_session(request)
     return RedirectResponse("/admin/login", status_code=_SEE_OTHER)
 
-
-def _admin_link_page(request: Request, *, body: str = "", error: str | None = None, status_code: int = 200) -> HTMLResponse:
-    return page(
-        "Set-password link",
-        f"""
-<h1>Set-password link</h1>
-<p>For an admin-created applicant, or anyone who has forgotten their password. The link works
-once and lasts 24 hours. Send it to the person privately.</p>
-{_error(error)}
-{body}
-<form method="post" action="/admin/accounts/set-password-link">
-  {csrf_field(request)}
-  <label>Email <input name="email" type="email" required/></label>
-  <p><button type="submit" class="primary">Create link</button></p>
-</form>
-""",
-        status_code=status_code,
-        header=admin_bar(request, "applicants"),
-    )
-
-
-@admin_router.get("/set-password-link", response_class=HTMLResponse)
-def admin_link_form(request: Request) -> HTMLResponse:
-    return _admin_link_page(request)
-
-
-@admin_router.post("/set-password-link", response_class=HTMLResponse, dependencies=_CSRF)
-def admin_link_create(request: Request, email: str = Form(...), db: Session = Depends(get_db)) -> HTMLResponse:
-    applicant = db.scalar(select(Applicant).where(Applicant.email == email.strip()))
-    if applicant is None:
-        return _admin_link_page(request, error="No applicant has that email.", status_code=404)
-    link = f"{request.base_url}set-password?token={set_password_token(applicant)}"
-    return _admin_link_page(request, body=f"<p><code>{html.escape(link)}</code></p>")

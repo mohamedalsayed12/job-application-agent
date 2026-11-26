@@ -10,9 +10,7 @@
 
 Step 0 scaffold: FastAPI + SQLAlchemy 2 + PostgreSQL 16 + Alembic + uv.
 
-Source of truth for product scope: [`MVP.md`](./MVP.md) and [`PROMPTS.md`](./PROMPTS.md).
-
-Always-on agent quality stack (ponytail + pstack + thermos): [`docs/quality-stack.md`](./docs/quality-stack.md) · gate checklist [`docs/code-quality-gate.md`](./docs/code-quality-gate.md).
+Source of truth for product scope: [`MVP.md`](./MVP.md).
 
 ## Prerequisites
 
@@ -76,11 +74,16 @@ least 32 characters. See `.env.example`. For plain http on localhost, also set
 
 ## Accounts
 
-People register at `/register`, log in at `/login` and see their account at `/account`.
-Logging out ends the session on every device. Admin-created applicants have no password, so
-they cannot log in until an admin makes them a one-time link at
-`/admin/accounts/set-password-link`. The same link is the way back from a forgotten password,
-because the app sends no email. The rules are in `MVP.md` decision D37.
+The home page `/` is the register form, with a link to log in underneath. People register at
+`/register`, log in at `/login` and see their account at `/account`.
+
+Registering starts a sign-up wizard at `/onboarding`: upload a CV, check the contact details read
+from it, choose the jobs wanted, then availability and optional diversity questions. Each step is
+saved when the person presses Continue, so someone who leaves halfway carries on from the same step
+at their next login. Every contact detail the CV read suggests must appear in the CV text, and right
+to work, sponsorship and diversity answers are never taken from it. Finishing opens `/listings`.
+Accounts made before the wizard existed skip it.
+Logging out ends the session on every device. There is no password reset: the app sends no email.
 
 People fill in their profile at `/profile`: target roles, locations, optional salary, skills,
 certifications and licences, experience levels and optional travel distance. They can keep up to 10
@@ -115,25 +118,54 @@ uv run pytest
 
 ## Daily collection
 
-Jobs come from LinkedIn and Indeed. Once a day the worker runs one LinkedIn search per
-title and location. A person's titles are their target roles, then related titles Claude
-suggests for them, up to 10 in each location (D67). Indeed searches for the graduate, junior and entry-level
-forms of each role in each location. The same query is searched once per source, however
-many people want it. LinkedIn uses the Black Falcon Data scraper
-(`blackfalcondata/linkedin-job-scraper`): entry-level, last 3 days, newest first, up to
-50 jobs. Indeed uses `valig/indeed-jobs-scraper` with country `uk`, those entry title
-forms, a 3-day window and the same limit; D46 still filters on the match side. The
-worker stores every run and every raw job, then cleans them into postings.
+Jobs come from LinkedIn, Indeed and Google Jobs (D73). Each role and location is due on its
+own (D72), so a title added today is searched on the worker's next cycle. A person's LinkedIn
+titles are their target roles, then related titles Claude suggests for them, up to 10 in each
+location (D68), at the experience levels they chose (D63). Indeed and Google Jobs search the
+graduate, junior and entry-level forms of each role in each location. The same query is searched
+once per source, however many people want it. LinkedIn uses the Black Falcon Data scraper
+(`blackfalcondata/linkedin-job-scraper`): the person's levels, up to 100 jobs; the first search
+of a role and location looks back 14 days, repeats keep 3. Indeed uses `valig/indeed-jobs-scraper`
+with country `uk` and the same windows. Google Jobs uses SerpAPI (`engine=google_jobs`, `gl=uk`),
+one page of up to 10 results per search, never fetching google.com directly. The worker stores
+every run and every raw job, then cleans them into postings.
 
-A search is due 24 hours after the last one for that source, so a machine that was off
-catches up the next time the worker runs. A search that fails is recorded, and the next
-attempt waits until the following day. A run that does not finish within 15 minutes is
-stopped.
+A search that worked waits the source's usual hours before running again. A search that failed
+is tried again after an hour, not every cycle and not a whole day later. A run that does not
+finish within 15 minutes is stopped.
 
-Set `APIFY_API_TOKEN` first. Each run is reserved against the monthly money cap before it
-starts, and the recorded cost is what Apify reports. A LinkedIn run reserves up to £0.07, so
-10 titles a day for one person in one place come to about £21 a month. Raise
-`budget_policy.money_cap` to suit.
+Set `APIFY_API_TOKEN` and optionally `SERPAPI_API_KEY` first. Each run is reserved against the
+monthly money cap before it starts. Apify costs settle at what Apify reports; SerpAPI settles at
+the configured search ceiling. A LinkedIn run reserves up to £0.07, so 10 titles a day for one
+person in one place come to about £21 a month. Raise `budget_policy.money_cap` to suit.
+
+
+### Jobs on company websites (D69)
+
+Not every employer posts on LinkedIn or Indeed, so once a day the worker also searches
+Google through [SerpAPI](https://serpapi.com) the way a person would. For each target role
+and location it:
+
+1. Googles the role (not in quotes, so similar titles come up too) at entry level in that place with "careers", leaving LinkedIn, Indeed
+   and the big job boards out of the query.
+2. Skips any result that is still a job board, and opens the rest on the company's own site
+   through the fetch gateway (robots.txt, rate limit and domain checks still apply).
+3. Keeps a page only when it describes a job in schema.org `JobPosting` data. A careers
+   page that only lists jobs is followed into up to 3 of its links that look like the role.
+4. Keeps the job only when it fits: the same or a similar title (a Python or Software
+   Engineer for a Backend Developer), or a different title whose advert asks for your
+   skillset (at least 3 of your profile skills, and at least half of the skills it names).
+   It must also be still open and
+   posted in the last 30 days, it is on the employer's own site or tracking system
+   (Greenhouse, Lever, Workable and similar), and **nothing in it leads back to LinkedIn or
+   Indeed**: no LinkedIn or Indeed job links and no "posted on / apply via" wording.
+5. Reads the next page of Google results while fewer than 5 jobs were found, up to 3 pages
+   and 20 company pages per search.
+
+Kept jobs go through the same cleaning, de-duplication, matching and AI judging as the
+other sources, and show as "Company website" on the listings page. Set `SERPAPI_API_KEY`
+to turn it on. Each Google page is one SerpAPI search, reserved against the monthly money
+cap at £0.02.
 
 ```bash
 uv run python -m app.worker          # runs until stopped
@@ -251,4 +283,4 @@ each ported file names the file it came from and what was changed.
 - Monthly budget is unset until B1; paid calls, including Apify searches, stay blocked (stubs in `.env.example`).
 - Milestone 1 tables land in revision `0002_milestone1_schema` (`app/models.py`). Unique-key proofs are in `tests/test_unique_keys.py`.
 - Tests assume an empty database. Once jobs have been collected, point tests at a separate one: `DATABASE_URL=postgresql+psycopg://…/job_app_agent_test uv run pytest`.
-- Admin applicants (Milestone 1): set `ADMIN_KEY`, log in at `/admin/login`, then open `/admin/applicants` (or send header `X-Admin-Key`). Expected salary is a matching preference only (D3).
+- Admin: set `ADMIN_KEY`, log in at `/admin/login` (or send header `X-Admin-Key` on GETs) to open `/admin/quality`. Expected salary is a matching preference only (D3).

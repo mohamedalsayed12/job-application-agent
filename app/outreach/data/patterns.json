@@ -22,7 +22,7 @@
     {
       "id": "short_human",
       "label": "Short and human",
-      "rule": "Gmail body under 120 words. LinkedIn note under 300 characters. No buzzword stacks, no 'I hope this email finds you well', no fake warmth.",
+      "rule": "Email body under 120 words. No buzzword stacks, no 'I hope this email finds you well', no fake warmth.",
       "intents": ["recruiter", "hiring_manager", "employee", "executive"]
     },
     {

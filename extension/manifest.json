@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Job Agent Apply Fill",
-  "version": "0.1.0",
-  "description": "Fills employer application forms from your Job Agent fill plan and never clicks Submit.",
+  "version": "0.5.0",
+  "description": "Fills employer application forms page by page from your Job Agent answers, CV and checked drafts. Never clicks Submit.",
   "permissions": [
     "storage",
     "notifications",
@@ -20,5 +20,8 @@
   "action": {
     "default_title": "Job Agent Apply Fill",
     "default_popup": "popup.html"
+  },
+  "icons": {
+    "128": "icon.png"
   }
 }

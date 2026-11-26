@@ -97,8 +97,9 @@ async def build_job_pack(
     job: Job,
     gateway: FetchGateway,
     settings: Settings,
+    role: str | None = None,
 ) -> JobPackResult:
-    role = _matched_role(session, applicant_id, job)
+    role = role or _matched_role(session, applicant_id, job)
     if role is None:
         return JobPackResult(stopped_by="not_matched")
     now = datetime.now(UTC)

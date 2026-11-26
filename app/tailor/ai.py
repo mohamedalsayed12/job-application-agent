@@ -17,6 +17,7 @@ from app.fetch.gateway import FetchGateway
 from app.tailor import prompts
 from app.tailor.improver import CHANGE_SCHEMA, Change, changes_from
 from app.tailor.resume import RESUME_SCHEMA, SECTIONS, ground_parsed
+from app.tailor.voice import MAX_REWRITES
 
 MAX_INJECT_POSTING_CHARS = 2000
 _LISTS = (
@@ -85,6 +86,7 @@ async def generate_resume_diffs(
 ) -> tuple[list[Change], AiCallResponse] | AiCallFailure:
     prompt = prompts.DIFF_IMPROVE_PROMPT.format(
         strategy_instruction=prompts.KEYWORDS_STRATEGY,
+        max_changes=MAX_REWRITES,
         output_language="British English",
         job_keywords=keywords_for_prompt(keywords),
         job_description=posting,
@@ -146,13 +148,20 @@ async def revise_voice(
 
 
 async def generate_cover_letter(
-    gateway: FetchGateway, *, resume: dict[str, Any], posting: str, settings: Settings, api_key: str
+    gateway: FetchGateway,
+    *,
+    resume: dict[str, Any],
+    posting: str,
+    settings: Settings,
+    api_key: str,
+    voice: str = "",
 ) -> tuple[str | None, AiCallResponse] | AiCallFailure:
-    """A letter written from the tailored CV, as upstream does; None when the reply is blank."""
+    """A letter written from the tailored CV in the voice of `voice`, the person's own sentences; None when blank."""
     prompt = prompts.COVER_LETTER_PROMPT.format(
         output_language="British English",
         job_description=posting,
         resume_data=json.dumps(resume, ensure_ascii=False),
+        voice_sample=voice or "(none supplied)",
     )
     call = await _ask(
         gateway, prompts.COVER_LETTER_SYSTEM, prompt, COVER_LETTER_SCHEMA, settings=settings, api_key=api_key

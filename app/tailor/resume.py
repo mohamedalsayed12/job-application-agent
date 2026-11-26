@@ -145,7 +145,8 @@ def ground_parsed(parsed: dict[str, Any], cv: str) -> dict[str, Any] | None:
         grounded[section] = entries
     additional = parsed.get("additional") or {}
     grounded["additional"] = {
-        field: [item.strip() for item in additional.get(field) or [] if _shown(item, cv)] for field in LIST_FIELDS
+        field: [item.strip() for item in additional.get(field) or [] if _shown_item(str(item), cv)]
+        for field in LIST_FIELDS
     }
     if not any(grounded[section] for section in SECTIONS) and not grounded["additional"]["technicalSkills"]:
         return None
@@ -155,6 +156,20 @@ def ground_parsed(parsed: dict[str, Any], cv: str) -> dict[str, Any] | None:
 def _shown(value: str, cv: str) -> str:
     value = value.strip()
     return value if keyword_in_text(value, cv) else ""
+
+
+_ITEM_PARTS = re.compile(r"\s*[()\[\]]\s*|\s+[-–—|·]\s+|,\s+")
+
+
+def _shown_item(value: str, cv: str) -> str:
+    """A list item the CV shows, whole or in parts: the parse often joins a certificate and its date,
+    as in "Python Developer (Aug 2026)", where the CV has them on separate lines."""
+    if _shown(value, cv):
+        return value.strip()
+    parts = [part for part in _ITEM_PARTS.split(value) if part.strip()]
+    if len(parts) > 1 and all(keyword_in_text(part.strip(), cv) for part in parts):
+        return value.strip()
+    return ""
 
 
 def _from_cv(text: str, cv: str) -> bool:

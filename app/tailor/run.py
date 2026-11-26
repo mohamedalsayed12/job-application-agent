@@ -32,19 +32,22 @@ from app.budget.gate import BudgetGate, BudgetWait, SpendEstimate
 from app.budget.pricing import estimate_cost
 from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
-from app.matching.match import AI_SCORE_SQL, listed
-from app.matching.verdicts import auto_tailored, job_text
+from app.matching.verdicts import job_text
 from app.models import (
+    ApplicantJobMatch,
     ApplicantProfile,
     CvFile,
     CvFileType,
     Job,
     JobFreshness,
+    JobReport,
     SpendKind,
+    TAILOR_VERDICTS,
     TailoredCv,
     TailoredCvStatus,
     TailorRun,
     attempt_failed,
+    auto_tailored,
 )
 from app.tailor import ai
 from app.tailor.ats import ats_report
@@ -55,13 +58,25 @@ from app.tailor.refiner import (
     analyze_keyword_gaps,
     drop_fabricated_skills,
     remove_ai_phrases,
-    revert_unsupported_claims,
 )
 from app.tailor.render import render_docx, render_pdf
 from app.tailor.resume import all_text
-from app.tailor.voice import restore_lines, voice_problems
+from app.tailor.voice import (
+    letter_notes,
+    limit_rewrites,
+    recommendations,
+    restore_lines,
+    rewrites,
+    style_notes,
+    uk_spelling,
+    voice_problems,
+    voice_sample,
+)
 
-PROMPT_VERSION = "resume-matcher-959e458-cover-letter"
+# Bumped when the guard or layout changes, so ready CVs are written again: grounded-v2 adds the
+# posting-word check, the bullet fix and certifications kept with their dates; human-v3 (D76) caps the rows
+# that change, keeps the person's voice and British spelling, and shows the changes.
+PROMPT_VERSION = "resume-matcher-959e458-cover-letter-human-v3"
 # Placeholder hash for a requested package, so it never looks already built.
 REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
@@ -164,8 +179,7 @@ async def write_tailored_cvs(
                 row.status = TailoredCvStatus.ready.value
             else:
                 row.status = TailoredCvStatus.waiting_budget.value
-                if row.input_hash != REQUESTED:
-                    row.input_hash = item.input_hash
+                row.input_hash = item.input_hash
                 row.prompt_version = PROMPT_VERSION
             row.updated_at = now
             session.flush()
@@ -203,7 +217,7 @@ def base_cv(session: Session, applicant_id: uuid.UUID) -> CvFile | None:
 def request_tailored_cv(
     session: Session, applicant_id: uuid.UUID, job_id: uuid.UUID, *, now: datetime | None = None
 ) -> TailoredCv:
-    """Ask the worker for a package on any job; a failed one is queued again, unless its advert was flagged."""
+    """Ask the worker for a package on any job; a failed one is queued again."""
     now = now or datetime.now(UTC)
     row = session.scalars(
         select(TailoredCv).where(TailoredCv.applicant_id == applicant_id, TailoredCv.job_id == job_id)
@@ -217,9 +231,7 @@ def request_tailored_cv(
             prompt_version=PROMPT_VERSION,
         )
         session.add(row)
-    elif (row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft)) and not (
-        isinstance(row.draft, dict) and row.draft.get("reason") == "posting_flagged"
-    ):
+    elif row.status == TailoredCvStatus.failed.value or attempt_failed(row.status, row.draft):
         row.status = TailoredCvStatus.pending.value
         row.input_hash = REQUESTED
     row.requested_at = now
@@ -229,7 +241,7 @@ def request_tailored_cv(
 
 
 def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
-    """Packages due now: requests oldest first, then every listed job scoring ADD_LINE or more, best score first.
+    """Packages due now: requests oldest first, then listed Apply jobs, then listed Consider jobs, best score first.
 
     A closed job is never tailored. A job hidden from the listings, or outside the person's tailoring scope, is
     tailored only when the person asked and it is still open.
@@ -237,20 +249,29 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     allowed = settings.ai_applicants()
     is_open = Job.freshness == JobFreshness.open
     rows = {(row.applicant_id, row.job_id): row for row in session.scalars(select(TailoredCv))}
-    outside = set(
-        session.scalars(
-            select(ApplicantProfile.applicant_id).where(ApplicantProfile.tailor_outside_locations.is_(True))
+    rank: dict[tuple[uuid.UUID, uuid.UUID], tuple[int, float]] = {
+        (applicant_id, job_id): (1 + TAILOR_VERDICTS.index(verdict), -float(score))
+        for applicant_id, job_id, verdict, score, location_fit, outside in session.execute(
+            select(
+                JobReport.applicant_id,
+                JobReport.job_id,
+                JobReport.verdict,
+                JobReport.score,
+                ApplicantJobMatch.location_fit,
+                ApplicantProfile.tailor_outside_locations,
+            )
+            .join(
+                ApplicantJobMatch,
+                (ApplicantJobMatch.applicant_id == JobReport.applicant_id)
+                & (ApplicantJobMatch.job_id == JobReport.job_id),
+            )
+            .join(Job, Job.id == JobReport.job_id)
+            .outerjoin(ApplicantProfile, ApplicantProfile.applicant_id == JobReport.applicant_id)
+            .where(JobReport.verdict.in_(TAILOR_VERDICTS), is_open)
         )
-    )
-    # Every listed job scoring ADD_LINE or more is tailored with no click, whatever its verdict, inside the
-    # person's tailoring scope. `listed` is the same "on this person's listings" rule the listings page uses.
-    rank: dict[tuple[uuid.UUID, uuid.UUID], tuple[int, float, float]] = {
-        (match.applicant_id, match.job_id): (1, -float(score), -job.first_seen_at.timestamp())
-        for match, job, score in session.execute(listed(everywhere=True).add_columns(AI_SCORE_SQL))
-        if auto_tailored(score, location_fit=match.location_fit, outside_locations=match.applicant_id in outside)
+        if auto_tailored(verdict, location_fit=location_fit, outside_locations=bool(outside))
     }
-    # A button press is demand of its own, for any open job the person opened: those go first, oldest first.
-    rank |= {pair: (0, row.requested_at.timestamp(), 0.0) for pair, row in rows.items() if row.requested_at is not None}
+    rank |= {pair: (0, row.requested_at.timestamp()) for pair, row in rows.items() if row.requested_at is not None}
     pairs = sorted((pair for pair in rank if allowed is None or pair[0] in allowed), key=rank.__getitem__)
     if not pairs:
         return []
@@ -261,12 +282,9 @@ def _todo(session: Session, now: datetime, settings: Settings) -> list[_Work]:
     work: list[_Work] = []
     for applicant_id, job_id in pairs:
         job = jobs.get(job_id)
-        if job is None:
+        if job is None or not job.description:
             continue
         current = rows.get((applicant_id, job_id))
-        if not job.description:
-            _skip(session, applicant_id, job_id, current, reason="no_description", now=now)
-            continue
         cv_file = pick_base_cv(cvs.get(applicant_id, []), title=job.title, advert=job.description)
         if cv_file is None:
             _skip(session, applicant_id, job_id, current, reason="no_cv", now=now)
@@ -530,10 +548,9 @@ async def _process_one(
 
     tailored, phrases = remove_ai_phrases(tailored, item.posting, protected_text=all_text(master))
     tailored, fabricated = drop_fabricated_skills(tailored, master)
-    tailored = finalize_ai_resume(master, tailored, allow_review_claims=False)
-    tailored, claimed = revert_unsupported_claims(tailored, master, keywords)
-    if claimed:
-        warnings.append(f"Reverted wording that claimed what the CV never shows: {', '.join(claimed)}")
+    tailored = finalize_ai_resume(master, tailored, allow_review_claims=False, posting=item.posting)
+    tailored, spelled = uk_spelling(tailored, protected_text=all_text(master))
+    tailored, _ = limit_rewrites(master, tailored, first=[change.path for change in applied])
     if phrases:
         warnings.append(f"Replaced stock AI wording: {', '.join(phrases)}")
     if fabricated:
@@ -548,12 +565,15 @@ async def _process_one(
         paid=paid,
     )
     warnings.extend(voice_notes)
+    changed = rewrites(master, tailored)
 
     # Upstream treats the letter as optional output: its failure is a warning, never a failed CV.
     try:
         written = await paid(
             "letter",
-            lambda: ai.generate_cover_letter(gateway, resume=tailored, posting=item.posting, **key),
+            lambda: ai.generate_cover_letter(
+                gateway, resume=tailored, posting=item.posting, voice=voice_sample(master), **key
+            ),
         )
     except BudgetWait:
         written = AiCallFailure(reason="budget")
@@ -563,8 +583,12 @@ async def _process_one(
         warnings.append(f"Cover letter skipped: {reason}")
     else:
         letter, letter_phrases = remove_ai_phrases(written, item.posting, protected_text=all_text(master))
+        letter, letter_spelled = uk_spelling(letter, protected_text=all_text(master))
+        spelled = sorted({*spelled, *letter_spelled})
         if letter_phrases:
             warnings.append(f"Replaced stock AI wording in the cover letter: {', '.join(letter_phrases)}")
+    if spelled:
+        warnings.append(f"Changed to British spelling: {', '.join(spelled)}")
 
     pdf = render_pdf(tailored)
     docx = render_docx(tailored)
@@ -578,9 +602,13 @@ async def _process_one(
     row.draft = tailored
     row.cover_letter = letter
     row.keywords = keywords
-    row.ats_report = ats_report(
+    report = ats_report(
         pdf_bytes=pdf, docx_bytes=docx, resume=tailored, master=master, keywords=keywords, warnings=warnings
     )
+    notes = style_notes(master, tailored, keywords, changed) + (letter_notes(letter) if letter else [])
+    report["changes"] = [rewrite.to_json() for rewrite in changed]
+    report["recommendations"] = recommendations(report["coverage"], notes)
+    row.ats_report = report
     row.company_research_id = site.row.id if site.row is not None else None
     row.company_research_available = bool(site.terms)
     row.pdf_content = pdf

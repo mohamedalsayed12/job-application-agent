@@ -1,45 +1,43 @@
 const apiBase = document.getElementById("apiBase");
 const token = document.getElementById("token");
+const application = document.getElementById("application");
 const status = document.getElementById("status");
 
-async function loadReady() {
-  const stored = await chrome.storage.local.get(["apiBase", "token"]);
-  const base = (stored.apiBase || "http://127.0.0.1:8000").replace(/\/$/, "");
-  const select = document.getElementById("application");
-  select.replaceChildren();
-  if (!stored.token) return;
-  const response = await fetch(`${base}/extension/applications/ready`, {
-    headers: { Authorization: `Bearer ${stored.token}` },
-  });
-  if (!response.ok) return;
-  for (const row of await response.json()) {
-    const option = document.createElement("option");
-    option.value = row.id;
-    option.textContent = row.apply_url;
-    select.appendChild(option);
+async function loadApplications() {
+  const { apps, guess } = await chrome.runtime.sendMessage({ type: "jaa-list" });
+  application.replaceChildren();
+  if (!apps.length) {
+    application.append(new Option("No open applications. Press Prepare apply on a job first.", ""));
+    return;
+  }
+  for (const row of apps) {
+    const label = `${row.title}${row.company ? ` at ${row.company}` : ""}`;
+    application.append(new Option(label, row.id, false, row.id === guess));
   }
 }
 
 chrome.storage.local.get(["apiBase", "token"]).then((stored) => {
   apiBase.value = stored.apiBase || "http://127.0.0.1:8000";
   token.value = stored.token || "";
-  return loadReady();
+  loadApplications();
 });
 
 document.getElementById("save").addEventListener("click", async () => {
-  await chrome.storage.local.set({
-    apiBase: apiBase.value.trim(),
-    token: token.value.trim(),
-  });
+  await chrome.storage.local.set({ apiBase: apiBase.value.trim(), token: token.value.trim() });
   status.textContent = "Saved.";
-  await loadReady();
+  loadApplications();
 });
 
 document.getElementById("fill").addEventListener("click", async () => {
-  status.textContent = "Filling…";
-  const applicationId = document.getElementById("application").value;
-  const result = await chrome.runtime.sendMessage({ type: "jaa-fill-active", applicationId });
-  status.textContent = result?.ok
-    ? "Everything is filled in. Review the form and click Submit yourself."
-    : (result?.error || "Failed");
+  status.textContent = "Reading the form…";
+  const result = await chrome.runtime.sendMessage({ type: "jaa-fill-active", applicationId: application.value });
+  if (!result?.ok) {
+    status.textContent = result?.error || "Failed";
+    return;
+  }
+  const lines = [`Filled ${result.filled} field(s). Review the form and press Submit yourself.`];
+  if (result.drafted) lines.push(`${result.drafted} answer(s) were drafted for you and are outlined in orange: read them first.`);
+  if (result.missing?.length) lines.push(`No saved answer for: ${result.missing.join("; ")}`);
+  if (result.skipped?.length) lines.push(`Could not fill: ${result.skipped.join("; ")}`);
+  status.textContent = lines.join("\n");
 });

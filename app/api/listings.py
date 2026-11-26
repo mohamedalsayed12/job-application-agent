@@ -9,7 +9,6 @@ from __future__ import annotations
 import html
 import uuid
 from collections import defaultdict
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -28,6 +27,8 @@ from app.api.forms import csrf_field
 from app.cleaning.linking import is_primary
 from app.core.config import get_settings
 from app.core.db import get_db
+from app.fetch.due import never_searched
+from app.linkedin import searches
 from app.matching import semantic
 from app.matching.report import VERDICTS
 from app.matching.match import AI_SCORE_SQL, listed
@@ -60,7 +61,12 @@ router = APIRouter(prefix="/listings", tags=["listings"])
 PAGE_SIZE = 25
 _CURRENCY = {"GBP": "£", "USD": "$", "EUR": "€"}
 _PERIOD = {"year": "a year", "month": "a month", "week": "a week", "day": "a day", "hour": "an hour"}
-_SOURCE_LABEL = {"linkedin": "LinkedIn", "indeed": "Indeed"}
+_SOURCE_LABEL = {
+    "linkedin": "LinkedIn",
+    "indeed": "Indeed",
+    "google_jobs": "Google Jobs",
+    "careers": "Company website",
+}
 Sort = Literal["score", "newest"]
 # D44: matches on a target role, matches on skills alone, or both.
 Show = Literal["roles", "skills", "all"]
@@ -376,7 +382,9 @@ def _reasons(item: Listing) -> str:
         lines.append(f"Licences you don't list: {', '.join(item.missing_licences)}")
     ai = item.reasons.get("ai", {})
     if ai.get("score"):
-        lines.append(f"AI score: {ai['score']} out of 5 (added at 3.0 or more)")
+        # D53: the headline score is the fit report's when there is one, so name this one for what it is.
+        label = "First AI check" if (item.reasons.get("report") or {}).get("score") else "AI score"
+        lines.append(f"{label}: {ai['score']} out of 5 (added at 3.0 or more)")
     ratings = ai.get("ratings") or {}
     rated = [f"{label} {ratings[key]}/5" for key, label in _AI_AREAS if key in ratings]
     if rated:
@@ -520,7 +528,10 @@ def _application_tag(status: str | None) -> str:
 
 
 def _query(**params: object) -> str:
-    return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "roles")}))
+    """Leaves out each filter at its default. Every location is the default (D72), so only "0" is written."""
+    if "everywhere" in params:
+        params["everywhere"] = None if params["everywhere"] else "0"
+    return html.escape(urlencode({key: value for key, value in params.items() if value not in ("", None, False, "newest", "roles")}))
 
 
 def _option(value: str, label: str, selected: str) -> str:
@@ -530,7 +541,7 @@ def _option(value: str, label: str, selected: str) -> str:
 def _order(search: str, sort: Sort) -> str:
     if search:
         return f"Closest in meaning to &ldquo;{_e(search)}&rdquo; first. <a href=\"/listings\">Clear search</a>"
-    return f"Sorted by {'newest' if sort == 'newest' else 'best match'}."
+    return f"Sorted by {'newest' if sort == 'newest' else 'AI score'}."
 
 
 def _filters(
@@ -555,7 +566,7 @@ def _filters(
     {_option("0", "My locations", "1" if everywhere else "0")}{_option("1", "All locations", "1" if everywhere else "0")}
   </select></label>
   <label>Sort by<select name="sort" onchange="this.form.submit()">
-    {_option("newest", "Newest", sort)}{_option("score", "Best match", sort)}
+    {_option("newest", "Newest first", sort)}{_option("score", "AI score", sort)}
   </select></label>
   <div><noscript><button type="submit">Apply filters</button></noscript>
     <p class="salary-note">{salary} · <a href="/profile">Edit</a></p></div>
@@ -599,23 +610,18 @@ def _discover_hint(
     return ""
 
 
-def search_embedder() -> Callable[[], Embedder]:
-    """Hands over the loader, not the model, so a page without a search never loads it."""
-    return semantic.local_embedder
-
-
 @router.get("", response_class=HTMLResponse)
 def listings_page(
     request: Request,
     applicant: Applicant = Depends(require_login),
     db: Session = Depends(get_db),
     page_number: int = Query(1, alias="page", ge=1),
-    everywhere: bool = Query(False),
+    # D72: every match shows unless the person narrows to their own locations.
+    everywhere: bool = Query(True),
     role: str = Query("", max_length=200),
     sort: Sort | None = Query(None),
     show: Show = Query("roles"),
     q: str = Query("", max_length=200),
-    embedder: Callable[[], Embedder] = Depends(search_embedder),
 ) -> HTMLResponse:
     search = " ".join(q.split())
     preference = db.scalar(select(ApplicantPreference).where(ApplicantPreference.applicant_id == applicant.id))
@@ -633,11 +639,20 @@ def listings_page(
         sort=sort,
         show=show,
         search=search,
-        embedder=embedder() if search else None,
+        embedder=semantic.local_embedder() if search else None,
     )
     if search:
         db.commit()
     where = "in every location" if everywhere else "in your locations"
+    pending = never_searched(db, searches(db, {applicant.id}, per_person=None)) if preference is not None else 0
+    searching = (
+        # `pending` counts searches (each title in each location), not titles.
+        f'<div class="card discover">We are running {pending} {"search" if pending == 1 else "searches"} '
+        "for your job titles and locations now. "
+        "New jobs usually appear here within a few minutes: reload the page to see them.</div>"
+        if pending
+        else ""
+    )
     hint = _discover_hint(db, applicant, preference, everywhere=everywhere, sort=sort) if show == "roles" else ""
     if listings:
         csrf = csrf_field(request)
@@ -655,7 +670,7 @@ def listings_page(
   <p class="muted">{total} open jobs {where}. {_order(search, sort)}</p>
 </div></div>
 {_filters(preference, role=role, everywhere=everywhere, sort=sort, show=show, search=search)}
-{hint}
+{searching}{hint}
 {body}
 {_nav(page_number, total, everywhere=everywhere, role=role, sort=sort, show=show, search=search)}""",
         header=applicant_bar(request, "matches"),

@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Literal
 
 from sqlalchemy import func, select, text
@@ -21,7 +21,8 @@ from app.models import BudgetPolicy, SpendKind, SpendLedger
 
 logger = logging.getLogger(__name__)
 
-CapName = Literal["monthly"]
+# "unset": no money cap is configured, so paid work waits until someone sets one.
+CapName = Literal["monthly", "unset"]
 WARN_RATIO = Decimal("0.8")
 # Fixed advisory key for all budget reserves (one worker / one gate).
 _BUDGET_ADVISORY_LOCK_KEY = 0x4A414142  # "JAAB"
@@ -55,11 +56,8 @@ class BudgetWait(Exception):
 def _require_non_negative_cost(value: Decimal, *, label: str) -> Decimal:
     if not isinstance(value, Decimal):
         raise ValueError(f"{label} must be a Decimal")
-    try:
-        if value.is_nan() or value.is_infinite() or value < 0:
-            raise ValueError(f"{label} must be a finite Decimal >= 0")
-    except InvalidOperation as exc:
-        raise ValueError(f"{label} must be a finite Decimal >= 0") from exc
+    if value.is_nan() or value.is_infinite() or value < 0:
+        raise ValueError(f"{label} must be a finite Decimal >= 0")
     return value
 
 
@@ -67,7 +65,18 @@ def _month_start(now: datetime) -> datetime:
     return datetime(now.year, now.month, 1, tzinfo=UTC)
 
 
-def _load_monthly_money_cap(session: Session, provider: str, now: datetime) -> Decimal | None:
+def _latest_money_cap(rows: list[BudgetPolicy]) -> Decimal | None:
+    capped = [row for row in rows if row.money_cap is not None]
+    if not capped:
+        return None
+    capped.sort(key=lambda row: row.effective_from, reverse=True)
+    return Decimal(capped[0].money_cap)
+
+
+def _monthly_money_caps(
+    session: Session, provider: str, now: datetime
+) -> tuple[Decimal | None, Decimal | None]:
+    """Provider-specific cap and wildcard ``*`` cap (either may be absent)."""
     policies = session.scalars(
         select(BudgetPolicy).where(
             BudgetPolicy.period == "month",
@@ -76,30 +85,21 @@ def _load_monthly_money_cap(session: Session, provider: str, now: datetime) -> D
             BudgetPolicy.provider.in_(("*", provider)),
         )
     ).all()
-    if not policies:
-        return None
-    specific = [
-        row
-        for row in policies
-        if row.provider == provider and row.money_cap is not None
-    ]
-    wildcard = [row for row in policies if row.provider == "*" and row.money_cap is not None]
-    chosen = specific or wildcard
-    if not chosen:
-        return None
-    chosen.sort(key=lambda row: row.effective_from, reverse=True)
-    return Decimal(chosen[0].money_cap)
+    specific = _latest_money_cap([row for row in policies if row.provider == provider])
+    wildcard = _latest_money_cap([row for row in policies if row.provider == "*"])
+    return specific, wildcard
 
 
-def _sum_spend(session: Session, *, since: datetime) -> Decimal:
-    total = session.scalar(
-        select(
-            func.coalesce(
-                func.sum(func.coalesce(SpendLedger.actual_cost, SpendLedger.estimated_cost)),
-                0,
-            )
-        ).where(SpendLedger.occurred_at >= since)
-    )
+def _sum_spend(session: Session, *, since: datetime, provider: str | None = None) -> Decimal:
+    query = select(
+        func.coalesce(
+            func.sum(func.coalesce(SpendLedger.actual_cost, SpendLedger.estimated_cost)),
+            0,
+        )
+    ).where(SpendLedger.occurred_at >= since)
+    if provider is not None:
+        query = query.where(SpendLedger.provider == provider)
+    total = session.scalar(query)
     return Decimal(total or 0)
 
 
@@ -130,17 +130,27 @@ class BudgetGate:
         units = _require_non_negative_cost(estimate.units, label="units")
 
         now = self._clock()
-        money_cap = _load_monthly_money_cap(self._session, estimate.provider, now)
+        specific_cap, wildcard_cap = _monthly_money_caps(self._session, estimate.provider, now)
         requires_money = cost > 0
+        month_start = _month_start(now)
 
-        if requires_money and (money_cap is None or money_cap <= 0):
+        if requires_money and specific_cap is None and wildcard_cap is None:
+            raise BudgetWait("unset")
+        if requires_money and specific_cap is not None and specific_cap <= 0:
+            raise BudgetWait("monthly")
+        if requires_money and specific_cap is None and wildcard_cap is not None and wildcard_cap <= 0:
             raise BudgetWait("monthly")
 
-        if requires_money and money_cap is not None:
-            monthly_spent = _sum_spend(self._session, since=_month_start(now))
-            if monthly_spent + cost > money_cap:
+        if requires_money and specific_cap is not None:
+            spent = _sum_spend(self._session, since=month_start, provider=estimate.provider)
+            if spent + cost > specific_cap:
                 raise BudgetWait("monthly")
-            _warn_if_needed(monthly_spent + cost, money_cap, "monthly")
+            _warn_if_needed(spent + cost, specific_cap, "monthly")
+        if requires_money and wildcard_cap is not None:
+            spent = _sum_spend(self._session, since=month_start)
+            if spent + cost > wildcard_cap:
+                raise BudgetWait("monthly")
+            _warn_if_needed(spent + cost, wildcard_cap, "monthly")
 
         row = SpendLedger(
             provider=estimate.provider,

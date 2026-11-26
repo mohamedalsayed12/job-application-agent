@@ -29,8 +29,15 @@ from app.outreach.check import outreach_unsupported
 from app.outreach.draft import draft_for_contact
 from app.outreach.find import find_contacts
 from app.outreach.gmail import record_copy, save_connection, send_draft
-from app.outreach.normalize import linkedin_job_url, normalize_people, normalize_research, parse_email, role_kind_for
+from app.outreach.normalize import (
+    linkedin_job_url,
+    normalize_people,
+    normalize_research,
+    parse_email,
+    role_kind_for,
+)
 from app.outreach.seal import seal, unseal
+from tests.auth import sign_up
 from tests.jobs import DAY_1, _Apify, _li, _public_resolve, _store
 from tests.test_matching import _applicant
 
@@ -229,6 +236,51 @@ async def test_find_contacts_falls_back_when_apply_url_is_not_linkedin(session: 
         await gateway.aclose()
     assert report.added == 1
     assert "company-employees" in apify.requests[0].url.path or "linkedin-company-employees" in apify.requests[0].url.path
+    body = apify.bodies()[0]
+    assert body["companies"] == ["Acme"]
+    assert "companyName" not in body
+    # Apify refuses a run capped under $0.05.
+    assert float(apify.requests[0].url.params["maxTotalChargeUsd"]) >= 0.05
+
+
+def _employee(first: str, company: str, title: str = "Talent Partner") -> dict:
+    return {
+        "firstName": first,
+        "lastName": "Example",
+        "linkedinUrl": f"https://www.linkedin.com/in/{first.lower()}",
+        "currentPositions": [{"companyName": company, "title": title, "current": True}],
+    }
+
+
+async def test_find_contacts_drops_people_at_a_namesake_company(session: Session) -> None:
+    _policy(session)
+    applicant = _applicant(session, roles=["Junior Developer"], locations=["Manchester"])
+    job = _matched_job(session, applicant, apply_url="https://acme.example/careers/99")
+    items = [
+        _employee("Robin", "Acme Ltd"),
+        _employee("Sam", "Acme Retail"),
+        _employee("Lee", "Other Co"),
+        _employee("Kit", "Acme Group"),
+    ]
+    apify = _Apify(items)
+    gateway = apify.gateway()
+    try:
+        report = await find_contacts(
+            session,
+            applicant_id=applicant,
+            job=job,
+            gateway=gateway,
+            settings=Settings(apify_api_token="test-token", session_secret="x" * 32),
+            persist=session.flush,
+            now=lambda: DAY_1,
+            sleep=lambda _: None,
+        )
+    finally:
+        await gateway.aclose()
+    assert [c.full_name for c in report.contacts] == ["Robin Example"]
+    assert report.contacts[0].title == "Talent Partner"
+    assert report.contacts[0].company_name == "Acme Ltd"
+    assert report.contacts[0].role_kind == "recruiter"
 
 
 class _GmailApi:
@@ -397,7 +449,7 @@ async def test_gmail_dry_run_records_send_without_calling_gmail(session: Session
     assert draft.status == OutreachDraftStatus.sent.value
 
 
-def test_linkedin_copy_records_copied_send(session: Session) -> None:
+def test_copying_an_email_records_it_as_taken(session: Session) -> None:
     applicant_id = _applicant(session, roles=["Junior Developer"], locations=["Manchester"])
     job = _matched_job(session, applicant_id)
     contact = OutreachContact(
@@ -407,7 +459,7 @@ def test_linkedin_copy_records_copied_send(session: Session) -> None:
         role_kind="employee",
         evidence={},
         source_actor="test",
-        linkedin_url="https://www.linkedin.com/in/casey",
+        email="casey@acme.example",
     )
     session.add(contact)
     session.flush()
@@ -415,8 +467,9 @@ def test_linkedin_copy_records_copied_send(session: Session) -> None:
         applicant_id=applicant_id,
         contact_id=contact.id,
         job_id=job.id,
-        channel=OutreachChannel.linkedin_note.value,
-        body="Short note",
+        channel=OutreachChannel.gmail.value,
+        subject="Hello",
+        body="Short email",
         pattern_ids=[],
         evidence_digest="x",
         status=OutreachDraftStatus.draft.value,
@@ -424,7 +477,7 @@ def test_linkedin_copy_records_copied_send(session: Session) -> None:
     session.add(draft)
     session.flush()
     row = record_copy(session, draft)
-    assert row.status == "copied"
+    assert row.status == "copied" and row.channel == OutreachChannel.gmail.value
     assert draft.status == OutreachDraftStatus.copied.value
 
 
@@ -476,7 +529,7 @@ async def test_outreach_waits_until_the_person_has_applied(session: Session, mon
     app.dependency_overrides[get_gateway] = _gateway
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as client:
-            await client.post("/register", data={"email": "outreach@example.com", "password": "correct horse battery"})
+            await sign_up(client, "outreach@example.com", "correct horse battery")
             applicant = session.scalar(select(Applicant).where(Applicant.email == "outreach@example.com"))
             job = _matched_job(session, applicant.id)
 
@@ -598,79 +651,107 @@ async def test_a_different_chosen_cv_does_not_reuse_the_previous_draft(
         await gateway.aclose()
 
 
-async def test_a_rejected_draft_call_shows_a_readable_notice_and_a_retry_button(session: Session, monkeypatch) -> None:
-    from urllib.parse import unquote
+def test_a_bracketed_company_name_still_counts_as_the_employer() -> None:
+    from app.models import OutreachRoleKind
+    from app.outreach.normalize import FoundContact, works_at
 
-    from app.accounts import throttle
-    from app.api.forms import require_csrf
-    from app.api.outreach import get_gateway
-    from app.core.config import get_settings
-    from app.core.db import get_db
-    from app.fetch.gateway import FetchGateway
-    from app.main import app
-    from app.models import Applicant
+    def person(company: str) -> FoundContact:
+        return FoundContact("A B", "Recruiter", company, None, None, OutreachRoleKind.recruiter, {}, "actor")
 
-    monkeypatch.setenv("SESSION_SECRET", "s" * 40)
-    monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    get_settings.cache_clear()
-    throttle.reset()
-    _policy(session)
-    apify = _Apify([{"about": "Builds payment systems.", "posts": []}])
-    anthropic_calls: list[httpx.Request] = []
+    assert works_at(person("TPP (The Phoenix Partnership)"), "TPP")
+    assert works_at(person("TPP"), "TPP (The Phoenix Partnership)")
+    assert not works_at(person("TPP Recruitment"), "TPP")
+    assert not works_at(person("TPP Group"), "TPP")
 
-    def _transport(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "api.anthropic.com":
-            anthropic_calls.append(request)
-            return httpx.Response(400, json={"type": "error", "error": {"type": "invalid_request_error"}})
-        return apify(request)
 
-    async def _gateway():
-        gateway = FetchGateway(
-            user_agent="JobApplicationAgent-Test/0.1",
-            allowlist=frozenset({"api.apify.com", "api.anthropic.com"}),
-            resolve=_public_resolve,
-            transport=httpx.MockTransport(_transport),
+def test_the_draft_schema_uses_only_keywords_structured_output_accepts() -> None:
+    from app.outreach.draft import SCHEMA
+
+    def keys(node: object) -> set[str]:
+        if isinstance(node, dict):
+            return set(node) | set().union(*(keys(v) for v in node.values()))
+        if isinstance(node, list):
+            return set().union(*(keys(v) for v in node))
+        return set()
+
+    # Anthropic answers 400 to these in output_config.format.schema.
+    assert not keys(SCHEMA) & {"maxItems", "minItems", "maxLength", "minLength", "maximum", "minimum"}
+
+
+def test_a_long_linkedin_note_is_cut_back_to_whole_sentences() -> None:
+    from app.outreach.draft import LINKEDIN_MAX, fit_note
+
+    note = "Hi Sam, I'm applying for the Junior Developer role at Acme. " + "I build Python services. " * 12 + "Would you know who hires?"
+    fitted = fit_note(note)
+    assert len(fitted) <= LINKEDIN_MAX
+    assert fitted.startswith("Hi Sam, I'm applying for the Junior Developer role at Acme.")
+    assert fitted.endswith("Would you know who hires?")  # The ask is never the part that is cut.
+    assert fit_note("Short note.") == "Short note."
+    assert not fit_note("word " * 80).endswith("wor")
+
+
+class _NoteWriter:
+    """Anthropic that writes an over-long LinkedIn note first, then a short one when asked again."""
+
+    LONG = "Hi Casey, I'm applying for the Junior Developer role at Acme. " + "I like building things. " * 15 + "Could we talk?"
+    SHORT = "Hi Casey, I'm applying for the Junior Developer role at Acme. Could we talk?"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        import json
+
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        self.prompts.append(prompt)
+        body = self.SHORT if "PREVIOUS_NOTE" in prompt else self.LONG
+        answer = {"subject": "", "body": body, "pattern_ids": []}
+        return httpx.Response(
+            200,
+            json={
+                "model": "claude-haiku-5-5",
+                "content": [{"type": "text", "text": json.dumps(answer)}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 500, "output_tokens": 60},
+            },
         )
-        try:
-            yield gateway
-        finally:
-            await gateway.aclose()
 
-    app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[require_csrf] = lambda: None
-    app.dependency_overrides[get_gateway] = _gateway
+
+async def test_an_over_long_linkedin_note_is_rewritten_not_cut(session: Session) -> None:
+    from app.fetch.gateway import FetchGateway
+    from app.outreach.draft import draft_for_contact
+
+    _policy(session)
+    applicant = _applicant(session, roles=["Junior Developer"], locations=["Manchester"])
+    job = _matched_job(session, applicant)
+    contact = OutreachContact(
+        applicant_id=applicant, job_id=job.id, full_name="Casey Hire", title="Hiring Manager",
+        company_name="Acme", role_kind="hiring_manager", evidence={}, source_actor="test",
+    )
+    session.add(contact)
+    session.flush()
+    writer = _NoteWriter()
+    gateway = FetchGateway(
+        user_agent="JobApplicationAgent-Test/0.1",
+        allowlist=frozenset({"api.anthropic.com"}),
+        resolve=_public_resolve,
+        transport=httpx.MockTransport(writer),
+    )
     try:
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://testserver") as client:
-            await client.post("/register", data={"email": "drafter@example.com", "password": "correct horse battery"})
-            applicant = session.scalar(select(Applicant).where(Applicant.email == "drafter@example.com"))
-            job = _matched_job(session, applicant.id)
-            assert (await client.post(f"/jobs/{job.id}/applied")).status_code == 303
-            contact = OutreachContact(
-                applicant_id=applicant.id,
-                job_id=job.id,
-                full_name="Casey Hire",
-                role_kind="hiring_manager",
-                linkedin_url="https://www.linkedin.com/in/casey",
-                evidence={},
-                source_actor="test",
-            )
-            session.add(contact)
-            session.flush()
-
-            drafted = await client.post(f"/jobs/{job.id}/outreach/{contact.id}/draft")
-            assert anthropic_calls, "the draft reached the Anthropic API"
-            assert drafted.status_code == 303
-            notice = unquote(drafted.headers["location"])
-            assert "anthropic_http" not in notice
-            assert "Press Research and draft to try again." in notice
-            listing = (await client.get(drafted.headers["location"])).text
-            assert "We couldn&#x27;t write a message just now." in listing
-
-            contact_page = (await client.get(f"/jobs/{job.id}/outreach/{contact.id}")).text
-            assert f'action="/jobs/{job.id}/outreach/{contact.id}/draft"' in contact_page
-            assert "Research and draft</button>" in contact_page
+        result = await draft_for_contact(
+            session,
+            applicant_id=applicant,
+            job=job,
+            contact=contact,
+            research=None,
+            channel=OutreachChannel.linkedin_note,
+            gateway=gateway,
+            settings=Settings(anthropic_api_key="test-key", ai_provider="anthropic", session_secret="x" * 32),
+            persist=session.flush,
+            now=lambda: DAY_1,
+        )
     finally:
-        app.dependency_overrides.clear()
-        get_settings.cache_clear()
-        throttle.reset()
+        await gateway.aclose()
+    assert len(writer.prompts) == 2
+    assert result.draft is not None, result.problem
+    assert result.draft.body == _NoteWriter.SHORT

@@ -71,10 +71,7 @@ def official_domain_from_apply_url(apply_url: str | None) -> str | None:
 
 
 def html_to_text(body: bytes, *, max_chars: int = MAX_PAGE_CHARS) -> str:
-    try:
-        raw = body.decode("utf-8", errors="replace")
-    except Exception:
-        return ""
+    raw = body.decode("utf-8", errors="replace")
     raw = re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", raw)
     text = _TAG.sub(" ", raw)
     text = _SPACE.sub(" ", text).strip()
