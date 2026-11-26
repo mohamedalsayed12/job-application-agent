@@ -1,4 +1,4 @@
-"""Google Jobs through SerpAPI, same daily loop as LinkedIn and Indeed (D71).
+"""Google Jobs through SerpAPI, same daily loop as LinkedIn and Indeed (D73).
 
 Once a day each person the AI works for gets Google Jobs searches for every target role
 and location, as graduate, junior and entry-level title forms (Google Jobs has no
