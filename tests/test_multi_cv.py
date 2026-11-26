@@ -26,11 +26,9 @@ from app.applicants.cv import (
     store_cv,
 )
 from app.applicants.service import create_applicant, parse_preference_input
-from app.applications.extract import ExtractResult
 from app.applications.prepare import prepare_application
 from app.core.config import get_settings
 from app.core.db import get_db
-from app.fetch.gateway import FetchGateway
 from app.main import app
 from app.models import (
     Applicant,
@@ -42,7 +40,7 @@ from app.models import (
     TailoredCvStatus,
 )
 from app.tailor.run import package_hash
-from tests.jobs import _job, _li, _public_resolve, _store
+from tests.jobs import _job, _li, _store
 from tests.test_profile import (
     OTHER_EMAIL,
     PDF,
@@ -183,34 +181,15 @@ def test_the_loader_picks_the_cv_whose_label_fits_the_job(session: Session) -> N
     assert base_cv(session, person.id, _job(session, 2)).id == backend.id
 
 
-async def test_preparing_an_application_records_the_cv_for_that_job(
-    session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async def _no_form(*_args: object, **_kwargs: object) -> ExtractResult:
-        return ExtractResult(None, error="no form")
-
-    monkeypatch.setattr("app.applications.prepare.extract_form_schema", _no_form)
+def test_preparing_an_application_records_the_cv_for_that_job(session: Session) -> None:
     person = _person(session)
     analyst = store_cv(session, person.id, PDF_A, label="Data Analyst")
     store_cv(session, person.id, PDF_B, label="Backend Engineer")
     _store(session, [_li(1, title="Data Analyst", content="Prepare weekly sales reports in Excel.")])
     job = _job(session, 1)
-    gateway = FetchGateway(
-        user_agent="JobApplicationAgent-Test/0.1",
-        allowlist=frozenset(),
-        resolve=_public_resolve,
-        transport=httpx.MockTransport(lambda _request: httpx.Response(404)),
-    )
-    row = await prepare_application(
-        session,
-        applicant=person,
-        job_id=job.id,
-        gateway=gateway,
-        settings=get_settings(),
-        persist=session.flush,
-    )
+    row = prepare_application(session, applicant=person, job_id=job.id)
     assert row.cv_file_id == analyst.id
-    assert row.status == ApplicationStatus.failed.value
+    assert row.status == ApplicationStatus.ready_to_fill.value
 
 
 @pytest.fixture

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -127,9 +128,18 @@ def label_index(session: Session) -> dict[str, LabelEntry]:
     return index
 
 
+_BRACKETED = re.compile(r"^(?P<outside>[^()]+?)\s*\((?P<inside>[^()]+)\)\s*$")
+
+
 def skill_for_text(index: dict[str, LabelEntry], typed: str) -> uuid.UUID | None:
-    entry = index.get(normalize_label(typed))
-    return entry.skill_id if entry else None
+    """The skill a person typed. "GitHub Actions (CI/CD)" falls back to "GitHub Actions", then "CI/CD"."""
+    forms = [typed]
+    if bracketed := _BRACKETED.match(typed.strip()):
+        forms += [bracketed["outside"], bracketed["inside"]]
+    for form in forms:
+        if entry := index.get(normalize_label(form)):
+            return entry.skill_id
+    return None
 
 
 def remap_applicant_skills(session: Session) -> None:

@@ -50,7 +50,9 @@ from app.tailor.refiner import (
 from app.tailor.render import render_docx, render_pdf
 from app.tailor.resume import all_text
 
-PROMPT_VERSION = "resume-matcher-959e458-cover-letter"
+# Bumped when the guard or layout changes, so ready CVs are written again: grounded-v2 adds the
+# posting-word check, the bullet fix and certifications kept with their dates.
+PROMPT_VERSION = "resume-matcher-959e458-cover-letter-grounded-v2"
 TAILOR_VERDICTS = frozenset({"Apply", "Consider"})
 REQUESTED = "requested"
 MAX_PDF_BYTES = 5 * 1024 * 1024
@@ -403,7 +405,7 @@ async def _process_one(
 
     tailored, phrases = remove_ai_phrases(tailored, item.posting, protected_text=all_text(master))
     tailored, fabricated = drop_fabricated_skills(tailored, master)
-    tailored = finalize_ai_resume(master, tailored, allow_review_claims=False)
+    tailored = finalize_ai_resume(master, tailored, allow_review_claims=False, posting=item.posting)
     if phrases:
         warnings.append(f"Replaced stock AI wording: {', '.join(phrases)}")
     if fabricated:

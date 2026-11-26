@@ -18,7 +18,7 @@ from app.core.config import Settings
 from app.fetch.gateway import FetchGateway
 from app.models import Job, OutreachContact, SpendKind
 from app.outreach.apify_run import ApifyRun
-from app.outreach.normalize import FoundContact, linkedin_job_url, normalize_people
+from app.outreach.normalize import FoundContact, linkedin_job_url, normalize_people, works_at
 
 EMPLOYEE_TITLES = [
     "hiring manager",
@@ -122,9 +122,11 @@ async def find_contacts(
         found, usd = await runner.run(
             actor_used,
             {
-                "companyName": job.company_name,
+                # The actor searches LinkedIn's current-company filter; a name works where no company URL is known.
+                "companies": [job.company_name],
                 "jobTitles": EMPLOYEE_TITLES,
                 "maxItems": settings.outreach_max_contacts,
+                "profileScraperMode": "Short ($4 per 1k)",
             },
             max_charge_usd=per_run_charge,
         )
@@ -142,6 +144,8 @@ async def find_contacts(
     persist()
 
     people = normalize_people(items, actor=actor_used or settings.apify_outreach_hm_actor, company_fallback=job.company_name)
+    # A company searched by name also matches namesakes ("TPP Retail", another firm called TPP's staff list).
+    people = [person for person in people if works_at(person, job.company_name)]
     people = people[: settings.outreach_max_contacts]
     by_url = {(c.linkedin_url or "").lower(): c for c in existing if c.linkedin_url}
     by_name = {(c.full_name or "").lower(): c for c in existing}

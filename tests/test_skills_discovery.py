@@ -17,6 +17,7 @@ from app.main import app
 from app.matching.match import RoleKind, SkillFit, match_by_skills
 from app.models import ExperienceLevel
 from app.skills.taxonomy import load_taxonomy, map_job_skills
+from tests.auth import sign_up
 from tests.jobs import _store
 from tests.test_matching import _posting
 
@@ -99,7 +100,7 @@ async def _jobs(session: Session) -> None:
 
 
 async def _register(client: httpx.AsyncClient, skills: list[str]) -> None:
-    assert (await client.post("/register", data={"email": "d@example.com", "password": PASSWORD})).status_code == 303
+    assert (await sign_up(client, "d@example.com", PASSWORD)).status_code == 303
     profile = {
         "target_roles": "Junior Backend Developer",
         "locations": "Manchester",
