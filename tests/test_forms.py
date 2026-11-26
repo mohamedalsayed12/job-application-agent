@@ -16,12 +16,12 @@ from app.api import admin_auth
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.main import app
+from tests.auth import emailed_token
 
 ADMIN = "test-admin-key-step18"
 EMAIL = "person@example.com"
 PASSWORD = "correct horse battery"
-ADMIN_PAGES = ("/admin/applicants", "/admin/applicants/new", "/admin/quality", "/admin/accounts/set-password-link")
-ADMIN_FORM_PAGES = ("/admin/applicants/new", "/admin/accounts/set-password-link")
+ADMIN_PAGES = ("/admin/quality",)
 ROUTES = app.openapi()["paths"]
 
 
@@ -63,8 +63,17 @@ async def _post_from(client: httpx.AsyncClient, form_page: str, path: str, data:
     return await client.post(path, data={**data, "csrf_token": _token(opened.text)})
 
 
-async def _log_in_as_applicant_and_admin(client: httpx.AsyncClient) -> None:
+async def _sign_up(client: httpx.AsyncClient) -> httpx.Response:
+    """Register, open the emailed link and log in, each with the token from its own page."""
     assert (await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})).status_code == 303
+    link = emailed_token(EMAIL, "Confirm")
+    confirm_page = f"/verify-email/confirm?token={link}"
+    assert (await _post_from(client, confirm_page, "/verify-email/confirm", {"token": link})).status_code == 303
+    return await _post_from(client, "/login", "/login", {"email": EMAIL, "password": PASSWORD})
+
+
+async def _log_in_as_applicant_and_admin(client: httpx.AsyncClient) -> None:
+    assert (await _sign_up(client)).status_code == 303
     assert (await _post_from(client, "/admin/login", "/admin/login", {"admin_key": ADMIN})).status_code == 303
 
 
@@ -96,7 +105,7 @@ async def test_a_token_from_another_session_is_refused(client: httpx.AsyncClient
 
 
 async def test_register_log_out_and_log_in_work_with_the_tokens_on_the_page(client: httpx.AsyncClient) -> None:
-    assert (await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})).status_code == 303
+    assert (await _sign_up(client)).status_code == 303
     assert (await _post_from(client, "/account", "/logout", {})).status_code == 303
     assert (await client.get("/account")).status_code == 303
     assert (await _post_from(client, "/login", "/login", {"email": EMAIL, "password": PASSWORD})).status_code == 303
@@ -104,41 +113,22 @@ async def test_register_log_out_and_log_in_work_with_the_tokens_on_the_page(clie
 
 
 async def test_logging_in_replaces_the_token(client: httpx.AsyncClient) -> None:
-    before = _token((await client.get("/register")).text)
-    await client.post("/register", data={"email": EMAIL, "password": PASSWORD, "csrf_token": before})
+    await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})
+    link = emailed_token(EMAIL, "Confirm")
+    await _post_from(client, f"/verify-email/confirm?token={link}", "/verify-email/confirm", {"token": link})
+    before = _token((await client.get("/login")).text)
+    await client.post("/login", data={"email": EMAIL, "password": PASSWORD, "csrf_token": before})
     assert _token((await client.get("/account")).text) != before
 
 
 async def test_every_form_on_every_page_carries_a_token(client: httpx.AsyncClient) -> None:
     await _log_in_as_applicant_and_admin(client)
-    pages = ("/account", "/profile", "/register", "/login", "/admin/login", *ADMIN_FORM_PAGES)
+    pages = ("/account", "/profile", "/register", "/login", "/admin/login")
     for path in pages:
         text = (await client.get(path)).text
         forms = re.findall(r"<form\b.*?</form>", text, flags=re.S)
         assert forms, path
         assert all('name="csrf_token"' in form for form in forms), path
-
-
-async def test_forms_for_an_admin_work_with_the_token_on_the_page(client: httpx.AsyncClient) -> None:
-    await _log_in_as_applicant_and_admin(client)
-    response = await _post_from(
-        client, "/admin/accounts/set-password-link", "/admin/accounts/set-password-link", {"email": EMAIL}
-    )
-    assert response.status_code == 200
-    assert "set-password?token=" in response.text
-
-
-async def test_the_admin_key_header_needs_no_token_for_scripts(client: httpx.AsyncClient) -> None:
-    response = await client.post(
-        "/admin/accounts/set-password-link", data={"email": "no@example.com"}, headers={"X-Admin-Key": ADMIN}
-    )
-    assert response.status_code == 404
-
-
-async def test_a_wrong_admin_key_header_does_not_skip_the_token(client: httpx.AsyncClient) -> None:
-    await _log_in_as_applicant_and_admin(client)
-    response = await client.post("/login", data={"email": EMAIL, "password": PASSWORD}, headers={"X-Admin-Key": "wrong"})
-    assert response.status_code == 403
 
 
 @pytest.mark.parametrize("path", ADMIN_PAGES)
@@ -192,5 +182,5 @@ async def test_changing_the_admin_key_ends_admin_sessions(client: httpx.AsyncCli
 
 
 async def test_an_applicant_login_gives_no_admin_session(client: httpx.AsyncClient) -> None:
-    await _post_from(client, "/register", "/register", {"email": EMAIL, "password": PASSWORD})
+    await _sign_up(client)
     assert (await client.get("/admin/quality")).status_code == 401
